@@ -5,10 +5,10 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
-from split_tracker.calculations import build_split_record, recalculate_athlete_splits
-from split_tracker.models import Athlete, MeetConfig, RaceClock, SplitRecord
+from split_tracker.calculations import athlete_finished, build_split_record, recalculate_athlete_splits
+from split_tracker.models import Athlete, Checkpoint, MeetConfig, RaceClock, SplitRecord
 
-DUPLICATE_LOCKOUT_SECONDS = 1.5
+DUPLICATE_LOCKOUT_SECONDS = 2.0
 
 
 def initialize_state(session_state) -> None:
@@ -20,6 +20,8 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("last_tap", {})
     session_state.setdefault("split_sequence", 0)
     session_state.setdefault("message", "")
+    session_state.setdefault("pending_duplicate", None)
+    session_state.setdefault("setup_saved", False)
 
 
 def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
@@ -37,13 +39,49 @@ def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
     return max(0.0, current - clock.start_perf_counter - clock.paused_total_seconds)
 
 
-def start_race(session_state, now: float | None = None) -> None:
+def validate_setup(config: MeetConfig, athletes: list[Athlete]) -> list[str]:
+    """Return validation errors for meet setup."""
+    errors: list[str] = []
+    if not config.meet_name.strip():
+        errors.append("Meet name is required.")
+    if not config.race_name.strip():
+        errors.append("Race name is required.")
+    if config.race_distance_meters <= 0:
+        errors.append("Race distance must be greater than zero.")
+    if not config.checkpoints:
+        errors.append("At least one checkpoint is required.")
+    if not athletes:
+        errors.append("At least one athlete is required.")
+    bibs = [athlete.bib_number for athlete in athletes if athlete.bib_number]
+    if len(bibs) != len(set(bibs)):
+        errors.append("Bib numbers must be unique when entered.")
+    for athlete in athletes:
+        if not athlete.name.strip():
+            errors.append("Athlete name is required.")
+            break
+    return errors
+
+
+def setup_is_valid(session_state) -> bool:
+    """Return whether the current setup can start a race."""
+    return not validate_setup(session_state.meet_config, session_state.athletes)
+
+
+def start_race(session_state, now: float | None = None) -> bool:
+    """Start the race without silently overwriting finished results."""
+    if not setup_is_valid(session_state):
+        session_state.message = "Complete and save a valid setup before starting."
+        return False
+    if session_state.splits and session_state.race_clock.status == "ended":
+        session_state.message = "Reset the race before starting again."
+        return False
     current = time.perf_counter() if now is None else now
     session_state.race_clock = RaceClock(status="running", start_perf_counter=current)
-    session_state.splits = []
-    session_state.last_tap = {}
-    session_state.split_sequence = 0
+    if not session_state.splits:
+        session_state.last_tap = {}
+        session_state.split_sequence = 0
     session_state.message = "Race started."
+    return True
 
 
 def pause_race(session_state, now: float | None = None) -> None:
@@ -85,56 +123,93 @@ def reset_race(session_state) -> None:
     session_state.splits = []
     session_state.last_tap = {}
     session_state.split_sequence = 0
+    session_state.pending_duplicate = None
     session_state.message = "Race reset."
 
 
-def record_split(session_state, athlete_id: str, now: float | None = None) -> SplitRecord | None:
-    """Record a split for an athlete unless duplicate protection blocks it."""
+def athlete_splits(session_state, athlete_id: str) -> list[SplitRecord]:
+    """Return ordered splits for one athlete."""
+    return sorted([split for split in session_state.splits if split.athlete_id == athlete_id], key=lambda split: split.sequence)
+
+
+def is_athlete_finished(session_state, athlete_id: str) -> bool:
+    """Return whether an athlete has completed all checkpoints."""
+    athlete = next((candidate for candidate in session_state.athletes if candidate.athlete_id == athlete_id), None)
+    if athlete and athlete.reopened_after_finish:
+        return False
+    return athlete_finished(athlete_splits(session_state, athlete_id), session_state.meet_config.checkpoints)
+
+
+def reopen_athlete(session_state, athlete_id: str) -> None:
+    """Allow one extra tap for a finished athlete after coach confirmation."""
+    for athlete in session_state.athletes:
+        if athlete.athlete_id == athlete_id:
+            athlete.reopened_after_finish = True
+            session_state.message = f"Reopened {athlete.name} for correction."
+            return
+
+
+def record_split(session_state, athlete_id: str, now: float | None = None, record_anyway: bool = False) -> SplitRecord | None:
+    """Record a split for an athlete unless state guards block it."""
     clock = session_state.race_clock
     if clock.status != "running":
-        session_state.message = "Start or resume the race before recording splits."
+        session_state.message = "Athlete taps are only enabled while the race is running."
         return None
 
     current = time.perf_counter() if now is None else now
     last_tap_time = session_state.last_tap.get(athlete_id)
-    if last_tap_time is not None and current - last_tap_time < DUPLICATE_LOCKOUT_SECONDS:
-        session_state.message = "Duplicate tap ignored."
+    if not record_anyway and last_tap_time is not None and current - last_tap_time < DUPLICATE_LOCKOUT_SECONDS:
+        session_state.pending_duplicate = {"athlete_id": athlete_id, "recorded_at": current}
+        session_state.message = "Duplicate tap ignored. Use Record Anyway to keep it."
         return None
 
     athlete = next((candidate for candidate in session_state.athletes if candidate.athlete_id == athlete_id), None)
     if athlete is None:
         session_state.message = "Athlete not found."
         return None
+    if is_athlete_finished(session_state, athlete_id) and not athlete.reopened_after_finish:
+        session_state.message = f"{athlete.name} is already finished. Reopen the athlete to record another split."
+        return None
 
     session_state.split_sequence += 1
-    athlete_splits = [split for split in session_state.splits if split.athlete_id == athlete_id]
     split = build_split_record(
         split_id=str(uuid4()),
         athlete=athlete,
-        existing_athlete_splits=athlete_splits,
+        existing_athlete_splits=athlete_splits(session_state, athlete_id),
+        checkpoints=session_state.meet_config.checkpoints,
         elapsed_seconds=elapsed_seconds(clock, current),
-        checkpoint_distance_miles=session_state.meet_config.checkpoint_distance_miles,
-        race_distance_miles=session_state.meet_config.race_distance_miles,
+        race_distance_meters=session_state.meet_config.race_distance_meters,
         sequence=session_state.split_sequence,
     )
+    if split is None:
+        session_state.message = f"{athlete.name} has no remaining checkpoints."
+        athlete.reopened_after_finish = False
+        return None
     session_state.splits.append(split)
+    athlete.reopened_after_finish = False
     session_state.last_tap[athlete_id] = current
-    session_state.message = f"Recorded split for {athlete.name}."
+    session_state.pending_duplicate = None
+    session_state.message = f"Recorded {athlete.name} at {split.checkpoint_label}."
     return split
 
 
 def undo_last_split(session_state) -> SplitRecord | None:
+    """Remove the latest split and recalculate that athlete's status."""
     if not session_state.splits:
         session_state.message = "No split to undo."
         return None
     last_split = max(session_state.splits, key=lambda split: split.sequence)
     session_state.splits = [split for split in session_state.splits if split.split_id != last_split.split_id]
-    session_state.message = f"Undid split for {last_split.athlete_name}."
+    refresh_all_splits(session_state)
+    session_state.message = f"Undid {last_split.athlete_name} at {last_split.checkpoint_label}."
     return last_split
 
 
-def replace_athlete_roster(session_state, athletes: list[Athlete]) -> None:
+def replace_setup(session_state, config: MeetConfig, athletes: list[Athlete]) -> None:
+    """Replace saved setup while preserving existing splits when possible."""
+    session_state.meet_config = config
     session_state.athletes = athletes
+    session_state.setup_saved = True
     refresh_all_splits(session_state)
 
 
@@ -142,13 +217,21 @@ def refresh_all_splits(session_state) -> None:
     """Recalculate derived fields for all athletes using current setup."""
     updated: list[SplitRecord] = []
     for athlete in session_state.athletes:
-        athlete_splits = [split for split in session_state.splits if split.athlete_id == athlete.athlete_id]
         updated.extend(
             recalculate_athlete_splits(
-                athlete_splits,
+                athlete_splits(session_state, athlete.athlete_id),
                 athlete,
-                session_state.meet_config.checkpoint_distance_miles,
-                session_state.meet_config.race_distance_miles,
+                session_state.meet_config.checkpoints,
+                session_state.meet_config.race_distance_meters,
             )
         )
     session_state.splits = sorted(updated, key=lambda split: split.sequence)
+
+
+def clear_setup(session_state) -> None:
+    """Clear setup and race data after confirmation from the UI."""
+    session_state.meet_config = MeetConfig()
+    session_state.athletes = []
+    reset_race(session_state)
+    session_state.setup_saved = False
+    session_state.message = "Setup cleared."

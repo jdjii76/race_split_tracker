@@ -8,6 +8,17 @@ from uuid import uuid4
 
 CourseType = Literal["Track", "Cross Country"]
 RaceStatus = Literal["not_started", "running", "paused", "ended"]
+CheckpointMode = Literal["Standard laps", "Fixed interval", "Custom checkpoints"]
+
+
+@dataclass
+class Checkpoint:
+    """A configured timing location measured from the start."""
+
+    number: int
+    label: str
+    distance_meters: float
+    is_finish: bool = False
 
 
 @dataclass
@@ -16,8 +27,11 @@ class Athlete:
 
     name: str
     bib_number: str = ""
+    target_finish_time_seconds: float | None = None
     target_pace_seconds_per_mile: float | None = None
+    group: str = ""
     athlete_id: str = field(default_factory=lambda: str(uuid4()))
+    reopened_after_finish: bool = False
 
 
 @dataclass
@@ -27,8 +41,13 @@ class MeetConfig:
     meet_name: str = ""
     race_name: str = ""
     course_type: CourseType = "Track"
-    race_distance_miles: float = 3.1
-    checkpoint_distance_miles: float = 1.0
+    race_distance_meters: float = 5000.0
+    race_distance_label: str = "5000 m"
+    checkpoint_mode: CheckpointMode = "Standard laps"
+    checkpoint_interval_meters: float = 400.0
+    lap_length_meters: float = 400.0
+    custom_checkpoint_text: str = ""
+    checkpoints: list[Checkpoint] = field(default_factory=list)
 
 
 @dataclass
@@ -40,13 +59,14 @@ class SplitRecord:
     athlete_name: str
     bib_number: str
     checkpoint_number: int
-    checkpoint_distance_miles: float
-    cumulative_distance_miles: float
+    checkpoint_label: str
+    checkpoint_distance_meters: float
     cumulative_time_seconds: float
     segment_split_seconds: float
     average_pace_seconds_per_mile: float | None
     projected_finish_seconds: float | None
-    target_variance_seconds_per_mile: float | None
+    target_variance_seconds: float | None
+    is_finish: bool
     sequence: int
 
 

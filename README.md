@@ -10,29 +10,32 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 
 - Meet name and race name fields
 - Course type selector for Track or Cross Country
-- Race distance and checkpoint distance fields in miles
-- Editable athlete roster with:
-  - Athlete name
-  - Bib number
-  - Optional target pace per mile
-- Validation for checkpoint distance and duplicate bib numbers
+- Track and cross country race-distance presets with custom meter distances
+- Internal distance storage in meters
+- Checkpoint modes for standard laps, fixed intervals, and custom checkpoints
+- Finish checkpoint inclusion even when intervals do not divide the race evenly
+- Editable athlete roster with add/delete rows and paste support through the data editor
+- CSV roster import and roster template download
+- Roster fields for athlete name, bib number, target finish time, optional target pace, and group/category
+- Setup summary before saving
+- Clear Setup confirmation and Start Timing navigation
+- Validation for required meet/race names, athlete names, duplicate bibs, target-time formats, and at least one athlete
 
 ### Live Timing
 
-- Race clock based on `time.perf_counter()`
-- Start, pause, resume, end, and reset controls
+- Prominent race header with meet, race, distance, status, large clock, and split count
+- Race clock based on `time.perf_counter()` with Streamlit-supported fragment refresh when available
+- Start, pause, resume, end race, undo last tap, and reset race controls
+- Confirmation requirements for end, undo, and reset actions
+- Start disabled until setup is valid
 - Large athlete buttons suitable for phones and tablets
-- Tap an athlete to record the current elapsed time
-- Automatic calculation of:
-  - Checkpoint number
-  - Segment split
-  - Cumulative time
-  - Average pace
-  - Projected finish
-  - Target pace variance
-- Undo most recent split
-- Duplicate-tap protection to reduce accidental repeated entries
-- Recent splits feed for quick race-day confirmation
+- Athlete buttons show bib, next checkpoint, latest segment, cumulative time, and target variance when available
+- Tap an athlete to record the exact elapsed time
+- Automatic calculation of checkpoint, segment split, cumulative time, average pace, projected finish, and target variance
+- Two-second duplicate-tap protection with an explicit Record Anyway action
+- Finished-athlete handling with reopen controls for corrections
+- Live split board sorted by latest checkpoint and cumulative time
+- Active/finished filtering and race-complete messaging
 
 ### Results
 
@@ -47,7 +50,9 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 - `st.Page` and `st.navigation` for multipage app navigation
 - Streamlit session state for prototype data storage
 - `time.perf_counter()` for race timing
-- Separate calculation logic from Streamlit UI code
+- Raw durations stored as decimal seconds
+- Distances stored internally in meters
+- Separate calculation and formatting logic from Streamlit UI code
 - Automated tests for calculation, formatting, and state-management behavior
 
 ## Project Structure

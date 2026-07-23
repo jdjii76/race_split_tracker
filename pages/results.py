@@ -17,12 +17,12 @@ def _results_frame() -> pd.DataFrame:
                 "Athlete": split.athlete_name,
                 "Bib": split.bib_number,
                 "Checkpoint": split.checkpoint_number,
-                "Distance": split.cumulative_distance_miles,
+                "Distance": split.checkpoint_distance_meters,
                 "Cumulative Time": format_duration(split.cumulative_time_seconds),
                 "Segment Split": format_duration(split.segment_split_seconds),
                 "Average Pace": format_pace(split.average_pace_seconds_per_mile),
                 "Projected Finish": format_duration(split.projected_finish_seconds),
-                "Target Variance": format_pace(split.target_variance_seconds_per_mile),
+                "Target Variance": format_duration(split.target_variance_seconds),
             }
         )
     return pd.DataFrame(rows)
