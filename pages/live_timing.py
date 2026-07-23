@@ -184,7 +184,7 @@ def render() -> None:
     if st.session_state.athletes and all(is_athlete_finished(st.session_state, athlete.athlete_id) for athlete in st.session_state.athletes):
         st.success("Race complete: all athletes have reached the finish.")
         if st.button("Go to Results", use_container_width=True):
-            st.switch_page("pages/results.py")
+            st.switch_page(st.session_state.page_registry["results"])
 
     st.subheader("Live Split Board")
     filter_value = st.selectbox("Filter", ["All athletes", "Active", "Finished"], label_visibility="collapsed")

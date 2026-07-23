@@ -202,4 +202,4 @@ def render() -> None:
         replace_setup(st.session_state, draft_config, athletes)
         st.success("Setup saved.")
         if start_clicked:
-            st.switch_page("pages/live_timing.py")
+            st.switch_page(st.session_state.page_registry["live_timing"])
