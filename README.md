@@ -65,7 +65,9 @@ race_split_tracker/
 ├── supabase/
 │   └── migrations/
 │       ├── 001_initial_schema.sql
-│       └── 003_timing_persistence.sql
+│       ├── 003_timing_persistence.sql
+│       ├── 004_race_rosters.sql
+│       └── 005_race_session_checkpoints.sql
 ├── README.md
 ├── pages/
 │   ├── __init__.py
@@ -80,6 +82,8 @@ race_split_tracker/
 │   ├── formatting.py
 │   ├── models.py
 │   ├── repository.py
+│   ├── results.py
+│   ├── session_checkpoints.py
 │   ├── state.py
 │   ├── supabase_client.py
 │   └── timing_persistence.py
@@ -112,7 +116,7 @@ If your system uses `python` for Python 3.11 or newer, you can substitute `pytho
 
 ## Optional Supabase Configuration
 
-Supabase support is currently configuration-only. The app can load Supabase credentials and construct a client when both values are available, but it does not create tables, run migrations, authenticate users, or persist race data yet.
+Supabase is the authoritative persistence backend when valid credentials are present and the required migrations have been applied. Without Supabase credentials, the app falls back to the existing local/in-memory behavior and warns that timing-session data is temporary.
 
 Create a local secrets file from the checked-in template:
 
@@ -120,24 +124,37 @@ Create a local secrets file from the checked-in template:
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 ```
 
-Edit `.streamlit/secrets.toml` and place your Supabase project URL and publishable key under the `supabase` section:
+Edit `.streamlit/secrets.toml` and place your Supabase project URL and publishable key in the top-level Streamlit secrets format:
 
 ```toml
-[supabase]
-url = "https://your-project-id.supabase.com"
-key = "your-publishable-key"
+SUPABASE_URL = "https://your-project-id.supabase.com"
+SUPABASE_KEY = "your-publishable-key"
 ```
 
-You can also configure the same values with environment variables instead of Streamlit secrets:
+The loader also supports the earlier nested `[supabase]` secrets format for existing local setups. You can alternatively configure the same values with environment variables:
 
 ```bash
 export SUPABASE_URL="https://your-project-id.supabase.com"
 export SUPABASE_KEY="your-publishable-key"
 ```
 
-Configuration lookup order is Streamlit secrets first, then environment variables. Missing Supabase configuration does not crash the application; client creation is skipped until both values are present.
+Configuration lookup order is top-level Streamlit secrets, nested Streamlit secrets, then environment variables. Missing Supabase configuration does not crash the application. If Supabase is configured but the client cannot initialize or the schema health check fails, the app reports Supabase as unavailable instead of silently switching to temporary storage.
 
 Do not commit `.streamlit/secrets.toml`, `.env`, service-role keys, database passwords, or any real Supabase credentials.
+
+### Storage Modes
+
+| Data | Supabase mode | Fallback mode |
+| --- | --- | --- |
+| Meet setup | Persistent in `meets` | Existing local/in-memory behavior |
+| Race setup | Persistent in `races` | Existing local/in-memory behavior |
+| Rosters | Persistent in `race_athletes` by `race_id` | Current race-scoped fallback behavior |
+| Race sessions | Persistent in `race_sessions` | Temporary in-memory repository |
+| Checkpoint snapshots | Persistent in `race_session_checkpoints` | Temporary in-memory repository |
+| Timing records | Persistent in `split_events` | Temporary in-memory repository |
+| Results | Persistent reconstruction from roster, session snapshot, and split events | Temporary reconstruction from active repository state |
+
+The sidebar storage indicator shows `Storage: Supabase` when Supabase is active, `Storage: Temporary in-memory storage` when credentials are missing, or a Supabase-unavailable error if configured storage cannot initialize. Local and Supabase datasets are separate; enabling Supabase does not automatically upload local fallback data.
 
 
 ## Phase 1 Persistence Architecture
@@ -151,16 +168,18 @@ Repository components:
 - `SupabaseRaceRepository`: Supabase-backed implementation for meet/race/template setup metadata, race rosters, race sessions, and split events.
 - Repository factory: uses Supabase only when configuration is valid and a client can be created. If configuration is missing, it clearly reports temporary storage. If Supabase is configured but unavailable, it reports an error instead of silently falling back.
 
-Phase 1 persists only:
+With Supabase active, the repository persists:
 
 - Meets
 - Races
 - Meet templates
 - Template race definitions
 - Race-specific athlete rosters
-- Race timing sessions and split tap events
+- Race timing sessions
+- Race-session checkpoint snapshots
+- Split tap events used to reconstruct live timing and Results views
 
-Phase 1 does **not** persist checkpoint definitions beyond the race checkpoint mode, results exports, authentication data, parent views, public sharing, or realtime subscriptions.
+The app does **not** persist authentication data, user ownership, parent views, public sharing, realtime subscriptions, or generated export files.
 
 ## Database Schema
 
@@ -175,15 +194,16 @@ The migration uses UUID primary keys, UTC timestamps, foreign keys, status check
 
 > **Development-only RLS warning:** the migration includes clearly marked development-only policies that allow the publishable/anon role to read and write these tables. Replace these policies with authenticated owner-based policies before public deployment or storing real athlete data. Never use service-role keys in the client app.
 
-### Running the Supabase Migration
+### Supabase Migration Runbook
 
-1. Open your Supabase project.
-2. Go to **SQL Editor**.
-3. Open `supabase/migrations/001_initial_schema.sql` locally.
-4. Copy the full SQL into the Supabase SQL Editor.
-5. Run the script.
-6. Confirm these tables exist in the Table Editor: `meets`, `races`, `meet_templates`, and `template_races`.
-7. Confirm indexes exist for `meets.meet_date`, `meets.season`, `races(meet_id, display_order)`, and `template_races(template_id, display_order)`.
+Apply migrations manually in the Supabase SQL Editor in this order:
+
+1. `supabase/migrations/001_initial_schema.sql`
+2. `supabase/migrations/003_timing_persistence.sql`
+3. `supabase/migrations/004_race_rosters.sql`
+4. `supabase/migrations/005_race_session_checkpoints.sql`
+
+There is currently no `002` migration file in the repository; keep the existing numbering gap and apply only the files present above. After running them, confirm these tables exist: `meets`, `races`, `meet_templates`, `template_races`, `race_sessions`, `split_events`, `race_athletes`, and `race_session_checkpoints`. Also confirm the `create_started_race_session_with_checkpoints` RPC function exists.
 
 ## Meet Dashboard and Templates
 
@@ -249,7 +269,7 @@ The visible race clock still updates locally from `time.perf_counter()`. Supabas
 10. Complete the race.
 11. Reopen the app, open the same race, and confirm the completed timing session and splits remain available.
 
-Assumptions for this phase: athlete IDs come from the selected race roster. If a persisted split references a runner that is no longer in that roster, the event's stored name/bib are used to reconstruct a visible split. Checkpoint persistence is not added yet, so restored split records use the currently loaded race checkpoint configuration.
+Assumptions for this phase: athlete IDs come from the selected race roster. If a persisted split references a runner that is no longer in that roster, the event's stored name/bib are used to reconstruct a visible split. Race-session checkpoint snapshots are authoritative for sessions created after `005_race_session_checkpoints.sql`; legacy sessions without snapshots use the documented fallback.
 
 
 
@@ -284,6 +304,43 @@ Result statuses are:
 - **DNS**: the athlete has no active split events in the selected session.
 
 The CSV download on Results exports the selected race session with stable columns for meet, race, session ID, athlete details, checkpoint split/cumulative times, finish time, average pace, overall place, gender place, category place, and status.
+
+## Supabase Activation Verification
+
+Manual project setup:
+
+1. Create or open a Supabase project.
+2. Open the Supabase SQL Editor.
+3. Apply migrations in the order listed in the Supabase Migration Runbook.
+4. Obtain the project URL and development publishable key.
+5. Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`.
+6. Fill in `SUPABASE_URL` and `SUPABASE_KEY` with local development credentials.
+7. Restart Streamlit with `streamlit run app.py` and confirm the sidebar shows `Storage: Supabase`.
+
+Manual application workflow:
+
+1. Create a meet.
+2. Add races and checkpoint configuration.
+3. Add a race roster.
+4. Start a race session.
+5. Record several splits.
+6. Stop and restart Streamlit.
+7. Reopen the meet and race.
+8. Confirm the race session, checkpoint snapshot, and timing records remain.
+9. Change the original race setup.
+10. Confirm the old session still uses its frozen checkpoint snapshot.
+11. Start a new session and confirm it uses the updated setup.
+
+Database inspection queries:
+
+```sql
+select id, name, meet_date, status from public.meets order by created_at desc;
+select id, meet_id, name, distance_meters, display_order from public.races order by meet_id, display_order;
+select race_id, athlete_id, name, bib_number, display_order from public.race_athletes order by race_id, display_order;
+select id, race_id, status, started_at, ended_at from public.race_sessions order by created_at desc;
+select race_session_id, checkpoint_sequence, label, distance_meters, is_finish from public.race_session_checkpoints order by race_session_id, checkpoint_sequence;
+select race_session_id, athlete_id, checkpoint_number, elapsed_seconds, event_order, is_deleted from public.split_events order by race_session_id, event_order;
+```
 
 ## Known Limitations and Next Phases
 

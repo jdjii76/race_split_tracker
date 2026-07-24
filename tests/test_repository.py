@@ -18,6 +18,41 @@ from split_tracker.repository import (
 from split_tracker.state import load_race_into_setup
 
 
+class _Result:
+    def __init__(self, data=None):
+        self.data = [] if data is None else data
+
+
+class _Operation:
+    def __init__(self, data=None):
+        self.result = _Result(data)
+
+    def execute(self):
+        return self.result
+
+
+class _SupabaseTable:
+    def __init__(self, client, name: str):
+        self.client = client
+        self.name = name
+
+    def select(self, columns: str):
+        self.client.calls.append(("select", self.name, columns))
+        return self
+
+    def limit(self, count: int):
+        self.client.calls.append(("limit", self.name, count))
+        return _Operation([])
+
+
+class _SupabaseClient:
+    def __init__(self):
+        self.calls: list[tuple[str, str, object]] = []
+
+    def table(self, name: str):
+        return _SupabaseTable(self, name)
+
+
 def test_create_update_archive_and_delete_draft_meet():
     repo = InMemoryRaceRepository()
     meet = repo.create_meet(Meet(name="Creekside Invitational", season="2026 XC"))
@@ -150,10 +185,35 @@ def test_repository_factory_uses_supabase_when_configuration_and_client_are_avai
     import split_tracker.repository as repository_module
     from split_tracker.supabase_client import SupabaseConnectionResult
 
+    client = _SupabaseClient()
     monkeypatch.setattr(repository_module, "load_supabase_config", lambda: SupabaseConfig(url="https://configured.supabase.com", key="key", source="environment"))
     monkeypatch.setattr(repository_module.SupabaseRaceRepository, "seed_default_xc_template", lambda self: None)
-    result = create_repository(connection_result=SupabaseConnectionResult(configured=True, message="ok", client=object()))
+    result = create_repository(connection_result=SupabaseConnectionResult(configured=True, message="ok", client=client))
 
     assert isinstance(result.repository, SupabaseRaceRepository)
     assert not result.is_temporary
     assert result.storage_label == "Supabase"
+    checked_tables = [call[1] for call in client.calls if call[0] == "select"]
+    assert checked_tables == ["meets", "races", "race_athletes", "race_sessions", "split_events", "race_session_checkpoints"]
+
+
+def test_repository_factory_reports_missing_migration_health_check_failure(monkeypatch):
+    import split_tracker.repository as repository_module
+    from split_tracker.supabase_client import SupabaseConnectionResult
+
+    class FailingTable(_SupabaseTable):
+        def limit(self, count: int):
+            raise RuntimeError("relation does not exist")
+
+    class FailingClient(_SupabaseClient):
+        def table(self, name: str):
+            return FailingTable(self, name)
+
+    monkeypatch.setattr(repository_module, "load_supabase_config", lambda: SupabaseConfig(url="https://configured.supabase.com", key="key", source="environment"))
+
+    result = create_repository(connection_result=SupabaseConnectionResult(configured=True, message="ok", client=FailingClient()))
+
+    assert result.repository is None
+    assert result.storage_label == "Supabase unavailable"
+    assert result.error is not None
+    assert "Apply the required migrations" in result.error

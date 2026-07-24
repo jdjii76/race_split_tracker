@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit local secrets
 .streamlit/secrets.toml
+# Local Supabase credential files
+*service-role*
+*service_role*
+supabase-service*.json
+.supabase-service-key

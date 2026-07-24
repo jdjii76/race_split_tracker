@@ -47,6 +47,25 @@ def test_streamlit_secrets_are_preferred_over_environment(monkeypatch):
     assert config.source == "streamlit_secrets"
 
 
+def test_top_level_streamlit_secrets_are_supported_and_preferred(monkeypatch):
+    fake_streamlit = SimpleNamespace(
+        secrets={
+            "SUPABASE_URL": SECRET_URL,
+            "SUPABASE_KEY": SECRET_KEY,
+            "supabase": {"url": "https://nested.supabase.com", "key": "nested-key"},
+        }
+    )
+    monkeypatch.setitem(__import__("sys").modules, "streamlit", fake_streamlit)
+    environ = {"SUPABASE_URL": ENV_URL, "SUPABASE_KEY": ENV_KEY}
+
+    config = load_supabase_config(environ=environ)
+
+    assert config.is_configured
+    assert config.url == SECRET_URL
+    assert config.key == SECRET_KEY
+    assert config.source == "streamlit_secrets"
+
+
 def test_secret_values_are_not_exposed_in_repr_status_or_missing_result():
     config = SupabaseConfig(url=SECRET_URL, key=SECRET_KEY, source="streamlit_secrets")
     missing_result = create_supabase_connection(SupabaseConfig(url=SECRET_URL, key=None, source="missing"))

@@ -847,6 +847,25 @@ class SupabaseRaceRepository:
             return data[0] if data else None
         return data
 
+    def validate_schema(self) -> None:
+        """Run lightweight read checks for tables needed by the active app."""
+        checks = (
+            ("meets", "id"),
+            ("races", "id"),
+            ("race_athletes", "athlete_id"),
+            ("race_sessions", "id"),
+            ("split_events", "id"),
+            ("race_session_checkpoints", "id"),
+        )
+        for table_name, columns in checks:
+            message = f"Supabase schema check failed for {table_name}. Apply the required migrations."
+            try:
+                operation = self.client.table(table_name).select(columns).limit(1)
+            except Exception as exc:
+                logger.exception("Repository operation failed: %s", message)
+                raise RepositoryError(message) from exc
+            self._execute(operation, message)
+
     def create_meet(self, meet: Meet) -> Meet:
         row = self._single(self.client.table("meets").insert(_meet_to_row(meet)), "Could not create meet.")
         return _meet_from_row(row or _meet_to_row(meet))
@@ -1141,6 +1160,7 @@ def create_repository(
         return RepositoryFactoryResult(repository=None, storage_label="Supabase unavailable", is_temporary=False, message="Supabase is configured but no client was created.", error=connection.message)
     repository = SupabaseRaceRepository(connection.client)
     try:
+        repository.validate_schema()
         repository.seed_default_xc_template()
     except RepositoryError as exc:
         return RepositoryFactoryResult(repository=None, storage_label="Supabase unavailable", is_temporary=False, message="Supabase is configured but initialization failed.", error=str(exc))

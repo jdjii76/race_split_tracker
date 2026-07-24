@@ -76,8 +76,9 @@ def load_supabase_config(
     """Load Supabase URL and publishable key from Streamlit secrets, then env vars.
 
     Lookup order for each field:
-    1. ``st.secrets["supabase"]["url"]`` / ``st.secrets["supabase"]["key"]``
-    2. ``SUPABASE_URL`` / ``SUPABASE_KEY``
+    1. ``st.secrets["SUPABASE_URL"]`` / ``st.secrets["SUPABASE_KEY"]``
+    2. ``st.secrets["supabase"]["url"]`` / ``st.secrets["supabase"]["key"]``
+    3. ``SUPABASE_URL`` / ``SUPABASE_KEY``
 
     Missing values are represented in the returned status and never raise by default.
     """
@@ -85,8 +86,12 @@ def load_supabase_config(
     active_secrets = _current_streamlit_secrets() if secrets is None else secrets
     supabase_secrets = _mapping_get(active_secrets, "supabase")
 
-    secret_url = _strip(_mapping_get(supabase_secrets, "url"))
-    secret_key = _strip(_mapping_get(supabase_secrets, "key"))
+    top_level_secret_url = _strip(_mapping_get(active_secrets, "SUPABASE_URL"))
+    top_level_secret_key = _strip(_mapping_get(active_secrets, "SUPABASE_KEY"))
+    nested_secret_url = _strip(_mapping_get(supabase_secrets, "url"))
+    nested_secret_key = _strip(_mapping_get(supabase_secrets, "key"))
+    secret_url = top_level_secret_url or nested_secret_url
+    secret_key = top_level_secret_key or nested_secret_key
     env_url = _strip(env.get("SUPABASE_URL"))
     env_key = _strip(env.get("SUPABASE_KEY"))
 

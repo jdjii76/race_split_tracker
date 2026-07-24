@@ -17,6 +17,17 @@ if st.session_state.repository_result is None:
     st.session_state.repository_result = repository_result
     st.session_state.repository = repository_result.repository
 
+repository_result = st.session_state.repository_result
+with st.sidebar:
+    if repository_result is not None:
+        st.caption(f"Storage: {repository_result.storage_label}")
+        if repository_result.error:
+            st.error("Supabase persistence is unavailable. Check credentials, network access, and migrations.")
+        elif repository_result.is_temporary:
+            st.warning("Timing-session data is temporary without Supabase configuration.")
+        else:
+            st.success("Supabase persistence is active.")
+
 MEET_DASHBOARD_PAGE = st.Page(
     meet_dashboard.render,
     title="Meet Dashboard",
