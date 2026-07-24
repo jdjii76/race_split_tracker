@@ -12,6 +12,7 @@ from split_tracker.supabase_client import SupabaseConnectionResult, create_supab
 
 MEET_STATUSES = {"draft", "active", "upcoming", "completed", "archived"}
 RACE_STATUSES = {"draft", "ready", "running", "paused", "completed", "archived"}
+RACE_SESSION_STATUSES = {"ready", "running", "paused", "completed", "cancelled"}
 TEMPLATE_STATUSES = {"active", "archived"}
 DEFAULT_XC_TEMPLATE_NAME = "Default XC Meet"
 DEFAULT_XC_RACES = ["Boys JV", "Girls JV", "Boys Varsity", "Girls Varsity"]
@@ -76,6 +77,36 @@ class TemplateRace:
 
 
 @dataclass(frozen=True)
+class RaceSession:
+    race_id: str
+    status: str = "ready"
+    id: str = field(default_factory=lambda: str(uuid4()))
+    started_at: datetime | None = None
+    paused_at: datetime | None = None
+    ended_at: datetime | None = None
+    elapsed_offset_seconds: float = 0.0
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
+class SplitEvent:
+    race_session_id: str
+    athlete_id: str
+    checkpoint_number: int
+    elapsed_seconds: float
+    event_order: int
+    id: str = field(default_factory=lambda: str(uuid4()))
+    athlete_name: str = ""
+    bib_number: str = ""
+    checkpoint_label: str = ""
+    is_deleted: bool = False
+    recorded_at: datetime = field(default_factory=utc_now)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
 class RepositoryFactoryResult:
     repository: "RaceRepository | None"
     storage_label: str
@@ -113,6 +144,17 @@ class RaceRepository(Protocol):
     def archive_template(self, template_id: str) -> MeetTemplate: ...
     def seed_default_xc_template(self) -> MeetTemplate: ...
 
+    def create_race_session(self, session: RaceSession) -> RaceSession: ...
+    def get_race_session(self, race_session_id: str) -> RaceSession | None: ...
+    def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None: ...
+    def update_race_session(self, session: RaceSession) -> RaceSession: ...
+    def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]: ...
+    def create_split_event(self, event: SplitEvent) -> SplitEvent: ...
+    def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
+    def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
+    def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
+    def restore_split_event(self, split_event_id: str) -> SplitEvent: ...
+
 
 class InMemoryRaceRepository:
     """In-session repository used when Supabase configuration is missing."""
@@ -122,6 +164,8 @@ class InMemoryRaceRepository:
         self.races: dict[str, Race] = {}
         self.templates: dict[str, MeetTemplate] = {}
         self.template_races: dict[str, TemplateRace] = {}
+        self.race_sessions: dict[str, RaceSession] = {}
+        self.split_events: dict[str, SplitEvent] = {}
 
     def create_meet(self, meet: Meet) -> Meet:
         saved = replace(meet, created_at=meet.created_at, updated_at=utc_now())
@@ -257,6 +301,58 @@ class InMemoryRaceRepository:
         ]
         return self.create_template(template, races)
 
+
+    def create_race_session(self, session: RaceSession) -> RaceSession:
+        self._require_race(session.race_id)
+        saved = replace(session, created_at=session.created_at, updated_at=utc_now())
+        self.race_sessions[saved.id] = saved
+        return saved
+
+    def get_race_session(self, race_session_id: str) -> RaceSession | None:
+        return self.race_sessions.get(race_session_id)
+
+    def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None:
+        sessions = self.list_race_sessions_for_race(race_id)
+        active = [session for session in sessions if session.status in {"running", "paused"}]
+        if active:
+            return active[-1]
+        return sessions[-1] if sessions else None
+
+    def update_race_session(self, session: RaceSession) -> RaceSession:
+        if session.id not in self.race_sessions:
+            raise RepositoryError("Race session not found.")
+        saved = replace(session, updated_at=utc_now())
+        self.race_sessions[saved.id] = saved
+        return saved
+
+    def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
+        return sorted([session for session in self.race_sessions.values() if session.race_id == race_id], key=lambda session: (session.created_at, session.id))
+
+    def create_split_event(self, event: SplitEvent) -> SplitEvent:
+        if event.race_session_id not in self.race_sessions:
+            raise RepositoryError("Race session not found.")
+        saved = replace(event, created_at=event.created_at, updated_at=utc_now())
+        self.split_events[saved.id] = saved
+        return saved
+
+    def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
+        return [event for event in self.list_all_split_events(race_session_id) if not event.is_deleted]
+
+    def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
+        return sorted([event for event in self.split_events.values() if event.race_session_id == race_session_id], key=lambda event: (event.event_order, event.recorded_at, event.id))
+
+    def soft_delete_split_event(self, split_event_id: str) -> SplitEvent:
+        event = self._require_split_event(split_event_id)
+        saved = replace(event, is_deleted=True, updated_at=utc_now())
+        self.split_events[saved.id] = saved
+        return saved
+
+    def restore_split_event(self, split_event_id: str) -> SplitEvent:
+        event = self._require_split_event(split_event_id)
+        saved = replace(event, is_deleted=False, updated_at=utc_now())
+        self.split_events[saved.id] = saved
+        return saved
+
     def _require_meet(self, meet_id: str) -> Meet:
         meet = self.get_meet(meet_id)
         if meet is None:
@@ -274,6 +370,12 @@ class InMemoryRaceRepository:
         if template is None:
             raise RepositoryError("Template not found.")
         return template
+
+    def _require_split_event(self, split_event_id: str) -> SplitEvent:
+        event = self.split_events.get(split_event_id)
+        if event is None:
+            raise RepositoryError("Split event not found.")
+        return event
 
 
 def _to_iso(value: date | datetime | None) -> str | None:
@@ -407,6 +509,70 @@ def _template_race_from_row(row: dict[str, Any]) -> TemplateRace:
         checkpoint_mode=row.get("checkpoint_mode") or "Standard laps",
         display_order=int(row.get("display_order") or 0),
         created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+    )
+
+
+def _race_session_to_row(session: RaceSession) -> dict[str, Any]:
+    return {
+        "id": session.id,
+        "race_id": session.race_id,
+        "status": session.status,
+        "started_at": _to_iso(session.started_at),
+        "paused_at": _to_iso(session.paused_at),
+        "ended_at": _to_iso(session.ended_at),
+        "elapsed_offset_seconds": session.elapsed_offset_seconds,
+        "created_at": session.created_at.isoformat(),
+        "updated_at": session.updated_at.isoformat(),
+    }
+
+
+def _race_session_from_row(row: dict[str, Any]) -> RaceSession:
+    return RaceSession(
+        id=str(row["id"]),
+        race_id=str(row["race_id"]),
+        status=row.get("status") or "ready",
+        started_at=_parse_datetime(row.get("started_at")),
+        paused_at=_parse_datetime(row.get("paused_at")),
+        ended_at=_parse_datetime(row.get("ended_at")),
+        elapsed_offset_seconds=float(row.get("elapsed_offset_seconds") or 0.0),
+        created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+        updated_at=_parse_datetime(row.get("updated_at")) or utc_now(),
+    )
+
+
+def _split_event_to_row(event: SplitEvent) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "race_session_id": event.race_session_id,
+        "athlete_id": event.athlete_id,
+        "athlete_name": event.athlete_name or None,
+        "bib_number": event.bib_number or None,
+        "checkpoint_number": event.checkpoint_number,
+        "checkpoint_label": event.checkpoint_label or None,
+        "elapsed_seconds": event.elapsed_seconds,
+        "recorded_at": event.recorded_at.isoformat(),
+        "event_order": event.event_order,
+        "is_deleted": event.is_deleted,
+        "created_at": event.created_at.isoformat(),
+        "updated_at": event.updated_at.isoformat(),
+    }
+
+
+def _split_event_from_row(row: dict[str, Any]) -> SplitEvent:
+    return SplitEvent(
+        id=str(row["id"]),
+        race_session_id=str(row["race_session_id"]),
+        athlete_id=str(row["athlete_id"]),
+        athlete_name=row.get("athlete_name") or "",
+        bib_number=row.get("bib_number") or "",
+        checkpoint_number=int(row["checkpoint_number"]),
+        checkpoint_label=row.get("checkpoint_label") or "",
+        elapsed_seconds=float(row["elapsed_seconds"]),
+        recorded_at=_parse_datetime(row.get("recorded_at")) or utc_now(),
+        event_order=int(row.get("event_order") or 0),
+        is_deleted=bool(row.get("is_deleted")),
+        created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+        updated_at=_parse_datetime(row.get("updated_at")) or utc_now(),
     )
 
 
@@ -547,6 +713,58 @@ class SupabaseRaceRepository:
         template = MeetTemplate(name=DEFAULT_XC_TEMPLATE_NAME, description="Standard four-race cross country meet", season="Cross Country")
         races = [TemplateRace(template_id=template.id, name=name, distance_meters=5000.0, course_type="Cross Country", checkpoint_mode="Standard laps", display_order=index) for index, name in enumerate(DEFAULT_XC_RACES)]
         return self.create_template(template, races)
+
+
+    def create_race_session(self, session: RaceSession) -> RaceSession:
+        row = self._single(self.client.table("race_sessions").insert(_race_session_to_row(session)), "Could not create race session.")
+        return _race_session_from_row(row or _race_session_to_row(session))
+
+    def get_race_session(self, race_session_id: str) -> RaceSession | None:
+        row = self._single(self.client.table("race_sessions").select("*").eq("id", race_session_id), "Could not load race session.")
+        return _race_session_from_row(row) if row else None
+
+    def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None:
+        active_result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).in_("status", ["running", "paused"]).order("created_at", desc=False), "Could not load active race session.")
+        active_rows = getattr(active_result, "data", [])
+        if active_rows:
+            return _race_session_from_row(active_rows[-1])
+        all_sessions = self.list_race_sessions_for_race(race_id)
+        return all_sessions[-1] if all_sessions else None
+
+    def update_race_session(self, session: RaceSession) -> RaceSession:
+        saved = replace(session, updated_at=utc_now())
+        row = self._single(self.client.table("race_sessions").update(_race_session_to_row(saved)).eq("id", saved.id), "Could not update race session.")
+        return _race_session_from_row(row or _race_session_to_row(saved))
+
+    def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
+        result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).order("created_at", desc=False), "Could not list race sessions.")
+        return [_race_session_from_row(row) for row in getattr(result, "data", [])]
+
+    def create_split_event(self, event: SplitEvent) -> SplitEvent:
+        row = self._single(self.client.table("split_events").insert(_split_event_to_row(event)), "Could not create split event.")
+        return _split_event_from_row(row or _split_event_to_row(event))
+
+    def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
+        result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).eq("is_deleted", False).order("event_order", desc=False), "Could not list active split events.")
+        return [_split_event_from_row(row) for row in getattr(result, "data", [])]
+
+    def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
+        result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).order("event_order", desc=False), "Could not list split events.")
+        return [_split_event_from_row(row) for row in getattr(result, "data", [])]
+
+    def soft_delete_split_event(self, split_event_id: str) -> SplitEvent:
+        updated_at = utc_now().isoformat()
+        row = self._single(self.client.table("split_events").update({"is_deleted": True, "updated_at": updated_at}).eq("id", split_event_id), "Could not undo split event.")
+        if row is None:
+            raise RepositoryError("Split event not found.")
+        return _split_event_from_row(row)
+
+    def restore_split_event(self, split_event_id: str) -> SplitEvent:
+        updated_at = utc_now().isoformat()
+        row = self._single(self.client.table("split_events").update({"is_deleted": False, "updated_at": updated_at}).eq("id", split_event_id), "Could not restore split event.")
+        if row is None:
+            raise RepositoryError("Split event not found.")
+        return _split_event_from_row(row)
 
 
 def create_repository(

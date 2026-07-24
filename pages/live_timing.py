@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import streamlit as st
 
 from split_tracker.calculations import athlete_finished, next_checkpoint
 from split_tracker.formatting import format_distance, format_duration, format_pace
+from split_tracker.timing_persistence import (
+    persist_cancel,
+    persist_completion,
+    persist_pause,
+    persist_resume,
+    persist_split_record,
+    persist_start,
+    persist_undo_split,
+    restore_timing_state,
+)
 from split_tracker.state import (
     elapsed_seconds,
     end_race,
@@ -20,6 +32,8 @@ from split_tracker.state import (
     start_race,
     undo_last_split,
 )
+
+logger = logging.getLogger(__name__)
 
 _BUTTON_CSS = """
 <style>
@@ -102,9 +116,118 @@ def _live_board_frame(filter_value: str) -> pd.DataFrame:
     return frame.drop(columns=["Checkpoint order", "Sort time"])
 
 
+
+def _has_persisted_race() -> bool:
+    return bool(st.session_state.get("selected_race_id") and st.session_state.get("repository"))
+
+
+def _show_persistence_error(operation: str, exc: Exception) -> None:
+    logger.exception("Live timing persistence failed", extra={"operation": operation, "race_id": st.session_state.get("selected_race_id")})
+    st.error(f"{operation} could not be saved. The underlying error was logged; no Supabase secrets were displayed.")
+
+
+def _restore_if_needed() -> None:
+    race_id = st.session_state.get("selected_race_id")
+    if not race_id or not st.session_state.get("repository"):
+        return
+    if st.session_state.get("timing_restored_for_race_id") == race_id:
+        return
+    try:
+        restore_timing_state(st.session_state)
+        st.session_state.timing_restored_for_race_id = race_id
+    except Exception as exc:
+        _show_persistence_error("Restore timing session", exc)
+
+
+def _start_timing() -> bool:
+    try:
+        if _has_persisted_race():
+            persist_start(st.session_state)
+        return start_race(st.session_state)
+    except Exception as exc:
+        _show_persistence_error("Start race", exc)
+        return False
+
+
+def _pause_timing() -> bool:
+    try:
+        current_elapsed = elapsed_seconds(st.session_state.race_clock)
+        if _has_persisted_race():
+            persist_pause(st.session_state, current_elapsed)
+        pause_race(st.session_state)
+        return True
+    except Exception as exc:
+        _show_persistence_error("Pause race", exc)
+        return False
+
+
+def _resume_timing() -> bool:
+    try:
+        if _has_persisted_race():
+            persist_resume(st.session_state)
+        resume_race(st.session_state)
+        return True
+    except Exception as exc:
+        _show_persistence_error("Resume race", exc)
+        return False
+
+
+def _end_timing() -> bool:
+    try:
+        current_elapsed = elapsed_seconds(st.session_state.race_clock)
+        if _has_persisted_race():
+            persist_completion(st.session_state, current_elapsed)
+        end_race(st.session_state)
+        return True
+    except Exception as exc:
+        _show_persistence_error("End race", exc)
+        return False
+
+
+def _reset_timing() -> bool:
+    try:
+        current_elapsed = elapsed_seconds(st.session_state.race_clock)
+        if _has_persisted_race() and st.session_state.get("active_race_session_id"):
+            persist_cancel(st.session_state, current_elapsed)
+            st.session_state.active_race_session_id = None
+            st.session_state.timing_restored_for_race_id = None
+        reset_race(st.session_state)
+        return True
+    except Exception as exc:
+        _show_persistence_error("Reset race", exc)
+        return False
+
+
+def _record_tap(athlete_id: str, *, now: float | None = None, record_anyway: bool = False) -> bool:
+    split = record_split(st.session_state, athlete_id, now=now, record_anyway=record_anyway)
+    if split is None:
+        return False
+    try:
+        if _has_persisted_race():
+            persist_split_record(st.session_state, split)
+        return True
+    except Exception as exc:
+        st.session_state.splits = [item for item in st.session_state.splits if item.split_id != split.split_id]
+        _show_persistence_error("Record split", exc)
+        return False
+
+
+def _undo_tap(split) -> bool:
+    try:
+        if _has_persisted_race() and st.session_state.get("active_race_session_id"):
+            persist_undo_split(st.session_state, split)
+            st.session_state.message = f"Undid {split.athlete_name} at {split.checkpoint_label}."
+        else:
+            undo_last_split(st.session_state)
+        return True
+    except Exception as exc:
+        _show_persistence_error("Undo split", exc)
+        return False
+
 def render() -> None:
     """Render the live timing page."""
     st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
+    _restore_if_needed()
     config = st.session_state.meet_config
     clock = st.session_state.race_clock
     valid_setup = setup_is_valid(st.session_state)
@@ -123,32 +246,32 @@ def render() -> None:
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     if c1.button("Start", use_container_width=True, disabled=not valid_setup or clock.status == "running" or (clock.status == "ended" and bool(st.session_state.splits))):
-        start_race(st.session_state)
-        st.rerun()
+        if _start_timing():
+            st.rerun()
     if c2.button("Pause", use_container_width=True, disabled=clock.status != "running"):
-        pause_race(st.session_state)
-        st.rerun()
+        if _pause_timing():
+            st.rerun()
     if c3.button("Resume", use_container_width=True, disabled=clock.status != "paused"):
-        resume_race(st.session_state)
-        st.rerun()
+        if _resume_timing():
+            st.rerun()
 
     confirm_end = c4.checkbox("Confirm end")
     if c4.button("End Race", use_container_width=True, disabled=clock.status not in {"running", "paused"} or not confirm_end):
-        end_race(st.session_state)
-        st.rerun()
+        if _end_timing():
+            st.rerun()
 
     last_split = max(st.session_state.splits, key=lambda split: split.sequence) if st.session_state.splits else None
     if last_split:
         c5.caption(f"Undo: {last_split.athlete_name} {last_split.checkpoint_label}")
     confirm_undo = c5.checkbox("Confirm undo")
     if c5.button("Undo Last Tap", use_container_width=True, disabled=not last_split or not confirm_undo):
-        undo_last_split(st.session_state)
-        st.rerun()
+        if _undo_tap(last_split):
+            st.rerun()
 
     confirm_reset = c6.checkbox("Confirm reset")
     if c6.button("Reset Race", use_container_width=True, disabled=not confirm_reset):
-        reset_race(st.session_state)
-        st.rerun()
+        if _reset_timing():
+            st.rerun()
 
     pending = st.session_state.pending_duplicate
     if pending:
@@ -156,8 +279,8 @@ def render() -> None:
         if athlete:
             st.warning(f"Duplicate tap detected for {athlete.name} within 2 seconds.")
             if st.button("Record Anyway", use_container_width=True):
-                record_split(st.session_state, athlete.athlete_id, now=pending["recorded_at"], record_anyway=True)
-                st.rerun()
+                if _record_tap(athlete.athlete_id, now=pending["recorded_at"], record_anyway=True):
+                    st.rerun()
 
     if st.session_state.message:
         st.info(st.session_state.message)
@@ -175,8 +298,8 @@ def render() -> None:
         disabled = clock.status != "running" or (finished and not athlete.reopened_after_finish)
         with cols[index % columns_per_row]:
             if st.button(_athlete_button_label(athlete), key=f"tap_{athlete.athlete_id}", use_container_width=True, disabled=disabled):
-                record_split(st.session_state, athlete.athlete_id)
-                st.rerun()
+                if _record_tap(athlete.athlete_id):
+                    st.rerun()
             if finished and st.button("Reopen athlete", key=f"reopen_{athlete.athlete_id}", use_container_width=True):
                 reopen_athlete(st.session_state, athlete.athlete_id)
                 st.rerun()

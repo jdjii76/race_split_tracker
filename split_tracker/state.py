@@ -243,6 +243,8 @@ def initialize_persistence_state(session_state) -> None:
     session_state.setdefault("selected_race_id", None)
     session_state.setdefault("repository_result", None)
     session_state.setdefault("repository", None)
+    session_state.setdefault("active_race_session_id", None)
+    session_state.setdefault("timing_restored_for_race_id", None)
 
 
 def load_race_into_setup(session_state, meet, race) -> None:

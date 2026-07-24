@@ -64,7 +64,8 @@ race_split_tracker/
 ├── AGENTS.md
 ├── supabase/
 │   └── migrations/
-│       └── 001_initial_schema.sql
+│       ├── 001_initial_schema.sql
+│       └── 003_timing_persistence.sql
 ├── README.md
 ├── pages/
 │   ├── __init__.py
@@ -80,7 +81,8 @@ race_split_tracker/
 │   ├── models.py
 │   ├── repository.py
 │   ├── state.py
-│   └── supabase_client.py
+│   ├── supabase_client.py
+│   └── timing_persistence.py
 └── tests/
     ├── test_calculations.py
     ├── test_formatting.py
@@ -189,12 +191,51 @@ The Templates section includes an idempotently seeded default XC meet template c
 
 When Supabase configuration is missing, the dashboard still works with temporary in-memory storage and displays a warning that meet data resets when the session ends.
 
+
+## Persistent Live Timing
+
+The `supabase/migrations/003_timing_persistence.sql` migration adds persistent live timing state for selected saved races. It creates:
+
+- `race_sessions`: one timing session per start/restart attempt, with status, start/pause/end timestamps, and an elapsed offset used to restore the race clock without writing every second.
+- `split_events`: one persisted event per athlete tap, including athlete identifier, checkpoint number/label, elapsed seconds, deterministic event order, and soft-delete state for undo.
+
+The visible race clock still updates locally from `time.perf_counter()`. Supabase is updated only for lifecycle events such as start, pause, resume, complete/cancel, athlete taps, and undo. Undo marks split events deleted instead of permanently deleting them.
+
+### Applying the Timing Migration
+
+1. Apply `supabase/migrations/001_initial_schema.sql` first if it has not already been applied.
+2. Open your Supabase project.
+3. Go to **SQL Editor**.
+4. Open `supabase/migrations/003_timing_persistence.sql` locally.
+5. Copy the full SQL into the Supabase SQL Editor.
+6. Run the script.
+7. Confirm these tables exist: `race_sessions` and `split_events`.
+8. Confirm RLS is enabled and indexes exist for race-session lookup and split-event ordering.
+
+> **Development-only RLS warning:** the timing migration also includes anon read/write policies for prototype development. Replace them with authenticated owner-based policies before public deployment or storing real athlete data.
+
+### Manual Timing Recovery Checklist
+
+1. Open a saved race from the Meet Dashboard.
+2. Start timing.
+3. Record several athlete taps.
+4. Pause the race.
+5. Refresh the browser and confirm the race reloads as paused with the correct elapsed time and splits.
+6. Resume the race and record more taps.
+7. Refresh while running and confirm the running clock and active splits are restored.
+8. Undo the latest split.
+9. Refresh and confirm the undone split remains excluded.
+10. Complete the race.
+11. Reopen the app, open the same race, and confirm the completed timing session and splits remain available.
+
+Assumptions for this phase: athlete IDs come from the current roster in session state; if a persisted split references a runner that is no longer in the roster, the event's stored name/bib are used to reconstruct a visible split. Checkpoint persistence is not added yet, so restored split records use the currently loaded race checkpoint configuration.
+
 ## Known Limitations and Next Phases
 
 Known limitations:
 
 - Roster libraries are not persisted yet.
-- Checkpoints, splits, live timing state, results, and exports remain session-state only.
+- Checkpoint definitions, roster libraries, results exports, and non-selected direct-setup races remain session-state only; saved race sessions and split tap events are persisted after applying `003_timing_persistence.sql`.
 - No authentication, owner-based authorization, public sharing, parent/spectator views, realtime subscriptions, or crash recovery exists yet.
 - Development-only RLS policies must be replaced before real deployment.
 
