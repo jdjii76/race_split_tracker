@@ -251,12 +251,28 @@ The visible race clock still updates locally from `time.perf_counter()`. Supabas
 
 Assumptions for this phase: athlete IDs come from the selected race roster. If a persisted split references a runner that is no longer in that roster, the event's stored name/bib are used to reconstruct a visible split. Checkpoint persistence is not added yet, so restored split records use the currently loaded race checkpoint configuration.
 
+
+## Race History and Reconstructed Results
+
+The Results page can reopen saved race sessions for a selected meet and race. It lists each timing session with status, start/end timestamps, duration, active split count, and finisher count. Selecting a session reconstructs results from the selected race roster, generated checkpoint configuration, and active `split_events`; soft-deleted split events are excluded from normal result calculations.
+
+Result reconstruction reuses the existing split-calculation path so checkpoint segment splits, cumulative times, finish times, and average pace are derived consistently with Live Timing. Athlete name and bib snapshots stored on split events are used when an event references an athlete that is no longer present in the current race roster.
+
+Result statuses are:
+
+- **Finished**: the athlete has an active split at the finish checkpoint.
+- **In Progress**: the session is still active and the athlete has at least one partial split.
+- **DNF**: the session is completed/cancelled and the athlete has partial splits but no finish.
+- **DNS**: the athlete has no active split events in the selected session.
+
+The CSV download on Results exports the selected race session with stable columns for meet, race, session ID, athlete details, checkpoint split/cumulative times, finish time, average pace, overall place, gender place, category place, and status.
+
 ## Known Limitations and Next Phases
 
 Known limitations:
 
 - Roster libraries/shared athlete management are not implemented yet; rosters are persisted only as race-specific rosters.
-- Checkpoint definitions, results exports, and non-selected direct-setup races remain session-state only; saved race rosters, race sessions, and split tap events are persisted after applying `003_timing_persistence.sql` and `004_race_rosters.sql`.
+- Checkpoint definitions and non-selected direct-setup races remain session-state only; saved race rosters, race sessions, split tap events, reconstructed race history, and selected-session CSV exports are available after applying `003_timing_persistence.sql` and `004_race_rosters.sql`.
 - No authentication, owner-based authorization, public sharing, parent/spectator views, realtime subscriptions, or crash recovery exists yet.
 - Development-only RLS policies must be replaced before real deployment.
 
