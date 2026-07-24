@@ -9,6 +9,7 @@ from split_tracker.calculations import generate_checkpoints
 from split_tracker.formatting import format_distance, format_duration
 from split_tracker.repository import RaceRepository, RepositoryError
 from split_tracker.results import filter_results, reconstruct_results, results_to_frame, session_label, summarize_sessions
+from split_tracker.state import cleanup_after_session_delete
 
 
 def _repo() -> RaceRepository | None:
@@ -121,6 +122,20 @@ def render() -> None:
     st.caption(f"Started: {summary.started_at or '—'} • Ended: {summary.ended_at or '—'}")
     if summary.status == "completed":
         st.info("Completed sessions open read-only here. Use Live Timing only if you intentionally need to resume or correct history; split-event history is preserved with soft deletes.")
+
+    with st.expander("Delete selected race session"):
+        st.warning(f"This will delete race session {summary.session_id} and its split events. It will not delete the race or roster.")
+        typed = st.text_input("Type DELETE SESSION to confirm", key=f"delete_session_phrase_{summary.session_id}")
+        if st.button("Delete race session", key=f"delete_session_{summary.session_id}", disabled=typed != "DELETE SESSION", use_container_width=True):
+            try:
+                if repository.delete_race_session(summary.session_id):
+                    cleanup_after_session_delete(st.session_state, summary.session_id)
+                    st.success("Race session and split events deleted.")
+                else:
+                    st.error("Race session was not found; nothing was deleted.")
+                st.rerun()
+            except RepositoryError as exc:
+                st.error(f"Could not delete race session: {exc}")
 
     try:
         session = repository.get_race_session(summary.session_id)

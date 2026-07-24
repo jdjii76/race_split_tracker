@@ -278,6 +278,21 @@ Known limitations:
 
 Recommended next task: add authenticated owner-based policies and persist full checkpoint definitions before expanding roster-library or athlete-management workflows.
 
+
+## Deletion and Cleanup Behavior
+
+Deletion follows the ownership hierarchy `meet -> races -> race_athletes` and `meet -> races -> race_sessions -> split_events`. The existing database foreign keys already use `on delete cascade` for those relationships, so no additional migration is required for this deletion phase.
+
+Supported destructive actions:
+
+- **Delete race session** from Results: deletes one selected `race_sessions` row and its `split_events`; it does not delete the race or roster.
+- **Delete race** from Meet Dashboard: deletes one race plus its roster rows, timing sessions, and split events; it does not delete the parent meet or sibling races.
+- **Delete meet** from Meet Dashboard: deletes one meet plus its races, race rosters, timing sessions, and split events; it does not delete meet templates or template races.
+- **Clear selected race roster** from Meet Setup: deletes only `race_athletes` rows for the selected race and leaves race sessions/splits intact. The UI warns when timing sessions already exist.
+- **Development/Admin cleanup** from Meet Dashboard: hidden unless `RACE_SPLIT_TRACKER_ENABLE_DEV_CLEANUP=true`; requires typing `DELETE TEST DATA`; can remove timing data, race rosters, meets/races, or all application test data while preserving templates, template races, schema objects, migrations, and Supabase configuration.
+
+Meet, race, session, roster, and cleanup actions all require explicit typed confirmation. After a successful deletion, Streamlit session-state selections and race-specific caches are cleared so deleted records are not shown until a manual refresh.
+
 ## Running the App
 
 Start the Streamlit app with:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any, Protocol
@@ -17,6 +18,9 @@ RACE_SESSION_STATUSES = {"ready", "running", "paused", "completed", "cancelled"}
 TEMPLATE_STATUSES = {"active", "archived"}
 DEFAULT_XC_TEMPLATE_NAME = "Default XC Meet"
 DEFAULT_XC_RACES = ["Boys JV", "Girls JV", "Boys Varsity", "Girls Varsity"]
+DELETE_ALL_FILTER_SENTINEL = "00000000-0000-0000-0000-000000000000"
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> datetime:
@@ -129,6 +133,7 @@ class RaceRepository(Protocol):
     def list_meets(self, *, season: str | None = None, include_archived: bool = False) -> list[Meet]: ...
     def archive_meet(self, meet_id: str) -> Meet: ...
     def delete_draft_meet(self, meet_id: str) -> bool: ...
+    def delete_meet(self, meet_id: str) -> bool: ...
     def create_race(self, race: Race) -> Race: ...
     def update_race(self, race: Race) -> Race: ...
     def get_race(self, race_id: str) -> Race | None: ...
@@ -136,9 +141,11 @@ class RaceRepository(Protocol):
     def duplicate_race(self, race_id: str) -> Race: ...
     def archive_race(self, race_id: str) -> Race: ...
     def delete_draft_race(self, race_id: str) -> bool: ...
+    def delete_race(self, race_id: str) -> bool: ...
     def list_race_athletes(self, race_id: str, *, include_inactive: bool = False) -> list[Athlete]: ...
     def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]: ...
     def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool: ...
+    def clear_race_roster(self, race_id: str) -> bool: ...
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate: ...
     def update_template(self, template: MeetTemplate) -> MeetTemplate: ...
     def get_template(self, template_id: str) -> MeetTemplate | None: ...
@@ -158,6 +165,10 @@ class RaceRepository(Protocol):
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
     def restore_split_event(self, split_event_id: str) -> SplitEvent: ...
+    def delete_race_session(self, race_session_id: str) -> bool: ...
+    def delete_all_timing_data(self) -> bool: ...
+    def delete_all_race_rosters(self) -> bool: ...
+    def delete_all_application_test_data(self) -> bool: ...
 
 
 class InMemoryRaceRepository:
@@ -203,11 +214,14 @@ class InMemoryRaceRepository:
         meet = self._require_meet(meet_id)
         if meet.status != "draft":
             return False
+        return self.delete_meet(meet_id)
+
+    def delete_meet(self, meet_id: str) -> bool:
+        if meet_id not in self.meets:
+            return False
         for race in list(self.races.values()):
             if race.meet_id == meet_id:
-                for key in [key for key in self.race_athletes if key[0] == race.id]:
-                    self.race_athletes.pop(key)
-                self.races.pop(race.id)
+                self.delete_race(race.id)
         self.meets.pop(meet_id)
         return True
 
@@ -245,8 +259,15 @@ class InMemoryRaceRepository:
         race = self._require_race(race_id)
         if race.status != "draft":
             return False
+        return self.delete_race(race_id)
+
+    def delete_race(self, race_id: str) -> bool:
+        if race_id not in self.races:
+            return False
         for key in [key for key in self.race_athletes if key[0] == race_id]:
             self.race_athletes.pop(key)
+        for session in [session for session in self.race_sessions.values() if session.race_id == race_id]:
+            self.delete_race_session(session.id)
         self.races.pop(race_id)
         return True
 
@@ -269,6 +290,13 @@ class InMemoryRaceRepository:
     def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool:
         self._require_race(race_id)
         return self.race_athletes.pop((race_id, athlete_id), None) is not None
+
+    def clear_race_roster(self, race_id: str) -> bool:
+        self._require_race(race_id)
+        keys = [key for key in self.race_athletes if key[0] == race_id]
+        for key in keys:
+            self.race_athletes.pop(key)
+        return bool(keys)
 
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate:
         saved = replace(template, created_at=template.created_at, updated_at=utc_now())
@@ -381,6 +409,34 @@ class InMemoryRaceRepository:
         saved = replace(event, is_deleted=False, updated_at=utc_now())
         self.split_events[saved.id] = saved
         return saved
+
+    def delete_race_session(self, race_session_id: str) -> bool:
+        if race_session_id not in self.race_sessions:
+            return False
+        for event_id in [event.id for event in self.split_events.values() if event.race_session_id == race_session_id]:
+            self.split_events.pop(event_id)
+        self.race_sessions.pop(race_session_id)
+        return True
+
+    def delete_all_timing_data(self) -> bool:
+        had_data = bool(self.race_sessions or self.split_events)
+        self.split_events.clear()
+        self.race_sessions.clear()
+        return had_data
+
+    def delete_all_race_rosters(self) -> bool:
+        had_data = bool(self.race_athletes)
+        self.race_athletes.clear()
+        return had_data
+
+    def delete_all_application_test_data(self) -> bool:
+        had_data = bool(self.meets or self.races or self.race_athletes or self.race_sessions or self.split_events)
+        self.split_events.clear()
+        self.race_sessions.clear()
+        self.race_athletes.clear()
+        self.races.clear()
+        self.meets.clear()
+        return had_data
 
     def _require_meet(self, meet_id: str) -> Meet:
         meet = self.get_meet(meet_id)
@@ -648,6 +704,7 @@ class SupabaseRaceRepository:
         try:
             return operation.execute()
         except Exception as exc:
+            logger.exception("Repository operation failed: %s", message)
             raise RepositoryError(message) from exc
 
     def _single(self, operation: Any, message: str) -> dict[str, Any] | None:
@@ -689,7 +746,12 @@ class SupabaseRaceRepository:
         meet = self.get_meet(meet_id)
         if meet is None or meet.status != "draft":
             return False
-        self._execute(self.client.table("meets").delete().eq("id", meet_id), "Could not delete draft meet.")
+        return self.delete_meet(meet_id)
+
+    def delete_meet(self, meet_id: str) -> bool:
+        if self.get_meet(meet_id) is None:
+            return False
+        self._execute(self.client.table("meets").delete().eq("id", meet_id), "Could not delete meet.")
         return True
 
     def create_race(self, race: Race) -> Race:
@@ -726,7 +788,12 @@ class SupabaseRaceRepository:
         race = self.get_race(race_id)
         if race is None or race.status != "draft":
             return False
-        self._execute(self.client.table("races").delete().eq("id", race_id), "Could not delete draft race.")
+        return self.delete_race(race_id)
+
+    def delete_race(self, race_id: str) -> bool:
+        if self.get_race(race_id) is None:
+            return False
+        self._execute(self.client.table("races").delete().eq("id", race_id), "Could not delete race.")
         return True
 
     def list_race_athletes(self, race_id: str, *, include_inactive: bool = False) -> list[Athlete]:
@@ -747,6 +814,13 @@ class SupabaseRaceRepository:
     def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool:
         self._execute(self.client.table("race_athletes").delete().eq("race_id", race_id).eq("athlete_id", athlete_id), "Could not delete roster athlete.")
         return True
+
+    def clear_race_roster(self, race_id: str) -> bool:
+        if self.get_race(race_id) is None:
+            return False
+        had_roster = bool(self.list_race_athletes(race_id, include_inactive=True))
+        self._execute(self.client.table("race_athletes").delete().eq("race_id", race_id), "Could not clear race roster.")
+        return had_roster
 
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate:
         saved = _template_from_row(self._single(self.client.table("meet_templates").insert(_template_to_row(template)), "Could not create template.") or _template_to_row(template))
@@ -846,6 +920,34 @@ class SupabaseRaceRepository:
         if row is None:
             raise RepositoryError("Split event not found.")
         return _split_event_from_row(row)
+
+    def delete_race_session(self, race_session_id: str) -> bool:
+        if self.get_race_session(race_session_id) is None:
+            return False
+        self._execute(self.client.table("race_sessions").delete().eq("id", race_session_id), "Could not delete race session.")
+        return True
+
+    def delete_all_timing_data(self) -> bool:
+        sessions = self._execute(self.client.table("race_sessions").select("id"), "Could not inspect timing sessions.")
+        events = self._execute(self.client.table("split_events").select("id"), "Could not inspect split events.")
+        had_data = bool(getattr(sessions, "data", []) or getattr(events, "data", []))
+        self._execute(self.client.table("race_sessions").delete().neq("id", DELETE_ALL_FILTER_SENTINEL), "Could not delete timing sessions.")
+        return had_data
+
+    def delete_all_race_rosters(self) -> bool:
+        rosters = self._execute(self.client.table("race_athletes").select("id"), "Could not inspect race rosters.")
+        had_data = bool(getattr(rosters, "data", []))
+        self._execute(self.client.table("race_athletes").delete().neq("id", DELETE_ALL_FILTER_SENTINEL), "Could not delete race rosters.")
+        return had_data
+
+    def delete_all_application_test_data(self) -> bool:
+        meets = self._execute(self.client.table("meets").select("id"), "Could not inspect meets.")
+        sessions = self._execute(self.client.table("race_sessions").select("id"), "Could not inspect timing sessions.")
+        rosters = self._execute(self.client.table("race_athletes").select("id"), "Could not inspect race rosters.")
+        had_data = bool(getattr(meets, "data", []) or getattr(sessions, "data", []) or getattr(rosters, "data", []))
+        self._execute(self.client.table("race_sessions").delete().neq("id", DELETE_ALL_FILTER_SENTINEL), "Could not delete timing sessions.")
+        self._execute(self.client.table("meets").delete().neq("id", DELETE_ALL_FILTER_SENTINEL), "Could not delete meets and races.")
+        return had_data
 
 
 def create_repository(

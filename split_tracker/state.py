@@ -238,6 +238,68 @@ def clear_setup(session_state) -> None:
     session_state.message = "Setup cleared."
 
 
+def cleanup_after_session_delete(session_state, race_session_id: str) -> None:
+    """Clear local timing/result state for a deleted race session."""
+    if session_state.get("active_race_session_id") == race_session_id:
+        session_state.active_race_session_id = None
+        reset_race(session_state)
+    if session_state.get("selected_results_session_id") == race_session_id:
+        session_state.selected_results_session_id = None
+    session_state.timing_restored_for_race_id = None
+
+
+def cleanup_after_roster_clear(session_state, race_id: str) -> None:
+    """Clear local roster cache for one race after repository deletion."""
+    session_state.setdefault("race_rosters", {})
+    session_state.race_rosters.pop(race_id, None)
+    if session_state.get("selected_race_id") == race_id:
+        session_state.athletes = []
+        refresh_all_splits(session_state)
+
+
+def cleanup_after_race_delete(session_state, race_id: str) -> None:
+    """Clear selected race state after deleting a race and its owned data."""
+    cleanup_after_roster_clear(session_state, race_id)
+    if session_state.get("selected_race_id") == race_id:
+        session_state.selected_race_id = None
+        session_state.active_race_session_id = None
+        session_state.selected_results_session_id = None
+        session_state.timing_restored_for_race_id = None
+        clear_setup(session_state)
+
+
+def cleanup_after_meet_delete(session_state, meet_id: str, race_ids: list[str] | None = None) -> None:
+    """Clear selected meet/race state after deleting a meet cascade."""
+    for race_id in race_ids or []:
+        session_state.setdefault("race_rosters", {}).pop(race_id, None)
+    if session_state.get("selected_meet_id") == meet_id:
+        session_state.selected_meet_id = None
+        session_state.selected_race_id = None
+        session_state.active_race_session_id = None
+        session_state.selected_results_session_id = None
+        session_state.timing_restored_for_race_id = None
+        clear_setup(session_state)
+
+
+def cleanup_after_test_data_delete(session_state) -> None:
+    """Clear all local app data that mirrors repository test data."""
+    session_state.race_rosters = {}
+    session_state.selected_meet_id = None
+    session_state.selected_race_id = None
+    session_state.active_race_session_id = None
+    session_state.selected_results_session_id = None
+    session_state.timing_restored_for_race_id = None
+    clear_setup(session_state)
+
+
+def cleanup_after_all_timing_delete(session_state) -> None:
+    """Clear local timing caches after deleting all persisted timing data."""
+    session_state.active_race_session_id = None
+    session_state.selected_results_session_id = None
+    session_state.timing_restored_for_race_id = None
+    reset_race(session_state)
+
+
 def initialize_persistence_state(session_state) -> None:
     """Initialize selected persisted meet/race session keys."""
     session_state.setdefault("selected_meet_id", None)
@@ -246,6 +308,7 @@ def initialize_persistence_state(session_state) -> None:
     session_state.setdefault("repository", None)
     session_state.setdefault("active_race_session_id", None)
     session_state.setdefault("timing_restored_for_race_id", None)
+    session_state.setdefault("selected_results_session_id", None)
 
 
 def _clone_athletes(athletes: list[Athlete]) -> list[Athlete]:

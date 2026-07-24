@@ -9,7 +9,7 @@ from split_tracker.calculations import TRACK_DISTANCE_PRESETS, XC_DISTANCE_PRESE
 from split_tracker.formatting import format_distance, format_duration, format_pace, parse_time_to_seconds
 from split_tracker.models import Athlete, MeetConfig
 from split_tracker.repository import RepositoryError
-from split_tracker.state import clear_setup, replace_setup, validate_setup
+from split_tracker.state import cleanup_after_roster_clear, clear_setup, replace_setup, validate_setup
 
 TRACK_PRESETS = [*TRACK_DISTANCE_PRESETS.keys(), "Custom"]
 XC_PRESETS = [*XC_DISTANCE_PRESETS.keys(), "Custom"]
@@ -225,3 +225,19 @@ def render() -> None:
                 st.switch_page(st.session_state.page_registry["live_timing"])
         except RepositoryError as exc:
             st.error(f"Roster could not be saved for this race: {exc}")
+
+    race_id = st.session_state.get("selected_race_id")
+    repository = st.session_state.get("repository")
+    if race_id and repository is not None:
+        with st.expander("Destructive roster action"):
+            session_count = len(repository.list_race_sessions_for_race(race_id))
+            st.warning(f"Clear only this race roster. This leaves the race and {session_count} timing session(s) intact.")
+            typed = st.text_input("Type CLEAR ROSTER to remove this race roster", key=f"clear_roster_phrase_{race_id}")
+            if st.button("Clear selected race roster", key=f"clear_roster_{race_id}", disabled=typed != "CLEAR ROSTER", use_container_width=True):
+                try:
+                    deleted = repository.clear_race_roster(race_id)
+                    cleanup_after_roster_clear(st.session_state, race_id)
+                    st.success("Race roster cleared." if deleted else "This race roster was already empty.")
+                    st.rerun()
+                except RepositoryError as exc:
+                    st.error(f"Race roster could not be cleared: {exc}")

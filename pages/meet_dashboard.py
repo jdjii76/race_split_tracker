@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from datetime import date
 
@@ -10,7 +11,7 @@ import streamlit as st
 
 from split_tracker.formatting import format_distance
 from split_tracker.repository import Meet, MeetTemplate, Race, RepositoryError, TemplateRace
-from split_tracker.state import load_race_into_setup
+from split_tracker.state import cleanup_after_all_timing_delete, cleanup_after_meet_delete, cleanup_after_race_delete, cleanup_after_test_data_delete, load_race_into_setup
 
 
 def _repo():
@@ -19,6 +20,10 @@ def _repo():
 
 def _handle_error(action: str, exc: Exception) -> None:
     st.error(f"{action} failed. Your form data was not discarded. {exc}")
+
+
+def _dev_cleanup_enabled() -> bool:
+    return os.environ.get("RACE_SPLIT_TRACKER_ENABLE_DEV_CLEANUP", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _storage_notice() -> None:
@@ -31,7 +36,7 @@ def _storage_notice() -> None:
         st.warning("Supabase is not configured. Meet dashboard data is temporary and will reset when this session ends.")
     else:
         st.success("Supabase storage is configured for meet and race setup metadata.")
-    st.caption("Phase 1 stores meet/race/template setup only. Rosters, checkpoints, splits, and live results remain session-only and will be added in later phases.")
+    st.caption("Phase 1 stores meets, races, race rosters, timing sessions, and split events. Checkpoint definitions and non-selected direct setup data remain session-only.")
 
 
 def _create_meet_form() -> None:
@@ -84,14 +89,18 @@ def _meet_list() -> None:
                     st.rerun()
                 except RepositoryError as exc:
                     _handle_error("Archive meet", exc)
-            confirm = c3.checkbox("Confirm delete", key=f"delete_meet_confirm_{meet.id}")
-            if c3.button("Delete draft", key=f"delete_meet_{meet.id}", disabled=meet.status != "draft" or not confirm):
+            races = _repo().list_races_for_meet(meet.id)
+            typed = c3.text_input("Type meet name to delete", key=f"delete_meet_name_{meet.id}", placeholder=meet.name)
+            if c3.button("Delete meet", key=f"delete_meet_{meet.id}", disabled=typed != meet.name):
                 try:
-                    if not _repo().delete_draft_meet(meet.id):
-                        st.error("Only draft meets can be deleted. Archive this meet instead.")
+                    if _repo().delete_meet(meet.id):
+                        cleanup_after_meet_delete(st.session_state, meet.id, [race.id for race in races])
+                        st.success(f"Deleted meet {meet.name} and its races, rosters, sessions, and split events.")
+                    else:
+                        st.error("Meet was not found; nothing was deleted.")
                     st.rerun()
                 except RepositoryError as exc:
-                    _handle_error("Delete draft meet", exc)
+                    _handle_error("Delete meet", exc)
 
 
 def _meet_detail() -> None:
@@ -171,14 +180,71 @@ def _race_management(meet: Meet) -> None:
                     st.rerun()
                 except RepositoryError as exc:
                     _handle_error("Archive race", exc)
-            confirm = c4.checkbox("Confirm delete", key=f"delete_race_confirm_{race.id}")
-            if c4.button("Delete draft", key=f"delete_race_{race.id}", disabled=race.status != "draft" or not confirm):
+            typed = c4.text_input("Type race name to delete", key=f"delete_race_name_{race.id}", placeholder=race.name)
+            if c4.button("Delete race", key=f"delete_race_{race.id}", disabled=typed != race.name):
                 try:
-                    if not _repo().delete_draft_race(race.id):
-                        st.error("Only draft races can be deleted. Archive this race instead.")
+                    if _repo().delete_race(race.id):
+                        cleanup_after_race_delete(st.session_state, race.id)
+                        st.success(f"Deleted race {race.name} and its roster, sessions, and split events.")
+                    else:
+                        st.error("Race was not found; nothing was deleted.")
                     st.rerun()
                 except RepositoryError as exc:
                     _handle_error("Delete race", exc)
+
+
+def _development_cleanup() -> None:
+    st.header("Development/Admin Cleanup")
+    if not _dev_cleanup_enabled():
+        st.info("Set RACE_SPLIT_TRACKER_ENABLE_DEV_CLEANUP=true to enable destructive development cleanup actions.")
+        return
+    st.error("Destructive development cleanup is enabled. These actions do not delete templates, template races, schema objects, migrations, or Supabase configuration.")
+    meets = _repo().list_meets(include_archived=True)
+    races = [race for meet in meets for race in _repo().list_races_for_meet(meet.id)]
+    timing_sessions = [session for race in races for session in _repo().list_race_sessions_for_race(race.id)]
+    roster_count = sum(len(_repo().list_race_athletes(race.id, include_inactive=True)) for race in races)
+    split_count = sum(len(_repo().list_all_split_events(session.id)) for session in timing_sessions)
+    st.write(
+        f"Current removable data: {len(timing_sessions)} timing session(s), {split_count} split event(s), "
+        f"{roster_count} roster row(s), {len(meets)} meet(s), and {len(races)} race(s)."
+    )
+    st.write("Type `DELETE TEST DATA` to enable cleanup buttons.")
+    phrase = st.text_input("Confirmation phrase", key="delete_test_data_phrase")
+    confirmed = phrase == "DELETE TEST DATA"
+    c1, c2, c3, c4 = st.columns(4)
+    if c1.button("Delete timing sessions + splits", disabled=not confirmed, use_container_width=True):
+        try:
+            deleted = _repo().delete_all_timing_data()
+            st.success("Deleted timing sessions and split events." if deleted else "No timing data found.")
+            cleanup_after_all_timing_delete(st.session_state)
+            st.rerun()
+        except RepositoryError as exc:
+            _handle_error("Delete timing data", exc)
+    if c2.button("Delete race rosters", disabled=not confirmed, use_container_width=True):
+        try:
+            deleted = _repo().delete_all_race_rosters()
+            st.success("Deleted all race rosters." if deleted else "No race rosters found.")
+            st.session_state.race_rosters = {}
+            st.session_state.athletes = []
+            st.rerun()
+        except RepositoryError as exc:
+            _handle_error("Delete race rosters", exc)
+    if c3.button("Delete meets + races", disabled=not confirmed, use_container_width=True):
+        try:
+            deleted = _repo().delete_all_application_test_data()
+            st.success("Deleted meets, races, rosters, sessions, and splits." if deleted else "No meet/race test data found.")
+            cleanup_after_test_data_delete(st.session_state)
+            st.rerun()
+        except RepositoryError as exc:
+            _handle_error("Delete meets and races", exc)
+    if c4.button("Delete all app test data", disabled=not confirmed, use_container_width=True):
+        try:
+            deleted = _repo().delete_all_application_test_data()
+            st.success("Deleted all application test data while preserving templates." if deleted else "No application test data found.")
+            cleanup_after_test_data_delete(st.session_state)
+            st.rerun()
+        except RepositoryError as exc:
+            _handle_error("Delete app test data", exc)
 
 
 def _templates() -> None:
@@ -239,10 +305,12 @@ def render() -> None:
     _storage_notice()
     if _repo() is None:
         st.stop()
-    tab_meets, tab_templates = st.tabs(["Meets", "Templates"])
+    tab_meets, tab_templates, tab_admin = st.tabs(["Meets", "Templates", "Development/Admin"])
     with tab_meets:
         _create_meet_form()
         _meet_list()
         _meet_detail()
     with tab_templates:
         _templates()
+    with tab_admin:
+        _development_cleanup()
