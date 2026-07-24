@@ -7,6 +7,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Mapping, Literal
 
+from streamlit.errors import StreamlitSecretNotFoundError
+
 ConfigSource = Literal["streamlit_secrets", "environment", "missing", "mixed"]
 
 
@@ -52,11 +54,11 @@ def _strip(value: object) -> str | None:
 def _mapping_get(mapping: object, key: str) -> object | None:
     if mapping is None:
         return None
-    if isinstance(mapping, Mapping):
-        return mapping.get(key)
     try:
+        if isinstance(mapping, Mapping):
+            return mapping.get(key)
         return mapping[key]  # type: ignore[index]
-    except Exception:
+    except (KeyError, TypeError, StreamlitSecretNotFoundError):
         return None
 
 

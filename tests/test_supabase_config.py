@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from types import SimpleNamespace
+
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from split_tracker.config import SupabaseConfig, load_supabase_config
 from split_tracker.supabase_client import create_supabase_connection
@@ -11,6 +14,22 @@ SECRET_URL = "https://secret-project.supabase.com"
 SECRET_KEY = "sb_publishable_secret_value"
 ENV_URL = "https://env-project.supabase.com"
 ENV_KEY = "sb_publishable_env_value"
+
+
+class MissingStreamlitSecrets(Mapping[str, object]):
+    """Match Streamlit's mapping behavior when no secrets file exists."""
+
+    def __getitem__(self, key: str) -> object:
+        raise StreamlitSecretNotFoundError("No secrets file was found.")
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+    def get(self, key: str, default: object = None) -> object:
+        raise StreamlitSecretNotFoundError("No secrets file was found.")
 
 
 def test_loads_supabase_configuration_from_environment(monkeypatch):
@@ -32,6 +51,25 @@ def test_missing_configuration_returns_status_without_crashing():
 
     assert not config.is_configured
     assert config.status() == {"configured": False, "source": "missing", "missing_fields": ("url", "key")}
+
+
+def test_missing_streamlit_secrets_file_returns_unconfigured_status():
+    config = load_supabase_config(secrets=MissingStreamlitSecrets(), environ={})
+
+    assert not config.is_configured
+    assert config.status() == {"configured": False, "source": "missing", "missing_fields": ("url", "key")}
+
+
+def test_environment_is_used_when_streamlit_secrets_file_is_missing():
+    config = load_supabase_config(
+        secrets=MissingStreamlitSecrets(),
+        environ={"SUPABASE_URL": ENV_URL, "SUPABASE_KEY": ENV_KEY},
+    )
+
+    assert config.is_configured
+    assert config.url == ENV_URL
+    assert config.key == ENV_KEY
+    assert config.source == "environment"
 
 
 def test_streamlit_secrets_are_preferred_over_environment(monkeypatch):
