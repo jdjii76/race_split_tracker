@@ -132,6 +132,8 @@ def render() -> None:
     """Render the meet setup page."""
     st.title("Meet Setup")
     st.caption("Configure the race, checkpoints, and roster before moving to live timing.")
+    if st.session_state.get("selected_race_id"):
+        st.info("Loaded from a saved race. Phase 1 persists meet/race metadata only; roster, checkpoints, splits, and results remain session-only.")
 
     saved_config: MeetConfig = st.session_state.meet_config
     course_type = st.radio("Race type", ["Track", "Cross Country"], index=0 if saved_config.course_type == "Track" else 1, horizontal=True)

@@ -56,7 +56,7 @@ def _mapping_get(mapping: object, key: str) -> object | None:
         return mapping.get(key)
     try:
         return mapping[key]  # type: ignore[index]
-    except (KeyError, TypeError, AttributeError):
+    except Exception:
         return None
 
 

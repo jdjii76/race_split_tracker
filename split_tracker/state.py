@@ -235,3 +235,41 @@ def clear_setup(session_state) -> None:
     reset_race(session_state)
     session_state.setup_saved = False
     session_state.message = "Setup cleared."
+
+
+def initialize_persistence_state(session_state) -> None:
+    """Initialize selected persisted meet/race session keys."""
+    session_state.setdefault("selected_meet_id", None)
+    session_state.setdefault("selected_race_id", None)
+    session_state.setdefault("repository_result", None)
+    session_state.setdefault("repository", None)
+
+
+def load_race_into_setup(session_state, meet, race) -> None:
+    """Load persisted meet/race metadata into the existing setup workflow.
+
+    Phase 1 intentionally does not persist athletes, checkpoints, splits, or results.
+    """
+    from split_tracker.calculations import generate_checkpoints
+    from split_tracker.formatting import format_distance
+    from split_tracker.models import MeetConfig
+
+    checkpoints = generate_checkpoints(
+        race_distance_meters=race.distance_meters,
+        mode=race.checkpoint_mode or "Standard laps",
+        interval_meters=400.0 if race.course_type == "Track" else 1609.344,
+    )
+    session_state.selected_meet_id = meet.id
+    session_state.selected_race_id = race.id
+    session_state.meet_config = MeetConfig(
+        meet_name=meet.name,
+        race_name=race.name,
+        course_type=race.course_type or "Cross Country",
+        race_distance_meters=race.distance_meters,
+        race_distance_label=format_distance(race.distance_meters),
+        checkpoint_mode=race.checkpoint_mode or "Standard laps",
+        checkpoint_interval_meters=400.0 if race.course_type == "Track" else 1609.344,
+        checkpoints=checkpoints,
+    )
+    session_state.setup_saved = True
+    session_state.message = "Loaded saved race setup. Roster, checkpoints, and live results still use session state in this phase."

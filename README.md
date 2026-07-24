@@ -62,10 +62,14 @@ race_split_tracker/
 ├── app.py
 ├── requirements.txt
 ├── AGENTS.md
+├── supabase/
+│   └── migrations/
+│       └── 001_initial_schema.sql
 ├── README.md
 ├── pages/
 │   ├── __init__.py
 │   ├── live_timing.py
+│   ├── meet_dashboard.py
 │   ├── meet_setup.py
 │   └── results.py
 ├── split_tracker/
@@ -74,12 +78,14 @@ race_split_tracker/
 │   ├── config.py
 │   ├── formatting.py
 │   ├── models.py
+│   ├── repository.py
 │   ├── state.py
 │   └── supabase_client.py
 └── tests/
     ├── test_calculations.py
     ├── test_formatting.py
     ├── test_navigation.py
+    ├── test_repository.py
     ├── test_state.py
     └── test_supabase_config.py
 ```
@@ -130,6 +136,69 @@ export SUPABASE_KEY="your-publishable-key"
 Configuration lookup order is Streamlit secrets first, then environment variables. Missing Supabase configuration does not crash the application; client creation is skipped until both values are present.
 
 Do not commit `.streamlit/secrets.toml`, `.env`, service-role keys, database passwords, or any real Supabase credentials.
+
+
+## Phase 1 Persistence Architecture
+
+Phase 1 adds meet/race/template persistence for pre-meet planning while preserving the existing session-state timing workflow. Streamlit pages use a repository abstraction instead of directly querying Supabase.
+
+Repository components:
+
+- `RaceRepository`: protocol for meet, race, and template operations.
+- `InMemoryRaceRepository`: temporary fallback used when Supabase credentials are missing.
+- `SupabaseRaceRepository`: Supabase-backed implementation for meet/race/template setup metadata.
+- Repository factory: uses Supabase only when configuration is valid and a client can be created. If configuration is missing, it clearly reports temporary storage. If Supabase is configured but unavailable, it reports an error instead of silently falling back.
+
+Phase 1 persists only:
+
+- Meets
+- Races
+- Meet templates
+- Template race definitions
+
+Phase 1 does **not** persist athletes, checkpoints, live splits, results, crash recovery state, authentication data, parent views, public sharing, or realtime subscriptions.
+
+## Database Schema
+
+The initial schema is in `supabase/migrations/001_initial_schema.sql` and creates:
+
+- `meets`
+- `races`
+- `meet_templates`
+- `template_races`
+
+The migration uses UUID primary keys, UTC timestamps, foreign keys, status check constraints, distance checks, and indexes for meet dates, seasons, race ordering, and template race ordering. Row Level Security is enabled on all four tables.
+
+> **Development-only RLS warning:** the migration includes clearly marked development-only policies that allow the publishable/anon role to read and write these tables. Replace these policies with authenticated owner-based policies before public deployment or storing real athlete data. Never use service-role keys in the client app.
+
+### Running the Supabase Migration
+
+1. Open your Supabase project.
+2. Go to **SQL Editor**.
+3. Open `supabase/migrations/001_initial_schema.sql` locally.
+4. Copy the full SQL into the Supabase SQL Editor.
+5. Run the script.
+6. Confirm these tables exist in the Table Editor: `meets`, `races`, `meet_templates`, and `template_races`.
+7. Confirm indexes exist for `meets.meet_date`, `meets.season`, `races(meet_id, display_order)`, and `template_races(template_id, display_order)`.
+
+## Meet Dashboard and Templates
+
+The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the existing Meet Setup workflow.
+
+The Templates section includes an idempotently seeded default XC meet template containing Boys JV, Girls JV, Boys Varsity, and Girls Varsity races. Each default XC race is 5000 meters. Coaches can create and edit custom templates, archive templates, and create a new meet from a template without generating timing data or results.
+
+When Supabase configuration is missing, the dashboard still works with temporary in-memory storage and displays a warning that meet data resets when the session ends.
+
+## Known Limitations and Next Phases
+
+Known limitations:
+
+- Roster libraries are not persisted yet.
+- Checkpoints, splits, live timing state, results, and exports remain session-state only.
+- No authentication, owner-based authorization, public sharing, parent/spectator views, realtime subscriptions, or crash recovery exists yet.
+- Development-only RLS policies must be replaced before real deployment.
+
+Recommended next task: add authenticated owner-based policies and persist race rosters/checkpoint definitions before persisting live splits.
 
 ## Running the App
 
