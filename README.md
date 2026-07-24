@@ -71,13 +71,17 @@ race_split_tracker/
 ├── split_tracker/
 │   ├── __init__.py
 │   ├── calculations.py
+│   ├── config.py
 │   ├── formatting.py
 │   ├── models.py
-│   └── state.py
+│   ├── state.py
+│   └── supabase_client.py
 └── tests/
     ├── test_calculations.py
     ├── test_formatting.py
-    └── test_state.py
+    ├── test_navigation.py
+    ├── test_state.py
+    └── test_supabase_config.py
 ```
 
 ## Installation
@@ -96,6 +100,36 @@ pip install -r requirements.txt
 ```
 
 If your system uses `python` for Python 3.11 or newer, you can substitute `python` for `python3.11`.
+
+
+## Optional Supabase Configuration
+
+Supabase support is currently configuration-only. The app can load Supabase credentials and construct a client when both values are available, but it does not create tables, run migrations, authenticate users, or persist race data yet.
+
+Create a local secrets file from the checked-in template:
+
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+```
+
+Edit `.streamlit/secrets.toml` and place your Supabase project URL and publishable key under the `supabase` section:
+
+```toml
+[supabase]
+url = "https://your-project-id.supabase.com"
+key = "your-publishable-key"
+```
+
+You can also configure the same values with environment variables instead of Streamlit secrets:
+
+```bash
+export SUPABASE_URL="https://your-project-id.supabase.com"
+export SUPABASE_KEY="your-publishable-key"
+```
+
+Configuration lookup order is Streamlit secrets first, then environment variables. Missing Supabase configuration does not crash the application; client creation is skipped until both values are present.
+
+Do not commit `.streamlit/secrets.toml`, `.env`, service-role keys, database passwords, or any real Supabase credentials.
 
 ## Running the App
 
