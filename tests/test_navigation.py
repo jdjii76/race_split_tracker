@@ -16,7 +16,7 @@ def _keyword_value(call: ast.Call, keyword_name: str):
 
 
 def test_streamlit_pages_have_unique_url_paths_and_meet_setup_default():
-    tree = ast.parse((ROOT / "app.py").read_text())
+    tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
     page_calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "Page"]
 
     url_paths = [ast.literal_eval(_keyword_value(call, "url_path")) for call in page_calls]
@@ -30,7 +30,7 @@ def test_streamlit_pages_have_unique_url_paths_and_meet_setup_default():
 
 def test_callable_page_switches_use_registered_page_objects_not_file_paths():
     for relative_path in ["pages/meet_setup.py", "pages/live_timing.py"]:
-        tree = ast.parse((ROOT / relative_path).read_text())
+        tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
         switch_calls = [
             node
             for node in ast.walk(tree)
