@@ -12,6 +12,7 @@ from split_tracker.calculations import athlete_finished
 from split_tracker.formatting import format_duration, format_pace
 from split_tracker.models import Athlete, Checkpoint, SplitRecord
 from split_tracker.repository import RaceRepository, RaceSession, SplitEvent
+from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.timing_persistence import persisted_elapsed_seconds, rebuild_splits_from_events
 
 
@@ -49,8 +50,10 @@ def summarize_sessions(
     summaries: list[SessionSummary] = []
     for session in repository.list_race_sessions_for_race(race_id):
         events = repository.list_active_split_events(session.id)
-        splits = rebuild_splits_from_events(events=events, athletes=athletes, config=_config_stub(checkpoints, race_distance_meters))
-        finished = _finished_athlete_count(splits, checkpoints)
+        checkpoint_result = get_session_checkpoints(repository, session, checkpoints)
+        session_checkpoints = checkpoint_result.checkpoints
+        splits = rebuild_splits_from_events(events=events, athletes=athletes, config=_config_stub(session_checkpoints, race_distance_meters))
+        finished = _finished_athlete_count(splits, session_checkpoints)
         summaries.append(
             SessionSummary(
                 session_id=session.id,

@@ -252,9 +252,27 @@ The visible race clock still updates locally from `time.perf_counter()`. Supabas
 Assumptions for this phase: athlete IDs come from the selected race roster. If a persisted split references a runner that is no longer in that roster, the event's stored name/bib are used to reconstruct a visible split. Checkpoint persistence is not added yet, so restored split records use the currently loaded race checkpoint configuration.
 
 
+
+## Session Checkpoint Snapshots
+
+The `supabase/migrations/005_race_session_checkpoints.sql` migration adds immutable checkpoint snapshots for each race session. When a saved race session starts, the app copies the current generated checkpoints into `race_session_checkpoints` before marking the session running. Those snapshot rows are then the authoritative checkpoint source for Live Timing restoration, historical result reconstruction, missing-split detection, finish detection, and CSV exports.
+
+Snapshot fields include race session ID, checkpoint sequence, label, distance in meters, distance unit, optional lap number, checkpoint type, optional source checkpoint reference, finish flag, and created timestamp. A unique `(race_session_id, checkpoint_sequence)` constraint prevents duplicate checkpoint rows during retries or concurrent starts. Deleting a race session cascades to its checkpoint snapshot rows.
+
+### Applying the Checkpoint Snapshot Migration
+
+1. Apply `supabase/migrations/001_initial_schema.sql` if needed.
+2. Apply `supabase/migrations/003_timing_persistence.sql` if needed.
+3. Apply `supabase/migrations/004_race_rosters.sql` if needed.
+4. Open your Supabase project SQL Editor.
+5. Copy and run `supabase/migrations/005_race_session_checkpoints.sql`.
+6. Confirm the `race_session_checkpoints` table exists with its unique session/sequence constraint, session-order index, RLS enabled, and development-only anon policy.
+
+Legacy sessions created before this migration may not have checkpoint snapshots. To avoid fabricating historical data from a race configuration that may have changed, read-only result paths use an isolated legacy fallback to the current generated checkpoints and clearly warn the coach when that fallback is used. New sessions always create snapshots at start.
+
 ## Race History and Reconstructed Results
 
-The Results page can reopen saved race sessions for a selected meet and race. It lists each timing session with status, start/end timestamps, duration, active split count, and finisher count. Selecting a session reconstructs results from the selected race roster, generated checkpoint configuration, and active `split_events`; soft-deleted split events are excluded from normal result calculations.
+The Results page can reopen saved race sessions for a selected meet and race. It lists each timing session with status, start/end timestamps, duration, active split count, and finisher count. Selecting a session reconstructs results from the selected race roster, the persisted race-session checkpoint snapshot, and active `split_events`; soft-deleted split events are excluded from normal result calculations.
 
 Result reconstruction reuses the existing split-calculation path so checkpoint segment splits, cumulative times, finish times, and average pace are derived consistently with Live Timing. Athlete name and bib snapshots stored on split events are used when an event references an athlete that is no longer present in the current race roster.
 
@@ -272,11 +290,11 @@ The CSV download on Results exports the selected race session with stable column
 Known limitations:
 
 - Roster libraries/shared athlete management are not implemented yet; rosters are persisted only as race-specific rosters.
-- Checkpoint definitions and non-selected direct-setup races remain session-state only; saved race rosters, race sessions, split tap events, reconstructed race history, and selected-session CSV exports are available after applying `003_timing_persistence.sql` and `004_race_rosters.sql`.
+- Non-selected direct-setup races remain session-state only; saved race rosters, race sessions, race-session checkpoint snapshots, split tap events, reconstructed race history, and selected-session CSV exports are available after applying `003_timing_persistence.sql`, `004_race_rosters.sql`, and `005_race_session_checkpoints.sql`.
 - No authentication, owner-based authorization, public sharing, parent/spectator views, realtime subscriptions, or crash recovery exists yet.
 - Development-only RLS policies must be replaced before real deployment.
 
-Recommended next task: add authenticated owner-based policies and persist full checkpoint definitions before expanding roster-library or athlete-management workflows.
+Recommended next task: add authenticated owner-based policies and backfill/verify checkpoint snapshots for any important legacy sessions before expanding roster-library or athlete-management workflows.
 
 
 ## Deletion and Cleanup Behavior

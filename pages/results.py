@@ -9,6 +9,7 @@ from split_tracker.calculations import generate_checkpoints
 from split_tracker.formatting import format_distance, format_duration
 from split_tracker.repository import RaceRepository, RepositoryError
 from split_tracker.results import filter_results, reconstruct_results, results_to_frame, session_label, summarize_sessions
+from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.state import cleanup_after_session_delete
 
 
@@ -142,12 +143,16 @@ def render() -> None:
         if session is None:
             st.error("Selected race session could not be found.")
             return
+        checkpoint_result = get_session_checkpoints(repository, session, checkpoints)
         events = repository.list_active_split_events(session.id)
     except RepositoryError as exc:
         st.error(f"Could not load split events: {exc}")
         return
 
-    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoints, race_distance_meters=race.distance_meters, events=events)
+    if checkpoint_result.source == "legacy_fallback":
+        st.warning("This legacy race session has no persisted checkpoint snapshot, so results use the current generated race checkpoints as an isolated fallback.")
+
+    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events)
     if not rows:
         st.info("This session has no roster or split events to reconstruct.")
         return

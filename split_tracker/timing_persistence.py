@@ -11,6 +11,7 @@ from uuid import uuid4
 from split_tracker.calculations import build_split_record, recalculate_athlete_splits
 from split_tracker.models import Athlete, MeetConfig, RaceClock, SplitRecord
 from split_tracker.repository import RaceRepository, RaceSession, RepositoryError, SplitEvent
+from split_tracker.session_checkpoints import get_session_checkpoints
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,10 @@ def refresh_splits_from_repository(session_state) -> None:
     if repository is None or not race_session_id:
         return
     events = repository.list_active_split_events(race_session_id)
+    race_session = repository.get_race_session(race_session_id)
+    if race_session is not None:
+        checkpoint_result = get_session_checkpoints(repository, race_session, session_state.meet_config.checkpoints)
+        session_state.meet_config.checkpoints = checkpoint_result.checkpoints
     session_state.splits = rebuild_splits_from_events(events=events, athletes=session_state.athletes, config=session_state.meet_config)
     session_state.split_sequence = max([event.event_order for event in repository.list_all_split_events(race_session_id)] or [0])
 
@@ -120,7 +125,10 @@ def persist_start(session_state, *, now_perf: float | None = None, now_utc: date
     if repository is None or not race_id:
         return None
     current = utc_now() if now_utc is None else now_utc
-    session = repository.create_race_session(RaceSession(race_id=race_id, status="running", started_at=current, elapsed_offset_seconds=0.0))
+    session = repository.create_started_race_session_with_checkpoints(
+        RaceSession(race_id=race_id, status="running", started_at=current, elapsed_offset_seconds=0.0),
+        session_state.meet_config.checkpoints,
+    )
     session_state.active_race_session_id = session.id
     return session
 

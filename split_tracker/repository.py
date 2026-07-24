@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from split_tracker.config import load_supabase_config
-from split_tracker.models import Athlete
+from split_tracker.models import Athlete, Checkpoint
 from split_tracker.supabase_client import SupabaseConnectionResult, create_supabase_connection
 
 MEET_STATUSES = {"draft", "active", "upcoming", "completed", "archived"}
@@ -112,6 +112,21 @@ class SplitEvent:
 
 
 @dataclass(frozen=True)
+class RaceSessionCheckpoint:
+    race_session_id: str
+    checkpoint_sequence: int
+    label: str
+    distance_meters: float
+    id: str = field(default_factory=lambda: str(uuid4()))
+    distance_unit: str = "meters"
+    lap_number: int | None = None
+    checkpoint_type: str = "split"
+    source_checkpoint_id: str = ""
+    is_finish: bool = False
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
 class RepositoryFactoryResult:
     repository: "RaceRepository | None"
     storage_label: str
@@ -156,6 +171,7 @@ class RaceRepository(Protocol):
     def seed_default_xc_template(self) -> MeetTemplate: ...
 
     def create_race_session(self, session: RaceSession) -> RaceSession: ...
+    def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def get_race_session(self, race_session_id: str) -> RaceSession | None: ...
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None: ...
     def update_race_session(self, session: RaceSession) -> RaceSession: ...
@@ -169,6 +185,8 @@ class RaceRepository(Protocol):
     def delete_all_timing_data(self) -> bool: ...
     def delete_all_race_rosters(self) -> bool: ...
     def delete_all_application_test_data(self) -> bool: ...
+    def create_race_session_checkpoints(self, race_session_id: str, checkpoints: list[Checkpoint]) -> list[RaceSessionCheckpoint]: ...
+    def list_race_session_checkpoints(self, race_session_id: str) -> list[RaceSessionCheckpoint]: ...
 
 
 class InMemoryRaceRepository:
@@ -181,6 +199,7 @@ class InMemoryRaceRepository:
         self.template_races: dict[str, TemplateRace] = {}
         self.race_sessions: dict[str, RaceSession] = {}
         self.split_events: dict[str, SplitEvent] = {}
+        self.race_session_checkpoints: dict[tuple[str, int], RaceSessionCheckpoint] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
 
     def create_meet(self, meet: Meet) -> Meet:
@@ -365,6 +384,19 @@ class InMemoryRaceRepository:
         self.race_sessions[saved.id] = saved
         return saved
 
+    def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession:
+        if not checkpoints:
+            raise RepositoryError("At least one checkpoint is required to start a race session.")
+        draft = replace(session, status="ready")
+        saved = self.create_race_session(draft)
+        try:
+            self.create_race_session_checkpoints(saved.id, checkpoints)
+            started = self.update_race_session(replace(saved, status=session.status, started_at=session.started_at, elapsed_offset_seconds=session.elapsed_offset_seconds))
+            return started
+        except Exception:
+            self.delete_race_session(saved.id)
+            raise
+
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         return self.race_sessions.get(race_session_id)
 
@@ -410,17 +442,51 @@ class InMemoryRaceRepository:
         self.split_events[saved.id] = saved
         return saved
 
+    def create_race_session_checkpoints(self, race_session_id: str, checkpoints: list[Checkpoint]) -> list[RaceSessionCheckpoint]:
+        if race_session_id not in self.race_sessions:
+            raise RepositoryError("Race session not found.")
+        existing = self.list_race_session_checkpoints(race_session_id)
+        if existing:
+            return existing
+        seen: set[int] = set()
+        snapshots: list[RaceSessionCheckpoint] = []
+        for checkpoint in checkpoints:
+            if checkpoint.number in seen:
+                raise RepositoryError("Duplicate checkpoint sequence for race session.")
+            seen.add(checkpoint.number)
+            snapshot = RaceSessionCheckpoint(
+                race_session_id=race_session_id,
+                checkpoint_sequence=checkpoint.number,
+                label=checkpoint.label,
+                distance_meters=checkpoint.distance_meters,
+                checkpoint_type="finish" if checkpoint.is_finish else _checkpoint_type_from_label(checkpoint.label),
+                is_finish=checkpoint.is_finish,
+            )
+            snapshots.append(snapshot)
+        for snapshot in snapshots:
+            self.race_session_checkpoints[(race_session_id, snapshot.checkpoint_sequence)] = snapshot
+        return self.list_race_session_checkpoints(race_session_id)
+
+    def list_race_session_checkpoints(self, race_session_id: str) -> list[RaceSessionCheckpoint]:
+        return sorted(
+            [checkpoint for (session_id, _), checkpoint in self.race_session_checkpoints.items() if session_id == race_session_id],
+            key=lambda checkpoint: (checkpoint.checkpoint_sequence, checkpoint.id),
+        )
+
     def delete_race_session(self, race_session_id: str) -> bool:
         if race_session_id not in self.race_sessions:
             return False
         for event_id in [event.id for event in self.split_events.values() if event.race_session_id == race_session_id]:
             self.split_events.pop(event_id)
+        for key in [key for key in self.race_session_checkpoints if key[0] == race_session_id]:
+            self.race_session_checkpoints.pop(key)
         self.race_sessions.pop(race_session_id)
         return True
 
     def delete_all_timing_data(self) -> bool:
-        had_data = bool(self.race_sessions or self.split_events)
+        had_data = bool(self.race_sessions or self.split_events or self.race_session_checkpoints)
         self.split_events.clear()
+        self.race_session_checkpoints.clear()
         self.race_sessions.clear()
         return had_data
 
@@ -430,8 +496,9 @@ class InMemoryRaceRepository:
         return had_data
 
     def delete_all_application_test_data(self) -> bool:
-        had_data = bool(self.meets or self.races or self.race_athletes or self.race_sessions or self.split_events)
+        had_data = bool(self.meets or self.races or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints)
         self.split_events.clear()
+        self.race_session_checkpoints.clear()
         self.race_sessions.clear()
         self.race_athletes.clear()
         self.races.clear()
@@ -661,6 +728,72 @@ def _split_event_from_row(row: dict[str, Any]) -> SplitEvent:
     )
 
 
+def _checkpoint_type_from_label(label: str) -> str:
+    lowered = label.lower()
+    if lowered == "finish":
+        return "finish"
+    if "mile" in lowered:
+        return "mile"
+    if lowered.endswith("k"):
+        return "kilometer"
+    if "lap" in lowered:
+        return "lap"
+    return "split"
+
+
+def _session_checkpoint_to_row(snapshot: RaceSessionCheckpoint) -> dict[str, Any]:
+    return {
+        "id": snapshot.id,
+        "race_session_id": snapshot.race_session_id,
+        "checkpoint_sequence": snapshot.checkpoint_sequence,
+        "label": snapshot.label,
+        "distance_meters": snapshot.distance_meters,
+        "distance_unit": snapshot.distance_unit,
+        "lap_number": snapshot.lap_number,
+        "checkpoint_type": snapshot.checkpoint_type,
+        "source_checkpoint_id": snapshot.source_checkpoint_id or None,
+        "is_finish": snapshot.is_finish,
+        "created_at": snapshot.created_at.isoformat(),
+    }
+
+
+def _session_checkpoint_from_row(row: dict[str, Any]) -> RaceSessionCheckpoint:
+    return RaceSessionCheckpoint(
+        id=str(row["id"]),
+        race_session_id=str(row["race_session_id"]),
+        checkpoint_sequence=int(row["checkpoint_sequence"]),
+        label=str(row["label"]),
+        distance_meters=float(row["distance_meters"]),
+        distance_unit=row.get("distance_unit") or "meters",
+        lap_number=int(row["lap_number"]) if row.get("lap_number") is not None else None,
+        checkpoint_type=row.get("checkpoint_type") or "split",
+        source_checkpoint_id=row.get("source_checkpoint_id") or "",
+        is_finish=bool(row.get("is_finish")),
+        created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+    )
+
+
+def _session_checkpoint_from_checkpoint(race_session_id: str, checkpoint: Checkpoint) -> RaceSessionCheckpoint:
+    return RaceSessionCheckpoint(
+        race_session_id=race_session_id,
+        checkpoint_sequence=checkpoint.number,
+        label=checkpoint.label,
+        distance_meters=checkpoint.distance_meters,
+        checkpoint_type="finish" if checkpoint.is_finish else _checkpoint_type_from_label(checkpoint.label),
+        is_finish=checkpoint.is_finish,
+    )
+
+
+def _session_checkpoint_rpc_payload(checkpoint: Checkpoint) -> dict[str, Any]:
+    snapshot = _session_checkpoint_from_checkpoint("", checkpoint)
+    row = _session_checkpoint_to_row(snapshot)
+    return {
+        key: value
+        for key, value in row.items()
+        if key not in {"id", "race_session_id", "created_at"}
+    }
+
+
 def _athlete_to_row(race_id: str, athlete: Athlete, display_order: int | None = None) -> dict[str, Any]:
     return {
         "race_id": race_id,
@@ -874,6 +1007,27 @@ class SupabaseRaceRepository:
         row = self._single(self.client.table("race_sessions").insert(_race_session_to_row(session)), "Could not create race session.")
         return _race_session_from_row(row or _race_session_to_row(session))
 
+    def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession:
+        if not checkpoints:
+            raise RepositoryError("At least one checkpoint is required to start a race session.")
+        result = self._execute(
+            self.client.rpc(
+                "create_started_race_session_with_checkpoints",
+                {
+                    "p_session_id": session.id,
+                    "p_race_id": session.race_id,
+                    "p_started_at": _to_iso(session.started_at),
+                    "p_elapsed_offset_seconds": session.elapsed_offset_seconds,
+                    "p_checkpoints": [_session_checkpoint_rpc_payload(checkpoint) for checkpoint in checkpoints],
+                },
+            ),
+            "Could not create started race session with checkpoint snapshot.",
+        )
+        data = getattr(result, "data", [])
+        if not data:
+            raise RepositoryError("Could not create started race session with checkpoint snapshot.")
+        return _race_session_from_row(data[0])
+
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         row = self._single(self.client.table("race_sessions").select("*").eq("id", race_session_id), "Could not load race session.")
         return _race_session_from_row(row) if row else None
@@ -920,6 +1074,23 @@ class SupabaseRaceRepository:
         if row is None:
             raise RepositoryError("Split event not found.")
         return _split_event_from_row(row)
+
+    def create_race_session_checkpoints(self, race_session_id: str, checkpoints: list[Checkpoint]) -> list[RaceSessionCheckpoint]:
+        if self.get_race_session(race_session_id) is None:
+            raise RepositoryError("Race session not found.")
+        existing = self.list_race_session_checkpoints(race_session_id)
+        if existing:
+            return existing
+        rows = [_session_checkpoint_to_row(_session_checkpoint_from_checkpoint(race_session_id, checkpoint)) for checkpoint in checkpoints]
+        self._execute(self.client.table("race_session_checkpoints").insert(rows), "Could not create race session checkpoint snapshot.")
+        return self.list_race_session_checkpoints(race_session_id)
+
+    def list_race_session_checkpoints(self, race_session_id: str) -> list[RaceSessionCheckpoint]:
+        result = self._execute(
+            self.client.table("race_session_checkpoints").select("*").eq("race_session_id", race_session_id).order("checkpoint_sequence", desc=False),
+            "Could not list race session checkpoint snapshot.",
+        )
+        return [_session_checkpoint_from_row(row) for row in getattr(result, "data", [])]
 
     def delete_race_session(self, race_session_id: str) -> bool:
         if self.get_race_session(race_session_id) is None:
