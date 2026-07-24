@@ -142,13 +142,13 @@ Do not commit `.streamlit/secrets.toml`, `.env`, service-role keys, database pas
 
 ## Phase 1 Persistence Architecture
 
-Phase 1 adds meet/race/template persistence for pre-meet planning while preserving the existing session-state timing workflow. Streamlit pages use a repository abstraction instead of directly querying Supabase.
+Phase 1 adds meet/race/template persistence, race-scoped roster persistence, and live timing-session persistence while preserving the existing Streamlit workflow. Streamlit pages use a repository abstraction instead of directly querying Supabase.
 
 Repository components:
 
-- `RaceRepository`: protocol for meet, race, and template operations.
+- `RaceRepository`: protocol for meet, race, roster, timing-session, split-event, and template operations.
 - `InMemoryRaceRepository`: temporary fallback used when Supabase credentials are missing.
-- `SupabaseRaceRepository`: Supabase-backed implementation for meet/race/template setup metadata.
+- `SupabaseRaceRepository`: Supabase-backed implementation for meet/race/template setup metadata, race rosters, race sessions, and split events.
 - Repository factory: uses Supabase only when configuration is valid and a client can be created. If configuration is missing, it clearly reports temporary storage. If Supabase is configured but unavailable, it reports an error instead of silently falling back.
 
 Phase 1 persists only:
@@ -157,8 +157,10 @@ Phase 1 persists only:
 - Races
 - Meet templates
 - Template race definitions
+- Race-specific athlete rosters
+- Race timing sessions and split tap events
 
-Phase 1 does **not** persist athletes, checkpoints, live splits, results, crash recovery state, authentication data, parent views, public sharing, or realtime subscriptions.
+Phase 1 does **not** persist checkpoint definitions beyond the race checkpoint mode, results exports, authentication data, parent views, public sharing, or realtime subscriptions.
 
 ## Database Schema
 
@@ -169,7 +171,7 @@ The initial schema is in `supabase/migrations/001_initial_schema.sql` and create
 - `meet_templates`
 - `template_races`
 
-The migration uses UUID primary keys, UTC timestamps, foreign keys, status check constraints, distance checks, and indexes for meet dates, seasons, race ordering, and template race ordering. Row Level Security is enabled on all four tables.
+The migration uses UUID primary keys, UTC timestamps, foreign keys, status check constraints, distance checks, and indexes for meet dates, seasons, race ordering, and template race ordering. Row Level Security is enabled on all four tables. Additional phase migrations add live timing and race roster tables.
 
 > **Development-only RLS warning:** the migration includes clearly marked development-only policies that allow the publishable/anon role to read and write these tables. Replace these policies with authenticated owner-based policies before public deployment or storing real athlete data. Never use service-role keys in the client app.
 
@@ -191,6 +193,25 @@ The Templates section includes an idempotently seeded default XC meet template c
 
 When Supabase configuration is missing, the dashboard still works with temporary in-memory storage and displays a warning that meet data resets when the session ends.
 
+
+## Race-Scoped Rosters
+
+The `supabase/migrations/004_race_rosters.sql` migration adds `race_athletes`, which stores one roster per persisted race. Each row is keyed to `race_id`, so duplicate bib numbers are allowed across different races but remain unique within the same race when entered. The roster stores athlete name, bib number, gender, grade, team, target finish time, target pace, group/category, display order, and active status.
+
+### Applying the Roster Migration
+
+1. Apply `supabase/migrations/001_initial_schema.sql` first if it has not already been applied.
+2. Apply `supabase/migrations/003_timing_persistence.sql` if live timing persistence is enabled.
+3. Open your Supabase project.
+4. Go to **SQL Editor**.
+5. Open `supabase/migrations/004_race_rosters.sql` locally.
+6. Copy the full SQL into the Supabase SQL Editor.
+7. Run the script.
+8. Confirm the `race_athletes` table exists, RLS is enabled, and indexes exist for race roster ordering and active roster lookup.
+
+> **Development-only RLS warning:** the roster migration includes anon read/write policies for prototype development. Replace them with authenticated owner-based policies before public deployment or storing real athlete data.
+
+When switching saved races, the app saves the prior race roster to the race-scoped cache/repository, loads the new race's roster by `race_id`, and clears transient timing state for the previous race. Live Timing uses only the roster loaded for the selected race.
 
 ## Persistent Live Timing
 
@@ -228,18 +249,18 @@ The visible race clock still updates locally from `time.perf_counter()`. Supabas
 10. Complete the race.
 11. Reopen the app, open the same race, and confirm the completed timing session and splits remain available.
 
-Assumptions for this phase: athlete IDs come from the current roster in session state; if a persisted split references a runner that is no longer in the roster, the event's stored name/bib are used to reconstruct a visible split. Checkpoint persistence is not added yet, so restored split records use the currently loaded race checkpoint configuration.
+Assumptions for this phase: athlete IDs come from the selected race roster. If a persisted split references a runner that is no longer in that roster, the event's stored name/bib are used to reconstruct a visible split. Checkpoint persistence is not added yet, so restored split records use the currently loaded race checkpoint configuration.
 
 ## Known Limitations and Next Phases
 
 Known limitations:
 
-- Roster libraries are not persisted yet.
-- Checkpoint definitions, roster libraries, results exports, and non-selected direct-setup races remain session-state only; saved race sessions and split tap events are persisted after applying `003_timing_persistence.sql`.
+- Roster libraries/shared athlete management are not implemented yet; rosters are persisted only as race-specific rosters.
+- Checkpoint definitions, results exports, and non-selected direct-setup races remain session-state only; saved race rosters, race sessions, and split tap events are persisted after applying `003_timing_persistence.sql` and `004_race_rosters.sql`.
 - No authentication, owner-based authorization, public sharing, parent/spectator views, realtime subscriptions, or crash recovery exists yet.
 - Development-only RLS policies must be replaced before real deployment.
 
-Recommended next task: add authenticated owner-based policies and persist race rosters/checkpoint definitions before persisting live splits.
+Recommended next task: add authenticated owner-based policies and persist full checkpoint definitions before expanding roster-library or athlete-management workflows.
 
 ## Running the App
 

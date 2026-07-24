@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from split_tracker.config import load_supabase_config
+from split_tracker.models import Athlete
 from split_tracker.supabase_client import SupabaseConnectionResult, create_supabase_connection
 
 MEET_STATUSES = {"draft", "active", "upcoming", "completed", "archived"}
@@ -135,6 +136,9 @@ class RaceRepository(Protocol):
     def duplicate_race(self, race_id: str) -> Race: ...
     def archive_race(self, race_id: str) -> Race: ...
     def delete_draft_race(self, race_id: str) -> bool: ...
+    def list_race_athletes(self, race_id: str, *, include_inactive: bool = False) -> list[Athlete]: ...
+    def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]: ...
+    def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool: ...
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate: ...
     def update_template(self, template: MeetTemplate) -> MeetTemplate: ...
     def get_template(self, template_id: str) -> MeetTemplate | None: ...
@@ -166,6 +170,7 @@ class InMemoryRaceRepository:
         self.template_races: dict[str, TemplateRace] = {}
         self.race_sessions: dict[str, RaceSession] = {}
         self.split_events: dict[str, SplitEvent] = {}
+        self.race_athletes: dict[tuple[str, str], Athlete] = {}
 
     def create_meet(self, meet: Meet) -> Meet:
         saved = replace(meet, created_at=meet.created_at, updated_at=utc_now())
@@ -200,6 +205,8 @@ class InMemoryRaceRepository:
             return False
         for race in list(self.races.values()):
             if race.meet_id == meet_id:
+                for key in [key for key in self.race_athletes if key[0] == race.id]:
+                    self.race_athletes.pop(key)
                 self.races.pop(race.id)
         self.meets.pop(meet_id)
         return True
@@ -238,8 +245,30 @@ class InMemoryRaceRepository:
         race = self._require_race(race_id)
         if race.status != "draft":
             return False
+        for key in [key for key in self.race_athletes if key[0] == race_id]:
+            self.race_athletes.pop(key)
         self.races.pop(race_id)
         return True
+
+    def list_race_athletes(self, race_id: str, *, include_inactive: bool = False) -> list[Athlete]:
+        self._require_race(race_id)
+        athletes = [athlete for (stored_race_id, _), athlete in self.race_athletes.items() if stored_race_id == race_id]
+        if not include_inactive:
+            athletes = [athlete for athlete in athletes if athlete.active]
+        return sorted(athletes, key=lambda athlete: (athlete.display_order, athlete.name, athlete.athlete_id))
+
+    def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]:
+        self._require_race(race_id)
+        for key in [key for key in self.race_athletes if key[0] == race_id]:
+            self.race_athletes.pop(key)
+        saved = [replace(athlete, display_order=index) for index, athlete in enumerate(athletes)]
+        for athlete in saved:
+            self.race_athletes[(race_id, athlete.athlete_id)] = athlete
+        return self.list_race_athletes(race_id, include_inactive=True)
+
+    def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool:
+        self._require_race(race_id)
+        return self.race_athletes.pop((race_id, athlete_id), None) is not None
 
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate:
         saved = replace(template, created_at=template.created_at, updated_at=utc_now())
@@ -576,6 +605,39 @@ def _split_event_from_row(row: dict[str, Any]) -> SplitEvent:
     )
 
 
+def _athlete_to_row(race_id: str, athlete: Athlete, display_order: int | None = None) -> dict[str, Any]:
+    return {
+        "race_id": race_id,
+        "athlete_id": athlete.athlete_id,
+        "name": athlete.name,
+        "bib_number": athlete.bib_number or None,
+        "gender": athlete.gender or None,
+        "grade": athlete.grade or None,
+        "team": athlete.team or None,
+        "target_finish_time_seconds": athlete.target_finish_time_seconds,
+        "target_pace_seconds_per_mile": athlete.target_pace_seconds_per_mile,
+        "group_category": athlete.group or None,
+        "display_order": athlete.display_order if display_order is None else display_order,
+        "active": athlete.active,
+    }
+
+
+def _athlete_from_row(row: dict[str, Any]) -> Athlete:
+    return Athlete(
+        athlete_id=str(row.get("athlete_id") or row["id"]),
+        name=str(row["name"]),
+        bib_number=row.get("bib_number") or "",
+        gender=row.get("gender") or "",
+        grade=row.get("grade") or "",
+        team=row.get("team") or "",
+        target_finish_time_seconds=float(row["target_finish_time_seconds"]) if row.get("target_finish_time_seconds") is not None else None,
+        target_pace_seconds_per_mile=float(row["target_pace_seconds_per_mile"]) if row.get("target_pace_seconds_per_mile") is not None else None,
+        group=row.get("group_category") or "",
+        display_order=int(row.get("display_order") or 0),
+        active=bool(row.get("active", True)),
+    )
+
+
 class SupabaseRaceRepository:
     """Supabase-backed repository using the official Python client."""
 
@@ -665,6 +727,25 @@ class SupabaseRaceRepository:
         if race is None or race.status != "draft":
             return False
         self._execute(self.client.table("races").delete().eq("id", race_id), "Could not delete draft race.")
+        return True
+
+    def list_race_athletes(self, race_id: str, *, include_inactive: bool = False) -> list[Athlete]:
+        query = self.client.table("race_athletes").select("*").eq("race_id", race_id)
+        if not include_inactive:
+            query = query.eq("active", True)
+        result = self._execute(query.order("display_order", desc=False).order("name", desc=False), "Could not list race roster.")
+        return [_athlete_from_row(row) for row in getattr(result, "data", [])]
+
+    def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]:
+        if self.get_race(race_id) is None:
+            raise RepositoryError("Race not found.")
+        self._execute(self.client.table("race_athletes").delete().eq("race_id", race_id), "Could not clear race roster.")
+        for index, athlete in enumerate(athletes):
+            self._execute(self.client.table("race_athletes").insert(_athlete_to_row(race_id, athlete, index)), "Could not save race roster.")
+        return self.list_race_athletes(race_id, include_inactive=True)
+
+    def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool:
+        self._execute(self.client.table("race_athletes").delete().eq("race_id", race_id).eq("athlete_id", athlete_id), "Could not delete roster athlete.")
         return True
 
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate:

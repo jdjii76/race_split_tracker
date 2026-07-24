@@ -8,6 +8,7 @@ import streamlit as st
 from split_tracker.calculations import TRACK_DISTANCE_PRESETS, XC_DISTANCE_PRESETS, generate_checkpoints, race_distance_from_preset
 from split_tracker.formatting import format_distance, format_duration, format_pace, parse_time_to_seconds
 from split_tracker.models import Athlete, MeetConfig
+from split_tracker.repository import RepositoryError
 from split_tracker.state import clear_setup, replace_setup, validate_setup
 
 TRACK_PRESETS = [*TRACK_DISTANCE_PRESETS.keys(), "Custom"]
@@ -19,15 +20,20 @@ def _athletes_to_frame(athletes: list[Athlete]) -> pd.DataFrame:
         {
             "Athlete Name": athlete.name,
             "Bib Number": athlete.bib_number,
+            "Gender": athlete.gender,
+            "Grade": athlete.grade,
+            "Team": athlete.team,
             "Target Finish Time": format_duration(athlete.target_finish_time_seconds) if athlete.target_finish_time_seconds else "",
             "Target Pace / Mile": format_pace(athlete.target_pace_seconds_per_mile) if athlete.target_pace_seconds_per_mile else "",
             "Group / Category": athlete.group,
+            "Display Order": athlete.display_order,
+            "Active": athlete.active,
             "Athlete ID": athlete.athlete_id,
         }
         for athlete in athletes
     ]
     if not rows:
-        rows = [{"Athlete Name": "", "Bib Number": "", "Target Finish Time": "", "Target Pace / Mile": "", "Group / Category": "", "Athlete ID": ""}]
+        rows = [{"Athlete Name": "", "Bib Number": "", "Gender": "", "Grade": "", "Team": "", "Target Finish Time": "", "Target Pace / Mile": "", "Group / Category": "", "Display Order": 0, "Active": True, "Athlete ID": ""}]
     return pd.DataFrame(rows)
 
 
@@ -38,7 +44,7 @@ def _frame_to_athletes(frame: pd.DataFrame, existing: list[Athlete]) -> tuple[li
     for row_number, row in frame.fillna("").iterrows():
         name = str(row.get("Athlete Name", "")).strip()
         if not name:
-            if any(str(row.get(column, "")).strip() for column in ["Bib Number", "Target Finish Time", "Target Pace / Mile", "Group / Category"]):
+            if any(str(row.get(column, "")).strip() for column in ["Bib Number", "Gender", "Grade", "Team", "Target Finish Time", "Target Pace / Mile", "Group / Category"]):
                 errors.append(f"Row {row_number + 1}: athlete name is required.")
             continue
         target_finish_raw = str(row.get("Target Finish Time", "")).strip()
@@ -49,15 +55,26 @@ def _frame_to_athletes(frame: pd.DataFrame, existing: list[Athlete]) -> tuple[li
             errors.append(f"Row {row_number + 1}: target finish time must be MM:SS or HH:MM:SS.")
         if target_pace_raw and target_pace is None:
             errors.append(f"Row {row_number + 1}: target pace must be MM:SS or HH:MM:SS.")
+        try:
+            display_order = int(row.get("Display Order", row_number) or row_number)
+        except (TypeError, ValueError):
+            display_order = row_number
+        active_raw = row.get("Active", True)
+        active = active_raw if isinstance(active_raw, bool) else str(active_raw).strip().lower() not in {"false", "0", "no", "inactive"}
         athlete_id = str(row.get("Athlete ID", "")).strip()
         previous = existing_by_id.get(athlete_id)
         athletes.append(
             Athlete(
                 name=name,
                 bib_number=str(row.get("Bib Number", "")).strip(),
+                gender=str(row.get("Gender", "")).strip(),
+                grade=str(row.get("Grade", "")).strip(),
+                team=str(row.get("Team", "")).strip(),
                 target_finish_time_seconds=target_finish,
                 target_pace_seconds_per_mile=target_pace,
                 group=str(row.get("Group / Category", "")).strip(),
+                display_order=display_order,
+                active=active,
                 athlete_id=previous.athlete_id if previous else athlete_id or Athlete(name=name).athlete_id,
             )
         )
@@ -69,7 +86,7 @@ def _frame_to_athletes(frame: pd.DataFrame, existing: list[Athlete]) -> tuple[li
 
 def _template_csv() -> bytes:
     return pd.DataFrame(
-        columns=["Athlete Name", "Bib Number", "Target Finish Time", "Target Pace / Mile", "Group / Category"]
+        columns=["Athlete Name", "Bib Number", "Gender", "Grade", "Team", "Target Finish Time", "Target Pace / Mile", "Group / Category", "Display Order", "Active"]
     ).to_csv(index=False).encode("utf-8")
 
 
@@ -133,7 +150,7 @@ def render() -> None:
     st.title("Meet Setup")
     st.caption("Configure the race, checkpoints, and roster before moving to live timing.")
     if st.session_state.get("selected_race_id"):
-        st.info("Loaded from a saved race. Phase 1 persists meet/race metadata only; roster, checkpoints, splits, and results remain session-only.")
+        st.info("Loaded from a saved race. The roster is saved for this race only; checkpoints, splits, and results remain session-only.")
 
     saved_config: MeetConfig = st.session_state.meet_config
     course_type = st.radio("Race type", ["Track", "Cross Country"], index=0 if saved_config.course_type == "Track" else 1, horizontal=True)
@@ -201,7 +218,10 @@ def render() -> None:
         st.rerun()
 
     if save_clicked or start_clicked:
-        replace_setup(st.session_state, draft_config, athletes)
-        st.success("Setup saved.")
-        if start_clicked:
-            st.switch_page(st.session_state.page_registry["live_timing"])
+        try:
+            replace_setup(st.session_state, draft_config, athletes)
+            st.success("Setup saved.")
+            if start_clicked:
+                st.switch_page(st.session_state.page_registry["live_timing"])
+        except RepositoryError as exc:
+            st.error(f"Roster could not be saved for this race: {exc}")

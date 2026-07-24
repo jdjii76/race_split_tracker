@@ -15,6 +15,7 @@ def initialize_state(session_state) -> None:
     """Initialize required Streamlit session-state keys."""
     session_state.setdefault("meet_config", MeetConfig())
     session_state.setdefault("athletes", [])
+    session_state.setdefault("race_rosters", {})
     session_state.setdefault("splits", [])
     session_state.setdefault("race_clock", RaceClock())
     session_state.setdefault("last_tap", {})
@@ -208,7 +209,7 @@ def undo_last_split(session_state) -> SplitRecord | None:
 def replace_setup(session_state, config: MeetConfig, athletes: list[Athlete]) -> None:
     """Replace saved setup while preserving existing splits when possible."""
     session_state.meet_config = config
-    session_state.athletes = athletes
+    session_state.athletes = _save_roster_for_selected_race(session_state, athletes)
     session_state.setup_saved = True
     refresh_all_splits(session_state)
 
@@ -247,10 +248,44 @@ def initialize_persistence_state(session_state) -> None:
     session_state.setdefault("timing_restored_for_race_id", None)
 
 
+def _clone_athletes(athletes: list[Athlete]) -> list[Athlete]:
+    """Return a shallow copy of athletes so race roster caches do not share list objects."""
+    from dataclasses import replace
+
+    return [replace(athlete) for athlete in athletes]
+
+
+def _save_roster_for_selected_race(session_state, athletes: list[Athlete] | None = None) -> list[Athlete]:
+    """Save the selected race roster to the race-scoped cache and repository."""
+    race_id = session_state.get("selected_race_id")
+    roster = _clone_athletes(session_state.athletes if athletes is None else athletes)
+    if not race_id:
+        return roster
+    session_state.setdefault("race_rosters", {})
+    session_state.race_rosters[race_id] = _clone_athletes(roster)
+    repository = session_state.get("repository")
+    if repository is not None:
+        roster = repository.replace_race_athletes(race_id, roster)
+        session_state.race_rosters[race_id] = _clone_athletes(roster)
+    return roster
+
+
+def load_selected_race_roster(session_state, race_id: str) -> list[Athlete]:
+    """Load one saved race's roster from the repository or race-scoped cache."""
+    session_state.setdefault("race_rosters", {})
+    repository = session_state.get("repository")
+    if repository is not None:
+        roster = repository.list_race_athletes(race_id, include_inactive=True)
+        session_state.race_rosters[race_id] = _clone_athletes(roster)
+        return _clone_athletes(roster)
+    return _clone_athletes(session_state.race_rosters.get(race_id, []))
+
+
 def load_race_into_setup(session_state, meet, race) -> None:
     """Load persisted meet/race metadata into the existing setup workflow.
 
-    Phase 1 intentionally does not persist athletes, checkpoints, splits, or results.
+    Race rosters are scoped to the persisted race ID. Checkpoints, splits, and
+    results remain otherwise session-local for the prototype.
     """
     from split_tracker.calculations import generate_checkpoints
     from split_tracker.formatting import format_distance
@@ -261,6 +296,12 @@ def load_race_into_setup(session_state, meet, race) -> None:
         mode=race.checkpoint_mode or "Standard laps",
         interval_meters=400.0 if race.course_type == "Track" else 1609.344,
     )
+    previous_race_id = session_state.get("selected_race_id")
+    if previous_race_id and previous_race_id != race.id:
+        _save_roster_for_selected_race(session_state)
+        reset_race(session_state)
+        session_state.active_race_session_id = None
+        session_state.timing_restored_for_race_id = None
     session_state.selected_meet_id = meet.id
     session_state.selected_race_id = race.id
     session_state.meet_config = MeetConfig(
@@ -273,5 +314,6 @@ def load_race_into_setup(session_state, meet, race) -> None:
         checkpoint_interval_meters=400.0 if race.course_type == "Track" else 1609.344,
         checkpoints=checkpoints,
     )
+    session_state.athletes = load_selected_race_roster(session_state, race.id)
     session_state.setup_saved = True
-    session_state.message = "Loaded saved race setup. Roster, checkpoints, and live results still use session state in this phase."
+    session_state.message = "Loaded saved race setup and race-specific roster. Checkpoints and live results still use session state in this phase."

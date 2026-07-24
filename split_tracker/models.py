@@ -27,9 +27,14 @@ class Athlete:
 
     name: str
     bib_number: str = ""
+    gender: str = ""
+    grade: str = ""
+    team: str = ""
     target_finish_time_seconds: float | None = None
     target_pace_seconds_per_mile: float | None = None
     group: str = ""
+    display_order: int = 0
+    active: bool = True
     athlete_id: str = field(default_factory=lambda: str(uuid4()))
     reopened_after_finish: bool = False
 
