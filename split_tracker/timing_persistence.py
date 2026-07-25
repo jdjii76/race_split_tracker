@@ -57,6 +57,32 @@ def split_event_from_record(record: SplitRecord, *, race_session_id: str) -> Spl
     )
 
 
+def synchronize_shared_timing(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession:
+    """Atomically reload the shared session and events, leaving visible state intact on failure."""
+    repository: RaceRepository | None = session_state.repository
+    race_session_id = session_state.get("active_race_session_id")
+    if repository is None or not race_session_id:
+        raise RepositoryError("No shared race session is connected.")
+    race_session = repository.get_race_session(race_session_id)
+    if race_session is None:
+        raise RepositoryError("The connected race session no longer exists.")
+    events = repository.list_active_split_events(race_session_id)
+    all_events = repository.list_all_split_events(race_session_id)
+    checkpoint_result = get_session_checkpoints(repository, race_session, session_state.meet_config.checkpoints)
+    rebuilt = rebuild_splits_from_events(events=events, athletes=session_state.athletes, config=replace(session_state.meet_config, checkpoints=checkpoint_result.checkpoints))
+    session_state.meet_config.checkpoints = checkpoint_result.checkpoints
+    session_state.splits = rebuilt
+    session_state.split_sequence = max([event.event_order for event in all_events] or [0])
+    session_state.race_clock = race_clock_from_session(race_session, now_perf=now_perf, now_utc=now_utc)
+    session_state.last_sync_at = utc_now()
+    session_state.storage_connected = True
+    session_state.sync_error = ""
+    if events:
+        latest = max(events, key=lambda event: (event.recorded_at, event.event_order))
+        session_state.latest_shared_action = f"{latest.athlete_name} • {latest.checkpoint_label}" + (f" • {latest.recorded_by}" if latest.recorded_by else "")
+    return race_session
+
+
 def rebuild_splits_from_events(
     *,
     events: list[SplitEvent],
@@ -184,7 +210,12 @@ def persist_split_record(session_state, record: SplitRecord) -> SplitEvent | Non
     race_session_id = session_state.get("active_race_session_id")
     if repository is None or not race_session_id:
         return None
-    return repository.create_split_event(split_event_from_record(record, race_session_id=race_session_id))
+    event = split_event_from_record(record, race_session_id=race_session_id)
+    event = replace(event, recorded_by=session_state.get("timer_name", ""))
+    saved = repository.create_split_event(event)
+    refresh_splits_from_repository(session_state)
+    session_state.latest_shared_action = f"{saved.athlete_name} • {saved.checkpoint_label} • {saved.recorded_by or 'anonymous'}"
+    return saved
 
 
 def persist_undo_split(session_state, split: SplitRecord) -> SplitEvent | None:
