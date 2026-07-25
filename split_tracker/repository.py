@@ -105,6 +105,7 @@ class SplitEvent:
     athlete_name: str = ""
     bib_number: str = ""
     checkpoint_label: str = ""
+    recorded_by: str = ""
     is_deleted: bool = False
     recorded_at: datetime = field(default_factory=utc_now)
     created_at: datetime = field(default_factory=utc_now)
@@ -420,6 +421,14 @@ class InMemoryRaceRepository:
     def create_split_event(self, event: SplitEvent) -> SplitEvent:
         if event.race_session_id not in self.race_sessions:
             raise RepositoryError("Race session not found.")
+        if any(
+            not existing.is_deleted
+            and existing.race_session_id == event.race_session_id
+            and existing.athlete_id == event.athlete_id
+            and existing.checkpoint_number == event.checkpoint_number
+            for existing in self.split_events.values()
+        ):
+            raise RepositoryError("That athlete already has an active split at this checkpoint.")
         saved = replace(event, created_at=event.created_at, updated_at=utc_now())
         self.split_events[saved.id] = saved
         return saved
@@ -701,6 +710,7 @@ def _split_event_to_row(event: SplitEvent) -> dict[str, Any]:
         "bib_number": event.bib_number or None,
         "checkpoint_number": event.checkpoint_number,
         "checkpoint_label": event.checkpoint_label or None,
+        "recorded_by": event.recorded_by or None,
         "elapsed_seconds": event.elapsed_seconds,
         "recorded_at": event.recorded_at.isoformat(),
         "event_order": event.event_order,
@@ -719,6 +729,7 @@ def _split_event_from_row(row: dict[str, Any]) -> SplitEvent:
         bib_number=row.get("bib_number") or "",
         checkpoint_number=int(row["checkpoint_number"]),
         checkpoint_label=row.get("checkpoint_label") or "",
+        recorded_by=row.get("recorded_by") or "",
         elapsed_seconds=float(row["elapsed_seconds"]),
         recorded_at=_parse_datetime(row.get("recorded_at")) or utc_now(),
         event_order=int(row.get("event_order") or 0),
@@ -1069,8 +1080,18 @@ class SupabaseRaceRepository:
         return [_race_session_from_row(row) for row in getattr(result, "data", [])]
 
     def create_split_event(self, event: SplitEvent) -> SplitEvent:
-        row = self._single(self.client.table("split_events").insert(_split_event_to_row(event)), "Could not create split event.")
-        return _split_event_from_row(row or _split_event_to_row(event))
+        event_row = _split_event_to_row(event)
+        try:
+            result = self.client.rpc("record_shared_split", {"p_event": event_row}).execute()
+        except Exception as exc:
+            detail = str(exc).lower()
+            if "duplicate" in detail or "already" in detail or "23505" in detail:
+                raise RepositoryError("That athlete already has an active split at this checkpoint.") from exc
+            logger.exception("Repository operation failed: Could not create split event.")
+            raise RepositoryError("Could not create split event.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        return _split_event_from_row(row or event_row)
 
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).eq("is_deleted", False).order("event_order", desc=False), "Could not list active split events.")

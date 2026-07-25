@@ -23,6 +23,11 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("message", "")
     session_state.setdefault("pending_duplicate", None)
     session_state.setdefault("setup_saved", False)
+    session_state.setdefault("timer_name", "")
+    session_state.setdefault("last_sync_at", None)
+    session_state.setdefault("storage_connected", False)
+    session_state.setdefault("sync_error", "")
+    session_state.setdefault("latest_shared_action", "")
 
 
 def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
