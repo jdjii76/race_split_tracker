@@ -5,6 +5,14 @@
 -- checked-in migrations in their established order: 001, 003, 004, and 005.
 -- Do not run this bootstrap against the existing production project.
 --
+-- Source manifest:
+--   supabase/migrations/001_initial_schema.sql
+--   supabase/migrations/003_timing_persistence.sql
+--   supabase/migrations/004_race_rosters.sql
+--   supabase/migrations/005_race_session_checkpoints.sql
+-- Keep this manifest and the source-section markers below in migration order
+-- when refreshing the bootstrap for a new development project.
+--
 -- SECURITY WARNING: The policies in this bootstrap intentionally grant the
 -- anon/publishable role broad prototype access. They are development-only and
 -- must be replaced before public deployment or storage of real athlete data.

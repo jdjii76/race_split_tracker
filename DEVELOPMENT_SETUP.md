@@ -40,10 +40,13 @@ SUPABASE_KEY = "your-development-publishable-key"
 
 ## Deployment checklist
 
-1. Push `main` and the annotated `prototype-v1` tag to the Git remote.
-2. Push `feature/live-multi-user-timing` and set its upstream.
-3. Create a separate development Supabase project.
-4. Run `supabase/sql/development_schema.sql` in that project's SQL Editor.
+1. Leave `main` unchanged as the protected coach-tested prototype.
+2. Push `feature/live-multi-user-timing` and set it as the development app's
+   deployment branch.
+3. Create a separate development Supabase project; never reuse the production
+   Supabase project or its credentials.
+4. Run `supabase/sql/development_schema.sql` manually in the development
+   project's SQL Editor.
 5. Confirm the required tables and checkpoint-start RPC exist.
 6. Create a separate Streamlit Community Cloud app that deploys from
    `feature/live-multi-user-timing`.
