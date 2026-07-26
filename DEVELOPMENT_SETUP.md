@@ -88,3 +88,10 @@ error. The poll counter should continue increasing about every two seconds on
 every browser, including the starter. A failed read keeps the last good display,
 shows a warning, and is retried by the next fragment cycle. Live session and
 split reads do not use Streamlit caching. No additional migration is required.
+
+The status panel also reports whether the current browser initiated this race
+session and the last fragment rerun time. Immediately after **Start**, the app
+reloads the persisted session and events through the same synchronization
+function used by waiting browsers, then requests a fragment-scoped rerun. The
+starter's fragment timestamp and poll counter must continue advancing alongside
+the other browsers; no full-application rerun is used for this transition.

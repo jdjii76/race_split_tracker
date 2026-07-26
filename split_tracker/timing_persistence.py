@@ -115,6 +115,23 @@ def poll_shared_timing(session_state, *, now_perf: float | None = None, now_utc:
         return None
 
 
+def start_and_synchronize_shared_timing(
+    session_state,
+    *,
+    now_perf: float | None = None,
+    now_utc: datetime | None = None,
+) -> RaceSession:
+    """Persist a start, then enter the same authoritative path as polling clients."""
+    started = persist_start(session_state, now_perf=now_perf, now_utc=now_utc)
+    if started is None:
+        raise RepositoryError("Shared race could not be started.")
+    # Never apply the write response as a separate starter-only state. Reload the
+    # exact selected row and its active events just as a waiting browser does.
+    synchronized = synchronize_shared_timing(session_state, now_perf=now_perf, now_utc=now_utc)
+    session_state.initiated_start_session_id = synchronized.id
+    return synchronized
+
+
 def rebuild_splits_from_events(
     *,
     events: list[SplitEvent],

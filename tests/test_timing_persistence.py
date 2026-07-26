@@ -22,6 +22,7 @@ from split_tracker.timing_persistence import (
     rebuild_splits_from_events,
     refresh_splits_from_repository,
     restore_timing_state,
+    start_and_synchronize_shared_timing,
 )
 
 
@@ -399,8 +400,9 @@ def test_four_clients_converge_and_starter_recovers_after_failed_poll():
         clients.append(client)
 
     persisted_start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    persist_start(starter, now_utc=persisted_start)
+    start_and_synchronize_shared_timing(starter, now_utc=persisted_start)
     assert starter.active_race_session_id == ready.id
+    assert starter.initiated_start_session_id == ready.id
 
     for order, client in enumerate(clients[1:], start=1):
         repo.create_split_event(
@@ -454,3 +456,37 @@ def test_four_clients_converge_and_starter_recovers_after_failed_poll():
     poll_shared_timing(starter)
     assert [split.split_id for split in starter.splits] == before_ids
     assert starter.poll_cycle_count == before_count + 1
+
+
+def test_direct_start_and_detected_start_use_equivalent_authoritative_state():
+    repo, race, starter = make_repo_and_session()
+    ready = repo.create_race_session(RaceSession(race_id=race.id, status="ready"))
+    repo.create_race_session_checkpoints(ready.id, starter.meet_config.checkpoints)
+    starter.active_race_session_id = ready.id
+    waiting = SessionState(**vars(starter).copy())
+    waiting.splits = []
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    observed_at = datetime(2026, 1, 1, 12, 0, 12, tzinfo=timezone.utc)
+
+    direct = start_and_synchronize_shared_timing(
+        starter,
+        now_perf=112.0,
+        now_utc=started_at,
+    )
+    detected = poll_shared_timing(
+        waiting,
+        now_perf=124.0,
+        now_utc=observed_at,
+    )
+
+    assert direct.id == detected.id == ready.id
+    assert direct.started_at == detected.started_at == started_at
+    assert starter.active_race_session_id == waiting.active_race_session_id
+    assert starter.race_clock.status == waiting.race_clock.status == "running"
+    assert starter.race_clock.start_perf_counter == 112.0
+    assert waiting.race_clock.start_perf_counter == 112.0
+    assert starter.splits == waiting.splits == []
+    assert starter.persisted_race_status == waiting.persisted_race_status == "running"
+    assert starter.loaded_split_event_count == waiting.loaded_split_event_count == 0
+    assert starter.initiated_start_session_id == ready.id
+    assert waiting.get("initiated_start_session_id", "") == ""
