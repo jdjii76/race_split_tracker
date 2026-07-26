@@ -449,7 +449,10 @@ class InMemoryRaceRepository:
         return [event for event in self.list_all_split_events(race_session_id) if not event.is_deleted]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
-        return sorted([event for event in self.split_events.values() if event.race_session_id == race_session_id], key=lambda event: (event.event_order, event.recorded_at, event.id))
+        return sorted(
+            [event for event in self.split_events.values() if event.race_session_id == race_session_id],
+            key=lambda event: (_aware_utc(event.recorded_at), _aware_utc(event.created_at), event.id),
+        )
 
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent:
         event = self._require_split_event(split_event_id)
@@ -569,6 +572,13 @@ def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _aware_utc(value: datetime) -> datetime:
+    """Normalize persisted timestamps for deterministic cross-client ordering."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _meet_to_row(meet: Meet) -> dict[str, Any]:
@@ -1128,11 +1138,17 @@ class SupabaseRaceRepository:
 
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).eq("is_deleted", False).order("event_order", desc=False), "Could not list active split events.")
-        return [_split_event_from_row(row) for row in getattr(result, "data", [])]
+        return sorted(
+            [_split_event_from_row(row) for row in getattr(result, "data", [])],
+            key=lambda event: (_aware_utc(event.recorded_at), _aware_utc(event.created_at), event.id),
+        )
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).order("event_order", desc=False), "Could not list split events.")
-        return [_split_event_from_row(row) for row in getattr(result, "data", [])]
+        return sorted(
+            [_split_event_from_row(row) for row in getattr(result, "data", [])],
+            key=lambda event: (_aware_utc(event.recorded_at), _aware_utc(event.created_at), event.id),
+        )
 
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent:
         updated_at = utc_now().isoformat()

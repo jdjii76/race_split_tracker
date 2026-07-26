@@ -37,7 +37,7 @@ MEET_DASHBOARD_PAGE = st.Page(
 )
 MEET_SETUP_PAGE = st.Page(
     meet_setup.render,
-    title="Meet Setup",
+    title="Race Setup",
     icon="📝",
     url_path="meet-setup",
 )
