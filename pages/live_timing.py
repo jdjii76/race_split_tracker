@@ -17,7 +17,10 @@ from split_tracker.timing_persistence import (
     persist_split_record,
     persist_start,
     persist_undo_split,
+    poll_shared_timing,
+    race_clock_from_session,
     restore_timing_state,
+    synchronize_shared_timing,
 )
 from split_tracker.state import (
     elapsed_seconds,
@@ -59,10 +62,6 @@ STATUS_LABELS = {
 
 def _clock_metric() -> None:
     st.metric("Race Clock", format_duration(elapsed_seconds(st.session_state.race_clock)))
-
-
-if hasattr(st, "fragment"):
-    _clock_metric = st.fragment(run_every=1)(_clock_metric)
 
 
 def _last_split_for(athlete_id: str):
@@ -118,7 +117,9 @@ def _live_board_frame(filter_value: str) -> pd.DataFrame:
 
 
 def _has_persisted_race() -> bool:
-    return bool(st.session_state.get("selected_race_id") and st.session_state.get("repository"))
+    result = st.session_state.get("repository_result")
+    shared_storage = result is None or not result.is_temporary
+    return bool(shared_storage and st.session_state.get("selected_race_id") and st.session_state.get("repository"))
 
 
 def _show_persistence_error(operation: str, exc: Exception) -> None:
@@ -133,8 +134,11 @@ def _restore_if_needed() -> None:
     if st.session_state.get("timing_restored_for_race_id") == race_id:
         return
     try:
-        restore_timing_state(st.session_state)
-        st.session_state.timing_restored_for_race_id = race_id
+        restored = restore_timing_state(st.session_state)
+        # Keep looking on subsequent fragment runs when another browser may
+        # create the first session after this browser reached the waiting page.
+        if restored is not None:
+            st.session_state.timing_restored_for_race_id = race_id
     except Exception as exc:
         _show_persistence_error("Restore timing session", exc)
 
@@ -142,7 +146,11 @@ def _restore_if_needed() -> None:
 def _start_timing() -> bool:
     try:
         if _has_persisted_race():
-            persist_start(st.session_state)
+            session = persist_start(st.session_state)
+            st.session_state.race_clock = race_clock_from_session(session)
+            poll_shared_timing(st.session_state)
+            st.session_state.message = "Shared race started."
+            return True
         return start_race(st.session_state)
     except Exception as exc:
         _show_persistence_error("Start race", exc)
@@ -208,7 +216,13 @@ def _record_tap(athlete_id: str, *, now: float | None = None, record_anyway: boo
         return True
     except Exception as exc:
         st.session_state.splits = [item for item in st.session_state.splits if item.split_id != split.split_id]
+        try:
+            if _has_persisted_race():
+                synchronize_shared_timing(st.session_state)
+        except Exception:
+            pass
         _show_persistence_error("Record split", exc)
+        st.session_state.message = str(exc) if "active split" in str(exc) else "Split was not saved. Check the connection and tap again to retry."
         return False
 
 
@@ -224,16 +238,61 @@ def _undo_tap(split) -> bool:
         _show_persistence_error("Undo split", exc)
         return False
 
-def render() -> None:
-    """Render the live timing page."""
-    st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
+def _render_live_timing_surface() -> None:
+    """Render all authoritative shared UI inside one polling fragment."""
     _restore_if_needed()
+    # Poll the exact connected row even while the local clock is not_started.
+    # This is what lets a waiting browser observe another coach's start.
+    if st.session_state.get("active_race_session_id"):
+        poll_shared_timing(st.session_state)
     config = st.session_state.meet_config
     clock = st.session_state.race_clock
     valid_setup = setup_is_valid(st.session_state)
     status = STATUS_LABELS[clock.status]
 
     st.title("Live Timing")
+    repository_result = st.session_state.get("repository_result")
+    if repository_result is not None and repository_result.is_temporary:
+        st.error("Shared live timing requires Supabase. Starting or recording a shared race is disabled; the app will not fall back to an isolated browser stopwatch.")
+    timer_name = st.text_input("Timer / display name", value=st.session_state.timer_name, placeholder="e.g. Finish line tablet")
+    st.session_state.timer_name = timer_name.strip()
+    connected_id = st.session_state.get("active_race_session_id") or "Not connected"
+    sync_at = st.session_state.get("last_sync_at")
+    storage = "Connected" if st.session_state.get("storage_connected") else ("Unavailable" if st.session_state.get("sync_error") else "Not synchronized")
+    st.caption(
+        f"Session: **{connected_id}** • Timer: **{st.session_state.timer_name or 'Name required'}** • "
+        f"Storage: **{storage}** • Last sync: **{sync_at.strftime('%H:%M:%S UTC') if sync_at else 'Never'}**"
+    )
+    if st.session_state.get("latest_shared_action"):
+        st.caption(f"Latest action: **{st.session_state.latest_shared_action}**")
+    if st.session_state.get("sync_error"):
+        st.error(f"Shared timing synchronization failed: {st.session_state.sync_error}. Existing shared data remains displayed; retry is automatic.")
+    with st.expander("Development synchronization status", expanded=False):
+        poll_at = st.session_state.get("poll_cycle_at")
+        latest_at = st.session_state.get("latest_event_at")
+        st.code(
+            "\n".join(
+                [
+                    f"timer_name: {st.session_state.timer_name or 'not set'}",
+                    f"race_session_id: {connected_id}",
+                    f"poll_cycle: {st.session_state.get('poll_cycle_count', 0)}",
+                    f"poll_cycle_at: {poll_at.isoformat() if poll_at else 'never'}",
+                    f"last_successful_sync: {sync_at.isoformat() if sync_at else 'never'}",
+                    f"loaded_active_events: {st.session_state.get('loaded_split_event_count', 0)}",
+                    f"latest_event_id: {st.session_state.get('latest_event_id') or 'none'}",
+                    f"latest_event_at: {latest_at.isoformat() if latest_at else 'none'}",
+                    f"local_clock_status: {clock.status}",
+                    f"persisted_session_status: {st.session_state.get('persisted_race_status') or 'unknown'}",
+                    f"sync_error: {st.session_state.get('sync_error') or 'none'}",
+                ]
+            ),
+            language="text",
+        )
+    if st.session_state.get("active_race_session_id") and clock.status == "not_started":
+        st.info(
+            f"Waiting for race to start • Session **{connected_id}** • "
+            f"Timer **{st.session_state.timer_name or 'Name required'}** • Storage **{storage}**"
+        )
     h1, h2, h3 = st.columns([2, 1, 1])
     h1.subheader(f"{config.meet_name or 'Meet required'} • {config.race_name or 'Race required'}")
     h2.metric("Distance", format_distance(config.race_distance_meters))
@@ -245,33 +304,28 @@ def render() -> None:
         st.warning("Complete Meet Setup before starting the race. Meet name, race name, checkpoints, and at least one athlete are required.")
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    if c1.button("Start", use_container_width=True, disabled=not valid_setup or clock.status == "running" or (clock.status == "ended" and bool(st.session_state.splits))):
-        if _start_timing():
-            st.rerun()
+    shared_unavailable = repository_result is not None and repository_result.is_temporary
+    if c1.button("Start", use_container_width=True, disabled=shared_unavailable or not valid_setup or clock.status == "running" or (clock.status == "ended" and bool(st.session_state.splits))):
+        _start_timing()
     if c2.button("Pause", use_container_width=True, disabled=clock.status != "running"):
-        if _pause_timing():
-            st.rerun()
+        _pause_timing()
     if c3.button("Resume", use_container_width=True, disabled=clock.status != "paused"):
-        if _resume_timing():
-            st.rerun()
+        _resume_timing()
 
     confirm_end = c4.checkbox("Confirm end")
     if c4.button("End Race", use_container_width=True, disabled=clock.status not in {"running", "paused"} or not confirm_end):
-        if _end_timing():
-            st.rerun()
+        _end_timing()
 
     last_split = max(st.session_state.splits, key=lambda split: split.sequence) if st.session_state.splits else None
     if last_split:
         c5.caption(f"Undo: {last_split.athlete_name} {last_split.checkpoint_label}")
     confirm_undo = c5.checkbox("Confirm undo")
     if c5.button("Undo Last Tap", use_container_width=True, disabled=not last_split or not confirm_undo):
-        if _undo_tap(last_split):
-            st.rerun()
+        _undo_tap(last_split)
 
     confirm_reset = c6.checkbox("Confirm reset")
     if c6.button("Reset Race", use_container_width=True, disabled=not confirm_reset):
-        if _reset_timing():
-            st.rerun()
+        _reset_timing()
 
     pending = st.session_state.pending_duplicate
     if pending:
@@ -279,8 +333,7 @@ def render() -> None:
         if athlete:
             st.warning(f"Duplicate tap detected for {athlete.name} within 2 seconds.")
             if st.button("Record Anyway", use_container_width=True):
-                if _record_tap(athlete.athlete_id, now=pending["recorded_at"], record_anyway=True):
-                    st.rerun()
+                _record_tap(athlete.athlete_id, now=pending["recorded_at"], record_anyway=True)
 
     if st.session_state.message:
         st.info(st.session_state.message)
@@ -295,14 +348,12 @@ def render() -> None:
         if index % columns_per_row == 0:
             cols = st.columns(columns_per_row)
         finished = is_athlete_finished(st.session_state, athlete.athlete_id)
-        disabled = clock.status != "running" or (finished and not athlete.reopened_after_finish)
+        disabled = shared_unavailable or clock.status != "running" or not st.session_state.timer_name or (finished and not athlete.reopened_after_finish)
         with cols[index % columns_per_row]:
             if st.button(_athlete_button_label(athlete), key=f"tap_{athlete.athlete_id}", use_container_width=True, disabled=disabled):
-                if _record_tap(athlete.athlete_id):
-                    st.rerun()
+                _record_tap(athlete.athlete_id)
             if finished and st.button("Reopen athlete", key=f"reopen_{athlete.athlete_id}", use_container_width=True):
                 reopen_athlete(st.session_state, athlete.athlete_id)
-                st.rerun()
 
     if st.session_state.athletes and all(is_athlete_finished(st.session_state, athlete.athlete_id) for athlete in st.session_state.athletes):
         st.success("Race complete: all athletes have reached the finish.")
@@ -316,3 +367,18 @@ def render() -> None:
         st.caption("No athletes match this filter.")
     else:
         st.dataframe(board, hide_index=True, use_container_width=True)
+
+
+# Keep the stable st.Page entry point outside the fragment. Every component that
+# depends on shared state lives inside this one non-nested controlled rerun path.
+_polling_live_timing_surface = (
+    st.fragment(run_every=2)(_render_live_timing_surface)
+    if hasattr(st, "fragment")
+    else _render_live_timing_surface
+)
+
+
+def render() -> None:
+    """Render the live page and invoke its single controlled polling fragment."""
+    st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
+    _polling_live_timing_surface()
