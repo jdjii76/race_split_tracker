@@ -6,7 +6,7 @@ import time
 from uuid import uuid4
 
 from split_tracker.calculations import athlete_finished, build_split_record, recalculate_athlete_splits
-from split_tracker.models import Athlete, Checkpoint, MeetConfig, RaceClock, SplitRecord
+from split_tracker.models import Athlete, MeetConfig, RaceClock, SplitRecord
 
 DUPLICATE_LOCKOUT_SECONDS = 2.0
 
@@ -57,7 +57,7 @@ def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
 
 
 def validate_setup(config: MeetConfig, athletes: list[Athlete]) -> list[str]:
-    """Return validation errors for meet setup."""
+    """Return validation errors for race setup."""
     errors: list[str] = []
     if not config.meet_name.strip():
         errors.append("Meet name is required.")

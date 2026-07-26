@@ -1,4 +1,4 @@
-"""Meet setup page."""
+"""Race setup page."""
 
 from __future__ import annotations
 
@@ -146,9 +146,9 @@ def _render_summary(config: MeetConfig, athletes: list[Athlete]) -> None:
 
 
 def render() -> None:
-    """Render the meet setup page."""
-    st.title("Meet Setup")
-    st.caption("Configure the race, checkpoints, and roster before moving to live timing.")
+    """Render the race setup page."""
+    st.title("Race Setup")
+    st.caption("Configure the race details, checkpoints, and roster before starting live timing.")
     if st.session_state.get("selected_race_id"):
         st.info("Loaded from a saved race. The roster is saved for this race only; checkpoints, splits, and results remain session-only.")
 

@@ -40,3 +40,18 @@ def test_callable_page_switches_use_registered_page_objects_not_file_paths():
         for call in switch_calls:
             assert call.args, "switch_page should receive a page argument"
             assert not isinstance(call.args[0], ast.Constant) or not str(call.args[0].value).startswith("pages/")
+
+
+def test_race_setup_user_facing_labels_are_consistent():
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    setup_source = (ROOT / "pages/meet_setup.py").read_text(encoding="utf-8")
+    dashboard_source = (ROOT / "pages/meet_dashboard.py").read_text(encoding="utf-8")
+    live_source = (ROOT / "pages/live_timing.py").read_text(encoding="utf-8")
+
+    assert 'title="Race Setup"' in app_source
+    assert 'st.title("Race Setup")' in setup_source
+    assert "Configure the race details, checkpoints, and roster before starting live timing." in setup_source
+    assert 'st.text_input("Meet name"' in setup_source
+    assert 'button("Open in Race Setup"' in dashboard_source
+    assert "Complete Race Setup before starting the race." in live_source
+    assert "Add athletes on the Race Setup page" in live_source

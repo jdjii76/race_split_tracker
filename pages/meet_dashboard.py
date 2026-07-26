@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from datetime import date
-
-import pandas as pd
 import streamlit as st
 
 from split_tracker.formatting import format_distance
@@ -165,7 +162,7 @@ def _race_management(meet: Meet) -> None:
                     except RepositoryError as exc:
                         _handle_error("Update race", exc)
             c1, c2, c3, c4 = st.columns(4)
-            if c1.button("Open in Meet Setup", key=f"open_race_{race.id}"):
+            if c1.button("Open in Race Setup", key=f"open_race_{race.id}"):
                 load_race_into_setup(st.session_state, meet, race)
                 st.switch_page(st.session_state.page_registry["meet_setup"])
             if c2.button("Duplicate", key=f"duplicate_race_{race.id}"):

@@ -6,7 +6,7 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 
 ## Current Prototype Features
 
-### Meet Setup
+### Race Setup
 
 - Meet name and race name fields
 - Course type selector for Track or Cross Country
@@ -147,7 +147,7 @@ Do not commit `.streamlit/secrets.toml`, `.env`, service-role keys, database pas
 
 | Data | Supabase mode | Fallback mode |
 | --- | --- | --- |
-| Meet setup | Persistent in `meets` | Existing local/in-memory behavior |
+| Meet details entered in Race Setup | Persistent in `meets` | Existing local/in-memory behavior |
 | Race setup | Persistent in `races` | Existing local/in-memory behavior |
 | Rosters | Persistent in `race_athletes` by `race_id` | Current race-scoped fallback behavior |
 | Race sessions | Persistent in `race_sessions` | Temporary in-memory repository |
@@ -208,7 +208,7 @@ There is currently no `002` migration file in the repository; keep the existing 
 
 ## Meet Dashboard and Templates
 
-The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the existing Meet Setup workflow.
+The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the Race Setup workflow.
 
 The Templates section includes an idempotently seeded default XC meet template containing Boys JV, Girls JV, Boys Varsity, and Girls Varsity races. Each default XC race is 5000 meters. Coaches can create and edit custom templates, archive templates, and create a new meet from a template without generating timing data or results.
 
@@ -364,7 +364,7 @@ Supported destructive actions:
 - **Delete race session** from Results: deletes one selected `race_sessions` row and its `split_events`; it does not delete the race or roster.
 - **Delete race** from Meet Dashboard: deletes one race plus its roster rows, timing sessions, and split events; it does not delete the parent meet or sibling races.
 - **Delete meet** from Meet Dashboard: deletes one meet plus its races, race rosters, timing sessions, and split events; it does not delete meet templates or template races.
-- **Clear selected race roster** from Meet Setup: deletes only `race_athletes` rows for the selected race and leaves race sessions/splits intact. The UI warns when timing sessions already exist.
+- **Clear selected race roster** from Race Setup: deletes only `race_athletes` rows for the selected race and leaves race sessions/splits intact. The UI warns when timing sessions already exist.
 - **Development/Admin cleanup** from Meet Dashboard: hidden unless `RACE_SPLIT_TRACKER_ENABLE_DEV_CLEANUP=true`; requires typing `DELETE TEST DATA`; can remove timing data, race rosters, meets/races, or all application test data while preserving templates, template races, schema objects, migrations, and Supabase configuration.
 
 Meet, race, session, roster, and cleanup actions all require explicit typed confirmation. After a successful deletion, Streamlit session-state selections and race-specific caches are cleared so deleted records are not shown until a manual refresh.
@@ -412,7 +412,7 @@ python -m compileall .
 
 ## Prototype Workflow
 
-1. Open the Meet Setup page.
+1. Open the Race Setup page.
 2. Enter meet and race details.
 3. Add athletes, bib numbers, and optional target paces.
 4. Go to the Live Timing page.

@@ -321,7 +321,7 @@ def render() -> None:
     _clock_metric()
 
     if not valid_setup:
-        st.warning("Complete Meet Setup before starting the race. Meet name, race name, checkpoints, and at least one athlete are required.")
+        st.warning("Complete Race Setup before starting the race. Meet name, race name, checkpoints, and at least one athlete are required.")
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     shared_unavailable = repository_result is not None and repository_result.is_temporary
@@ -357,7 +357,7 @@ def render() -> None:
 
     st.subheader("Athlete Timing Buttons")
     if not st.session_state.athletes:
-        st.warning("Add athletes on the Meet Setup page before timing a race.")
+        st.warning("Add athletes on the Race Setup page before timing a race.")
         return
     if not st.session_state.get("active_race_session_id") or not st.session_state.meet_config.checkpoints:
         st.warning("Athlete buttons are disabled until an authoritative race session and checkpoint snapshot are loaded.")
