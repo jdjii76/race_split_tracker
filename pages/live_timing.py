@@ -312,15 +312,15 @@ def render() -> None:
             st.rerun(scope="fragment")
     if c2.button("Pause", use_container_width=True, disabled=clock.status != "running"):
         if _pause_timing():
-            st.rerun()
+            st.rerun(scope="fragment")
     if c3.button("Resume", use_container_width=True, disabled=clock.status != "paused"):
         if _resume_timing():
-            st.rerun()
+            st.rerun(scope="fragment")
 
     confirm_end = c4.checkbox("Confirm end")
     if c4.button("End Race", use_container_width=True, disabled=clock.status not in {"running", "paused"} or not confirm_end):
         if _end_timing():
-            st.rerun()
+            st.rerun(scope="fragment")
 
     last_split = max(st.session_state.splits, key=lambda split: split.sequence) if st.session_state.splits else None
     if last_split:
@@ -328,12 +328,11 @@ def render() -> None:
     confirm_undo = c5.checkbox("Confirm undo")
     if c5.button("Undo Last Tap", use_container_width=True, disabled=not last_split or not confirm_undo):
         if _undo_tap(last_split):
-            st.rerun()
+            st.rerun(scope="fragment")
 
     confirm_reset = c6.checkbox("Confirm reset")
     if c6.button("Reset Race", use_container_width=True, disabled=not confirm_reset):
-        if _reset_timing():
-            st.rerun()
+        _reset_timing()
 
     pending = st.session_state.pending_duplicate
     if pending:
@@ -341,8 +340,7 @@ def render() -> None:
         if athlete:
             st.warning(f"Duplicate tap detected for {athlete.name} within 2 seconds.")
             if st.button("Record Anyway", use_container_width=True):
-                if _record_tap(athlete.athlete_id, now=pending["recorded_at"], record_anyway=True):
-                    st.rerun()
+                _record_tap(athlete.athlete_id, now=pending["recorded_at"], record_anyway=True)
 
     if st.session_state.message:
         st.info(st.session_state.message)
@@ -360,11 +358,9 @@ def render() -> None:
         disabled = shared_unavailable or clock.status != "running" or not st.session_state.timer_name or (finished and not athlete.reopened_after_finish)
         with cols[index % columns_per_row]:
             if st.button(_athlete_button_label(athlete), key=f"tap_{athlete.athlete_id}", use_container_width=True, disabled=disabled):
-                if _record_tap(athlete.athlete_id):
-                    st.rerun()
+                _record_tap(athlete.athlete_id)
             if finished and st.button("Reopen athlete", key=f"reopen_{athlete.athlete_id}", use_container_width=True):
                 reopen_athlete(st.session_state, athlete.athlete_id)
-                st.rerun()
 
     if st.session_state.athletes and all(is_athlete_finished(st.session_state, athlete.athlete_id) for athlete in st.session_state.athletes):
         st.success("Race complete: all athletes have reached the finish.")
