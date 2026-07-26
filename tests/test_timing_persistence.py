@@ -17,6 +17,7 @@ from split_tracker.timing_persistence import (
     persist_resume,
     persist_split_record,
     persist_start,
+    poll_shared_timing,
     race_clock_from_session,
     rebuild_splits_from_events,
     refresh_splits_from_repository,
@@ -371,3 +372,85 @@ def test_shared_progression_converges_across_clients_with_undo_correction_and_fi
     restore_timing_state(recovered)
     assert athlete_finished(recovered.splits, recovered.meet_config.checkpoints)
     assert [split.checkpoint_number for split in recovered.splits] == [10, 30, 90]
+
+
+def test_four_clients_converge_and_starter_recovers_after_failed_poll():
+    from split_tracker.calculations import next_checkpoint
+    from split_tracker.models import Checkpoint
+    from split_tracker.repository import RepositoryError
+
+    repo, race, starter = make_repo_and_session()
+    checkpoints = [
+        Checkpoint(number=1, label="Mile 1", distance_meters=1609.344),
+        Checkpoint(number=2, label="Mile 2", distance_meters=3218.688),
+        Checkpoint(number=3, label="Mile 3", distance_meters=4828.032),
+        Checkpoint(number=4, label="Finish", distance_meters=5000, is_finish=True),
+    ]
+    starter.meet_config.checkpoints = checkpoints
+    starter.meet_config.race_distance_meters = 5000
+    ready = repo.create_race_session(RaceSession(race_id=race.id, status="ready"))
+    repo.create_race_session_checkpoints(ready.id, checkpoints)
+    starter.active_race_session_id = ready.id
+    clients = [starter]
+    for name in ("Mile 1", "Mile 2", "Mile 3"):
+        client = SessionState(**vars(starter).copy())
+        client.timer_name = name
+        client.splits = []
+        clients.append(client)
+
+    persisted_start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    persist_start(starter, now_utc=persisted_start)
+    assert starter.active_race_session_id == ready.id
+
+    for order, client in enumerate(clients[1:], start=1):
+        repo.create_split_event(
+            SplitEvent(
+                race_session_id=ready.id,
+                athlete_id="a1",
+                athlete_name="Alex",
+                checkpoint_number=order,
+                checkpoint_label=f"Mile {order}",
+                elapsed_seconds=order * 300,
+                event_order=order,
+                recorded_by=client.timer_name,
+            )
+        )
+
+    class FailsOnce:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.failed = False
+
+        def get_race_session(self, session_id):
+            if not self.failed:
+                self.failed = True
+                raise RepositoryError("one failed poll")
+            return self.wrapped.get_race_session(session_id)
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+    starter.repository = FailsOnce(repo)
+    assert poll_shared_timing(starter) is None
+    assert starter.active_race_session_id == ready.id
+    assert starter.sync_error == "one failed poll"
+
+    assert poll_shared_timing(starter) is not None
+    assert starter.sync_error == ""
+    assert starter.loaded_split_event_count == 3
+    assert starter.latest_event_id == repo.list_active_split_events(ready.id)[-1].id
+    assert [split.checkpoint_number for split in starter.splits] == [1, 2, 3]
+    assert next_checkpoint(starter.splits, starter.meet_config.checkpoints).label == "Finish"
+    assert repo.get_race_session(ready.id).started_at == persisted_start
+
+    # Every other client performs fresh reads and converges with the starter.
+    for client in clients[1:]:
+        assert poll_shared_timing(client) is not None
+        assert [split.split_id for split in client.splits] == [split.split_id for split in starter.splits]
+        assert client.loaded_split_event_count == 3
+
+    before_ids = [split.split_id for split in starter.splits]
+    before_count = starter.poll_cycle_count
+    poll_shared_timing(starter)
+    assert [split.split_id for split in starter.splits] == before_ids
+    assert starter.poll_cycle_count == before_count + 1

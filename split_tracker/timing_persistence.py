@@ -82,10 +82,37 @@ def synchronize_shared_timing(session_state, *, now_perf: float | None = None, n
     session_state.last_sync_at = utc_now()
     session_state.storage_connected = True
     session_state.sync_error = ""
+    session_state.persisted_race_status = race_session.status
+    session_state.loaded_split_event_count = len(events)
+    session_state.latest_event_id = ""
+    session_state.latest_event_at = None
+    session_state.latest_shared_action = ""
     if events:
         latest = max(events, key=lambda event: (event.recorded_at, event.event_order))
+        session_state.latest_event_id = latest.id
+        session_state.latest_event_at = latest.recorded_at
         session_state.latest_shared_action = f"{latest.athlete_name} • {latest.checkpoint_label}" + (f" • {latest.recorded_by}" if latest.recorded_by else "")
     return race_session
+
+
+def poll_shared_timing(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
+    """Run one observable poll attempt and preserve the last good state on failure."""
+    session_state.poll_cycle_at = utc_now() if now_utc is None else now_utc
+    session_state.poll_cycle_count = session_state.get("poll_cycle_count", 0) + 1
+    try:
+        return synchronize_shared_timing(session_state, now_perf=now_perf, now_utc=now_utc)
+    except Exception as exc:
+        session_state.storage_connected = False
+        session_state.sync_error = str(exc)
+        logger.warning(
+            "Shared timing poll failed",
+            extra={
+                "race_session_id": session_state.get("active_race_session_id"),
+                "timer_name": session_state.get("timer_name", ""),
+                "poll_cycle_count": session_state.poll_cycle_count,
+            },
+        )
+        return None
 
 
 def rebuild_splits_from_events(

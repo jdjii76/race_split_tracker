@@ -79,3 +79,12 @@ poll from active `split_events` and the persisted `race_session_checkpoints`
 sequence. A split or undo made in either browser should therefore advance or
 move back the other browser's **Next** checkpoint within about two seconds,
 including for custom checkpoint labels. No additional migration is required.
+
+For multi-browser development testing, expand **Development synchronization
+status** on each Live Timing page. The panel reports the browser's timer name,
+session ID, poll cycle and timestamp, last successful sync, active event count,
+latest event identity/time, local and persisted statuses, and the most recent
+error. The poll counter should continue increasing about every two seconds on
+every browser, including the starter. A failed read keeps the last good display,
+shows a warning, and is retried by the next fragment cycle. Live session and
+split reads do not use Streamlit caching. No additional migration is required.
