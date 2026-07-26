@@ -8,9 +8,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from split_tracker.calculations import build_split_record, recalculate_athlete_splits
+from split_tracker.calculations import build_split_record
 from split_tracker.models import Athlete, MeetConfig, RaceClock, SplitRecord
 from split_tracker.repository import RaceRepository, RaceSession, RepositoryError, SplitEvent
+from split_tracker.projection import project_race_state
 from split_tracker.session_checkpoints import get_session_checkpoints
 
 logger = logging.getLogger(__name__)
@@ -77,13 +78,18 @@ def synchronize_shared_timing(session_state, *, now_perf: float | None = None, n
         raise RepositoryError("The connected race session no longer exists.")
     events = repository.list_active_split_events(race_session_id)
     all_events = repository.list_all_split_events(race_session_id)
+    # The roster is shared race data too; never let a browser's stale setup copy
+    # decide which persisted split controls or results exist.
+    persisted_athletes = repository.list_race_athletes(race_session.race_id)
+    # Older sessions created before race rosters were introduced still carry
+    # athlete identity in their split rows. Keep that migration path working;
+    # current sessions always use the persisted roster.
+    athletes = persisted_athletes or list(session_state.athletes)
     checkpoint_result = get_session_checkpoints(repository, race_session, session_state.meet_config.checkpoints)
-    rebuilt = rebuild_splits_from_events(
-        events=events,
-        athletes=session_state.athletes,
-        config=replace(session_state.meet_config, checkpoints=checkpoint_result.checkpoints),
-        use_event_checkpoint_identity=True,
-    )
+    projection = project_race_state(race_session, athletes, checkpoint_result.checkpoints, events)
+    rebuilt = list(projection.results_rows)
+    session_state.athletes = athletes
+    session_state.projected_race_state = projection
     session_state.meet_config.checkpoints = checkpoint_result.checkpoints
     session_state.splits = rebuilt
     session_state.split_sequence = max([event.event_order for event in all_events] or [0])
@@ -92,6 +98,7 @@ def synchronize_shared_timing(session_state, *, now_perf: float | None = None, n
     session_state.storage_connected = True
     session_state.sync_error = ""
     session_state.persisted_race_status = race_session.status
+    session_state.persisted_started_at = race_session.started_at
     session_state.loaded_split_event_count = len(events)
     session_state.latest_event_id = ""
     session_state.latest_event_at = None

@@ -4,7 +4,7 @@ from pages.live_timing import athlete_timing_button_disabled, athlete_timing_but
 
 
 def test_button_key_is_stable_and_checkpoint_scoped():
-    assert athlete_timing_button_key("session-1", "athlete-1", 2) == "tap_session-1_athlete-1_2"
+    assert athlete_timing_button_key("session-1", "athlete-1", 2) == "split:session-1:athlete-1:2"
     assert athlete_timing_button_key("session-1", "athlete-1", 2) == athlete_timing_button_key("session-1", "athlete-1", 2)
     assert athlete_timing_button_key("session-1", "athlete-1", 3) != athlete_timing_button_key("session-1", "athlete-1", 2)
     assert athlete_timing_button_key("session-2", "athlete-1", 2) != athlete_timing_button_key("session-1", "athlete-1", 2)

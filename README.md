@@ -32,7 +32,7 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 - Athlete buttons show bib, next checkpoint, latest segment, cumulative time, and target variance when available
 - Tap an athlete to record the exact elapsed time
 - Automatic calculation of checkpoint, segment split, cumulative time, average pace, projected finish, and target variance
-- Two-second duplicate-tap protection with an explicit Record Anyway action
+- Persisted athlete/checkpoint uniqueness with graceful concurrent-tap handling
 - Finished-athlete handling with reopen controls for corrections
 - Live split board sorted by latest checkpoint and cumulative time
 - Active/finished filtering and race-complete messaging
@@ -48,7 +48,8 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 - Python 3.11 or newer
 - Streamlit for the web interface
 - `st.Page` and `st.navigation` for multipage app navigation
-- Streamlit session state for prototype data storage
+- Supabase-authoritative shared live-race status, roster, checkpoints, and splits
+- Streamlit session state only for browser-local UI and diagnostics
 - `time.perf_counter()` for race timing
 - Raw durations stored as decimal seconds
 - Distances stored internally in meters
@@ -375,6 +376,23 @@ Start the Streamlit app with:
 ```bash
 streamlit run app.py
 ```
+
+### Two-browser shared-timing acceptance test
+
+1. Open the app in a normal window and an incognito/private window.
+2. Select the same meet and race in both windows; confirm the displayed race
+   session IDs match exactly, then enter a different timer name in each.
+3. Start in Window 1. Within one two-second poll, confirm Window 2 shows
+   `running` and the same persisted start timestamp without a manual refresh.
+4. Tap an athlete in Window 1. Confirm both split boards show the event and both
+   athlete buttons advance to the same next checkpoint.
+5. Tap a different athlete in Window 2 and confirm both boards converge.
+6. Refresh either browser and confirm the status, official elapsed clock,
+   athlete progress, and results reconstruct from Supabase.
+7. Tap the same athlete/checkpoint nearly simultaneously in both windows.
+   Confirm only one event exists and the other client reloads shared progress.
+8. Pause, resume, and end in one window, confirming the other window follows
+   each persisted status transition.
 
 Streamlit will print a local URL that you can open in a browser. For race-day use, open the app on a phone or tablet connected to the same development machine or deployment environment.
 
