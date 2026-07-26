@@ -311,3 +311,63 @@ def test_waiting_poll_failure_preserves_session_and_timer_identity():
     assert waiting.active_race_session_id == "shared-session"
     assert waiting.selected_race_id
     assert waiting.timer_name == "Back stretch"
+
+
+def test_shared_progression_converges_across_clients_with_undo_correction_and_finish():
+    import pytest
+    from split_tracker.calculations import athlete_finished, next_checkpoint
+    from split_tracker.models import Checkpoint
+    from split_tracker.repository import RepositoryError
+    from split_tracker.timing_persistence import synchronize_shared_timing
+
+    repo, race, client_a = make_repo_and_session()
+    custom = [
+        Checkpoint(number=10, label="Creek", distance_meters=1000),
+        Checkpoint(number=30, label="Hill", distance_meters=2000),
+        Checkpoint(number=90, label="Finish", distance_meters=3000, is_finish=True),
+    ]
+    client_a.meet_config.checkpoints = custom
+    client_a.meet_config.race_distance_meters = 3000
+    shared = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=datetime.now(timezone.utc)))
+    repo.create_race_session_checkpoints(shared.id, custom)
+    client_a.active_race_session_id = shared.id
+    client_b = SessionState(**vars(client_a).copy())
+    client_b.splits = []
+
+    mile_one = repo.create_split_event(SplitEvent(race_session_id=shared.id, athlete_id="a1", athlete_name="Alex", checkpoint_number=10, elapsed_seconds=100, event_order=1))
+    synchronize_shared_timing(client_b)
+    assert next_checkpoint(client_b.splits, client_b.meet_config.checkpoints).number == 30
+
+    mile_two = repo.create_split_event(SplitEvent(race_session_id=shared.id, athlete_id="a1", athlete_name="Alex", checkpoint_number=30, elapsed_seconds=210, event_order=2))
+    synchronize_shared_timing(client_a)
+    assert next_checkpoint(client_a.splits, client_a.meet_config.checkpoints).number == 90
+
+    # A timing-only correction retains checkpoint identity and cannot advance progress.
+    repo.split_events[mile_two.id] = replace(repo.split_events[mile_two.id], elapsed_seconds=205)
+    synchronize_shared_timing(client_a)
+    assert next_checkpoint(client_a.splits, client_a.meet_config.checkpoints).number == 90
+
+    with pytest.raises(RepositoryError, match="already has an active split"):
+        repo.create_split_event(replace(mile_two, id="duplicate", event_order=3))
+    synchronize_shared_timing(client_b)
+    assert next_checkpoint(client_b.splits, client_b.meet_config.checkpoints).number == 90
+
+    repo.soft_delete_split_event(mile_two.id)
+    synchronize_shared_timing(client_b)
+    assert next_checkpoint(client_b.splits, client_b.meet_config.checkpoints).number == 30
+
+    # Restore the correction, finish, and verify both recovered clients converge.
+    repo.restore_split_event(mile_two.id)
+    repo.create_split_event(SplitEvent(race_session_id=shared.id, athlete_id="a1", athlete_name="Alex", checkpoint_number=90, elapsed_seconds=320, event_order=3))
+    synchronize_shared_timing(client_a)
+    synchronize_shared_timing(client_b)
+    assert athlete_finished(client_a.splits, client_a.meet_config.checkpoints)
+    assert athlete_finished(client_b.splits, client_b.meet_config.checkpoints)
+    assert next_checkpoint(client_a.splits, client_a.meet_config.checkpoints) is None
+
+    recovered = SessionState(**vars(client_b).copy())
+    recovered.active_race_session_id = None
+    recovered.splits = []
+    restore_timing_state(recovered)
+    assert athlete_finished(recovered.splits, recovered.meet_config.checkpoints)
+    assert [split.checkpoint_number for split in recovered.splits] == [10, 30, 90]

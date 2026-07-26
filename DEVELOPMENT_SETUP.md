@@ -73,3 +73,9 @@ session from either browser; the other should enter active timing automatically
 without refreshing or reselecting the race. Both displays retain their own timer
 names and calculate elapsed time from the first persisted `started_at`. No
 additional migration is required for waiting-state start synchronization.
+
+During an active race, athlete button progression is rebuilt on every successful
+poll from active `split_events` and the persisted `race_session_checkpoints`
+sequence. A split or undo made in either browser should therefore advance or
+move back the other browser's **Next** checkpoint within about two seconds,
+including for custom checkpoint labels. No additional migration is required.

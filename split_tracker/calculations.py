@@ -135,17 +135,16 @@ def generate_checkpoints(
 
 
 def next_checkpoint(existing_athlete_splits: Iterable[SplitRecord], checkpoints: list[Checkpoint]) -> Checkpoint | None:
-    """Return the next checkpoint for an athlete, or None after finish."""
-    count = len(list(existing_athlete_splits))
-    if count >= len(checkpoints):
-        return None
-    return checkpoints[count]
+    """Return the first persisted checkpoint identity not actively completed."""
+    completed = {split.checkpoint_number for split in existing_athlete_splits}
+    return next((checkpoint for checkpoint in checkpoints if checkpoint.number not in completed), None)
 
 
 def athlete_finished(splits: Iterable[SplitRecord], checkpoints: list[Checkpoint]) -> bool:
     """Return whether an athlete has reached the finish checkpoint."""
-    ordered = sorted(splits, key=lambda split: split.sequence)
-    return bool(ordered and ordered[-1].is_finish and len(ordered) >= len(checkpoints))
+    completed = {split.checkpoint_number for split in splits}
+    finish = next((checkpoint for checkpoint in checkpoints if checkpoint.is_finish), None)
+    return finish is not None and finish.number in completed
 
 
 def build_split_record(
@@ -157,10 +156,15 @@ def build_split_record(
     elapsed_seconds: float,
     race_distance_meters: float,
     sequence: int,
+    checkpoint_number: int | None = None,
 ) -> SplitRecord | None:
     """Build a derived split record for an athlete at the given elapsed time."""
     previous_splits = sorted(existing_athlete_splits, key=lambda split: split.sequence)
-    checkpoint = next_checkpoint(previous_splits, checkpoints)
+    checkpoint = (
+        next((item for item in checkpoints if item.number == checkpoint_number), None)
+        if checkpoint_number is not None
+        else next_checkpoint(previous_splits, checkpoints)
+    )
     if checkpoint is None:
         return None
     previous_cumulative = previous_splits[-1].cumulative_time_seconds if previous_splits else None
@@ -201,8 +205,13 @@ def recalculate_athlete_splits(
     recalculated: list[SplitRecord] = []
     ordered = sorted(splits, key=lambda split: split.sequence)
     previous_cumulative: float | None = None
-    for index, split in enumerate(ordered[: len(checkpoints)]):
-        checkpoint = checkpoints[index]
+    checkpoints_by_number = {checkpoint.number: checkpoint for checkpoint in checkpoints}
+    seen: set[int] = set()
+    for split in ordered:
+        checkpoint = checkpoints_by_number.get(split.checkpoint_number)
+        if checkpoint is None or checkpoint.number in seen:
+            continue
+        seen.add(checkpoint.number)
         segment = segment_split(previous_cumulative, split.cumulative_time_seconds)
         avg_pace = average_pace(split.cumulative_time_seconds, checkpoint.distance_meters)
         projection = projected_finish(split.cumulative_time_seconds, checkpoint.distance_meters, race_distance_meters)

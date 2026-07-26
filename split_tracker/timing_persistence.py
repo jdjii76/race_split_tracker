@@ -69,7 +69,12 @@ def synchronize_shared_timing(session_state, *, now_perf: float | None = None, n
     events = repository.list_active_split_events(race_session_id)
     all_events = repository.list_all_split_events(race_session_id)
     checkpoint_result = get_session_checkpoints(repository, race_session, session_state.meet_config.checkpoints)
-    rebuilt = rebuild_splits_from_events(events=events, athletes=session_state.athletes, config=replace(session_state.meet_config, checkpoints=checkpoint_result.checkpoints))
+    rebuilt = rebuild_splits_from_events(
+        events=events,
+        athletes=session_state.athletes,
+        config=replace(session_state.meet_config, checkpoints=checkpoint_result.checkpoints),
+        use_event_checkpoint_identity=True,
+    )
     session_state.meet_config.checkpoints = checkpoint_result.checkpoints
     session_state.splits = rebuilt
     session_state.split_sequence = max([event.event_order for event in all_events] or [0])
@@ -88,8 +93,14 @@ def rebuild_splits_from_events(
     events: list[SplitEvent],
     athletes: list[Athlete],
     config: MeetConfig,
+    use_event_checkpoint_identity: bool = False,
 ) -> list[SplitRecord]:
-    """Rebuild visible SplitRecord objects from persisted active events."""
+    """Rebuild visible splits, optionally matching persisted checkpoint identity.
+
+    Live timing always enables identity matching against its session snapshot.
+    The positional default remains only for reconstruction of legacy sessions
+    whose historical events may reference checkpoint numbers no longer present.
+    """
     athletes_by_id = {athlete.athlete_id: athlete for athlete in athletes}
     rebuilt_by_athlete: dict[str, list[SplitRecord]] = {}
     ordered_events = sorted(events, key=lambda event: (event.event_order, event.recorded_at, event.id))
@@ -104,6 +115,7 @@ def rebuild_splits_from_events(
             elapsed_seconds=event.elapsed_seconds,
             race_distance_meters=config.race_distance_meters,
             sequence=event.event_order,
+            checkpoint_number=event.checkpoint_number if use_event_checkpoint_identity else None,
         )
         if split is not None:
             previous.append(split)
@@ -121,7 +133,12 @@ def refresh_splits_from_repository(session_state) -> None:
     if race_session is not None:
         checkpoint_result = get_session_checkpoints(repository, race_session, session_state.meet_config.checkpoints)
         session_state.meet_config.checkpoints = checkpoint_result.checkpoints
-    session_state.splits = rebuild_splits_from_events(events=events, athletes=session_state.athletes, config=session_state.meet_config)
+    session_state.splits = rebuild_splits_from_events(
+        events=events,
+        athletes=session_state.athletes,
+        config=session_state.meet_config,
+        use_event_checkpoint_identity=True,
+    )
     session_state.split_sequence = max([event.event_order for event in repository.list_all_split_events(race_session_id)] or [0])
 
 
