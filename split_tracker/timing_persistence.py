@@ -151,6 +151,19 @@ def persist_start(session_state, *, now_perf: float | None = None, now_utc: date
     if repository is None or not race_id:
         return None
     current = utc_now() if now_utc is None else now_utc
+    race_session_id = session_state.get("active_race_session_id")
+    if race_session_id:
+        latest = repository.get_race_session(race_session_id)
+        if latest is None:
+            raise RepositoryError("Race session not found.")
+        if latest.status in {"running", "paused"} and latest.started_at is not None:
+            session_state.race_clock = race_clock_from_session(latest, now_perf=now_perf, now_utc=current)
+            return latest
+        # The conditional repository operation is idempotent: a second coach
+        # receives the first coach's persisted started_at instead of replacing it.
+        session = repository.start_race_session(race_session_id, current)
+        session_state.race_clock = race_clock_from_session(session, now_perf=now_perf, now_utc=current)
+        return session
     session = repository.create_started_race_session_with_checkpoints(
         RaceSession(race_id=race_id, status="running", started_at=current, elapsed_offset_seconds=0.0),
         session_state.meet_config.checkpoints,

@@ -133,8 +133,11 @@ def _restore_if_needed() -> None:
     if st.session_state.get("timing_restored_for_race_id") == race_id:
         return
     try:
-        restore_timing_state(st.session_state)
-        st.session_state.timing_restored_for_race_id = race_id
+        restored = restore_timing_state(st.session_state)
+        # Keep looking on subsequent fragment runs when another browser may
+        # create the first session after this browser reached the waiting page.
+        if restored is not None:
+            st.session_state.timing_restored_for_race_id = race_id
     except Exception as exc:
         _show_persistence_error("Restore timing session", exc)
 
@@ -237,7 +240,9 @@ def render() -> None:
     """Render the live timing page."""
     st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
     _restore_if_needed()
-    if st.session_state.get("active_race_session_id") and st.session_state.race_clock.status in {"running", "paused"}:
+    # Poll the exact connected row even while the local clock is not_started.
+    # This is what lets a waiting browser observe another coach's start.
+    if st.session_state.get("active_race_session_id"):
         try:
             synchronize_shared_timing(st.session_state)
         except Exception as exc:
@@ -265,6 +270,11 @@ def render() -> None:
         st.caption(f"Latest action: **{st.session_state.latest_shared_action}**")
     if st.session_state.get("sync_error"):
         st.error(f"Shared timing synchronization failed: {st.session_state.sync_error}. Existing shared data remains displayed; retry is automatic.")
+    if st.session_state.get("active_race_session_id") and clock.status == "not_started":
+        st.info(
+            f"Waiting for race to start • Session **{connected_id}** • "
+            f"Timer **{st.session_state.timer_name or 'Name required'}** • Storage **{storage}**"
+        )
     h1, h2, h3 = st.columns([2, 1, 1])
     h1.subheader(f"{config.meet_name or 'Meet required'} • {config.race_name or 'Race required'}")
     h2.metric("Distance", format_distance(config.race_distance_meters))

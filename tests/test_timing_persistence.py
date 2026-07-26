@@ -16,6 +16,7 @@ from split_tracker.timing_persistence import (
     persist_pause,
     persist_resume,
     persist_split_record,
+    persist_start,
     race_clock_from_session,
     rebuild_splits_from_events,
     refresh_splits_from_repository,
@@ -246,3 +247,67 @@ def test_sync_database_failure_preserves_visible_state():
     with pytest.raises(RepositoryError, match="temporary outage"):
         synchronize_shared_timing(session)
     assert session.splits == [sentinel]
+
+
+def test_waiting_client_observes_other_clients_authoritative_start():
+    from split_tracker.timing_persistence import synchronize_shared_timing
+
+    repo, race, client_a = make_repo_and_session()
+    ready = repo.create_race_session(RaceSession(race_id=race.id, status="ready"))
+    client_a.active_race_session_id = ready.id
+    client_a.timer_name = "Starter"
+    client_b = SessionState(**vars(client_a).copy())
+    client_b.timer_name = "Finish tablet"
+    original_start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+    persist_start(client_a, now_perf=100.0, now_utc=original_start)
+    observed = synchronize_shared_timing(
+        client_b,
+        now_perf=230.0,
+        now_utc=datetime(2026, 1, 1, 12, 0, 30, tzinfo=timezone.utc),
+    )
+
+    assert observed.id == ready.id
+    assert observed.started_at == original_start
+    assert client_b.active_race_session_id == ready.id
+    assert client_b.race_clock.status == "running"
+    assert client_b.race_clock.start_perf_counter == 200.0
+    assert client_b.timer_name == "Finish tablet"
+
+
+def test_nearly_simultaneous_starts_preserve_first_started_at():
+    repo, race, first = make_repo_and_session()
+    ready = repo.create_race_session(RaceSession(race_id=race.id, status="ready"))
+    first.active_race_session_id = ready.id
+    second = SessionState(**vars(first).copy())
+    first_start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    later_attempt = datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc)
+
+    started_by_first = persist_start(first, now_utc=first_start)
+    observed_by_second = persist_start(second, now_utc=later_attempt)
+
+    assert started_by_first.id == observed_by_second.id == ready.id
+    assert started_by_first.started_at == observed_by_second.started_at == first_start
+    assert repo.get_race_session(ready.id).started_at == first_start
+
+
+def test_waiting_poll_failure_preserves_session_and_timer_identity():
+    import pytest
+    from split_tracker.repository import RepositoryError
+    from split_tracker.timing_persistence import synchronize_shared_timing
+
+    _, _, waiting = make_repo_and_session()
+    waiting.active_race_session_id = "shared-session"
+    waiting.timer_name = "Back stretch"
+
+    class FailingRepository:
+        def get_race_session(self, _session_id):
+            raise RepositoryError("temporary polling failure")
+
+    waiting.repository = FailingRepository()
+    with pytest.raises(RepositoryError, match="temporary polling failure"):
+        synchronize_shared_timing(waiting)
+
+    assert waiting.active_race_session_id == "shared-session"
+    assert waiting.selected_race_id
+    assert waiting.timer_name == "Back stretch"
