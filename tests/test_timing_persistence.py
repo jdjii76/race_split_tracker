@@ -106,13 +106,15 @@ def test_split_event_creation_ordering_soft_delete_and_restore_active_events():
     later = repo.create_split_event(SplitEvent(race_session_id=race_session.id, athlete_id="a1", checkpoint_number=2, elapsed_seconds=150.0, event_order=2))
     earlier = repo.create_split_event(SplitEvent(race_session_id=race_session.id, athlete_id="a1", checkpoint_number=1, elapsed_seconds=75.0, event_order=1))
 
-    assert repo.list_active_split_events(race_session.id) == [earlier, later]
+    # Official timestamp, creation timestamp, then ID is the canonical order;
+    # event_order is an allocation sequence, not a cross-client clock.
+    assert repo.list_active_split_events(race_session.id) == [later, earlier]
     deleted = repo.soft_delete_split_event(later.id)
     assert deleted.is_deleted
     assert repo.list_active_split_events(race_session.id) == [earlier]
     restored = repo.restore_split_event(later.id)
     assert not restored.is_deleted
-    assert repo.list_active_split_events(race_session.id) == [earlier, restored]
+    assert repo.list_active_split_events(race_session.id) == [restored, earlier]
 
 
 def test_rebuild_runner_progress_from_persisted_events():

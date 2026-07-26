@@ -8,8 +8,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from split_tracker.calculations import athlete_finished, next_checkpoint
-from split_tracker.formatting import format_distance, format_duration, format_pace
+from split_tracker.formatting import format_distance, format_duration
 from split_tracker.timing_persistence import (
     persist_cancel,
     persist_completion,
@@ -24,7 +23,6 @@ from split_tracker.timing_persistence import (
 from split_tracker.state import (
     elapsed_seconds,
     end_race,
-    is_athlete_finished,
     pause_race,
     reopen_athlete,
     reset_race,
@@ -62,31 +60,10 @@ def _clock_metric() -> None:
     st.metric("Race Clock", format_duration(elapsed_seconds(st.session_state.race_clock)))
 
 
-def _last_split_for(athlete_id: str):
-    splits = [split for split in st.session_state.splits if split.athlete_id == athlete_id]
-    return max(splits, key=lambda split: split.sequence) if splits else None
-
-
-def _athlete_button_label(athlete) -> str:
-    last = _last_split_for(athlete.athlete_id)
-    checkpoints = st.session_state.meet_config.checkpoints
-    next_cp = next_checkpoint([split for split in st.session_state.splits if split.athlete_id == athlete.athlete_id], checkpoints)
-    finished = is_athlete_finished(st.session_state, athlete.athlete_id)
-    target = ""
-    if last and last.target_variance_seconds is not None:
-        direction = "behind" if last.target_variance_seconds > 0 else "ahead"
-        target = f"\n{format_duration(abs(last.target_variance_seconds))} {direction} target"
-    status = "FINISHED" if finished else f"Next: {next_cp.label if next_cp else '—'}"
-    last_line = ""
-    if last:
-        last_line = f"\nLast: {format_duration(last.segment_split_seconds)} • Cum: {format_duration(last.cumulative_time_seconds)}"
-    return f"{athlete.name}\nBib {athlete.bib_number or '—'} • {status}{last_line}{target}"
-
-
 def athlete_timing_button_key(race_session_id: str, athlete_id: str, checkpoint_number: int | None) -> str:
     """Return a stable identity for one session/athlete/checkpoint button."""
     checkpoint_key = "complete" if checkpoint_number is None else str(checkpoint_number)
-    return f"tap_{race_session_id}_{athlete_id}_{checkpoint_key}"
+    return f"split:{race_session_id}:{athlete_id}:{checkpoint_key}"
 
 
 def athlete_timing_button_disabled(
@@ -106,10 +83,11 @@ def athlete_timing_button_disabled(
 
 def _live_board_frame(filter_value: str) -> pd.DataFrame:
     rows = []
-    for athlete in st.session_state.athletes:
-        splits = [split for split in st.session_state.splits if split.athlete_id == athlete.athlete_id]
-        latest = max(splits, key=lambda split: split.sequence) if splits else None
-        finished = athlete_finished(splits, st.session_state.meet_config.checkpoints)
+    projection = st.session_state.get("projected_race_state")
+    for athlete_state in projection.athletes if projection else ():
+        athlete = athlete_state.athlete
+        latest = athlete_state.splits[-1] if athlete_state.splits else None
+        finished = athlete_state.finished
         if filter_value == "Active" and finished:
             continue
         if filter_value == "Finished" and not finished:
@@ -283,6 +261,7 @@ def render() -> None:
     with st.expander("Development synchronization status", expanded=False):
         poll_at = st.session_state.get("poll_cycle_at")
         latest_at = st.session_state.get("latest_event_at")
+        action = st.session_state.get("last_split_action") or {}
         st.code(
             "\n".join(
                 [
@@ -298,12 +277,18 @@ def render() -> None:
                     f"latest_event_at: {latest_at.isoformat() if latest_at else 'none'}",
                     f"local_clock_status: {clock.status}",
                     f"persisted_session_status: {st.session_state.get('persisted_race_status') or 'unknown'}",
+                    f"persisted_started_at: {st.session_state.get('persisted_started_at') or 'none'}",
+                    f"projected_event_count: {len(getattr(st.session_state.get('projected_race_state'), 'events', ())) }",
+                    f"projected_results_row_count: {len(getattr(st.session_state.get('projected_race_state'), 'results_rows', ())) }",
                     f"sync_error: {st.session_state.get('sync_error') or 'none'}",
+                    f"last_write_attempt: {action.get('click_received_at') if action else 'none'}",
+                    f"last_write_success: {action.get('result') == 'inserted' if action else False}",
+                    f"last_write_event_id: {action.get('inserted_event_id') or 'none' if action else 'none'}",
+                    f"last_write_error: {action.get('error') or 'none' if action else 'none'}",
                 ]
             ),
             language="text",
         )
-        action = st.session_state.get("last_split_action") or {}
         if action:
             st.code(
                 "\n".join(
@@ -342,18 +327,18 @@ def render() -> None:
     shared_unavailable = repository_result is not None and repository_result.is_temporary
     if c1.button("Start", use_container_width=True, disabled=shared_unavailable or not valid_setup or clock.status == "running" or (clock.status == "ended" and bool(st.session_state.splits))):
         if _start_timing():
-            st.rerun(scope="fragment")
+            st.rerun()
     if c2.button("Pause", use_container_width=True, disabled=clock.status != "running"):
         if _pause_timing():
-            st.rerun(scope="fragment")
+            st.rerun()
     if c3.button("Resume", use_container_width=True, disabled=clock.status != "paused"):
         if _resume_timing():
-            st.rerun(scope="fragment")
+            st.rerun()
 
     confirm_end = c4.checkbox("Confirm end")
     if c4.button("End Race", use_container_width=True, disabled=clock.status not in {"running", "paused"} or not confirm_end):
         if _end_timing():
-            st.rerun(scope="fragment")
+            st.rerun()
 
     last_split = max(st.session_state.splits, key=lambda split: split.sequence) if st.session_state.splits else None
     if last_split:
@@ -361,20 +346,11 @@ def render() -> None:
     confirm_undo = c5.checkbox("Confirm undo")
     if c5.button("Undo Last Tap", use_container_width=True, disabled=not last_split or not confirm_undo):
         if _undo_tap(last_split):
-            st.rerun(scope="fragment")
+            st.rerun()
 
     confirm_reset = c6.checkbox("Confirm reset")
     if c6.button("Reset Race", use_container_width=True, disabled=not confirm_reset):
         _reset_timing()
-
-    pending = st.session_state.pending_duplicate
-    if pending:
-        athlete = next((item for item in st.session_state.athletes if item.athlete_id == pending["athlete_id"]), None)
-        if athlete:
-            st.warning(f"Duplicate tap detected for {athlete.name} within 2 seconds.")
-            if st.button("Record Anyway", use_container_width=True):
-                if _record_tap(athlete.athlete_id):
-                    st.rerun()
 
     if st.session_state.message:
         st.info(st.session_state.message)
@@ -387,12 +363,14 @@ def render() -> None:
         st.warning("Athlete buttons are disabled until an authoritative race session and checkpoint snapshot are loaded.")
 
     columns_per_row = 2 if len(st.session_state.athletes) <= 10 else 3
-    for index, athlete in enumerate(st.session_state.athletes):
+    projection = st.session_state.get("projected_race_state")
+    projected_athletes = list(projection.athletes) if projection else []
+    for index, athlete_state in enumerate(projected_athletes):
+        athlete = athlete_state.athlete
         if index % columns_per_row == 0:
             cols = st.columns(columns_per_row)
-        finished = is_athlete_finished(st.session_state, athlete.athlete_id)
-        athlete_splits = [split for split in st.session_state.splits if split.athlete_id == athlete.athlete_id]
-        next_cp = next_checkpoint(athlete_splits, st.session_state.meet_config.checkpoints)
+        finished = athlete_state.finished
+        next_cp = athlete_state.next_checkpoint
         disabled = athlete_timing_button_disabled(
             shared_unavailable=shared_unavailable,
             race_session_id=st.session_state.get("active_race_session_id"),
@@ -408,24 +386,42 @@ def render() -> None:
             next_cp.number if next_cp else None,
         )
         with cols[index % columns_per_row]:
-            if st.button(_athlete_button_label(athlete), key=button_key, use_container_width=True, disabled=disabled):
+            if st.button(athlete_state.button_label, key=button_key, use_container_width=True, disabled=disabled):
                 if _record_tap(athlete.athlete_id):
-                    st.rerun(scope="fragment")
+                    st.rerun()
             if finished and st.button("Reopen athlete", key=f"reopen_{athlete.athlete_id}", use_container_width=True):
                 reopen_athlete(st.session_state, athlete.athlete_id)
 
-    if st.session_state.athletes and all(is_athlete_finished(st.session_state, athlete.athlete_id) for athlete in st.session_state.athletes):
+    if projected_athletes and all(item.finished for item in projected_athletes):
         st.success("Race complete: all athletes have reached the finish.")
         if st.button("Go to Results", use_container_width=True):
             st.switch_page(st.session_state.page_registry["results"])
 
     st.subheader("Live Split Board")
     filter_value = st.selectbox("Filter", ["All athletes", "Active", "Finished"], label_visibility="collapsed")
+    # Both controls and results consume the exact same projection snapshot.
     board = _live_board_frame(filter_value)
     if board.empty:
         st.caption("No athletes match this filter.")
     else:
         st.dataframe(board, hide_index=True, use_container_width=True)
+
+    if st.session_state.get("debug_mode") and projected_athletes:
+        with st.expander("Per-athlete synchronization diagnostics"):
+            for item in projected_athletes:
+                st.code(
+                    "\n".join(
+                        [
+                            f"race_athlete_id: {item.athlete.athlete_id}",
+                            f"athlete_name: {item.athlete.name}",
+                            f"persisted_split_count: {item.completed_split_count}",
+                            f"next_checkpoint_id: {item.next_checkpoint.number if item.next_checkpoint else 'none'}",
+                            f"next_checkpoint_label: {item.next_checkpoint.label if item.next_checkpoint else 'none'}",
+                            f"button_disabled: {not item.button_enabled}",
+                            f"latest_split_event_id: {item.latest_split_event.id if item.latest_split_event else 'none'}",
+                        ]
+                    )
+                )
 
 
 # Preserve the original working fragment boundary: the page renderer itself is
