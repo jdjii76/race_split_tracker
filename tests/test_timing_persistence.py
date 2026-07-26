@@ -403,6 +403,7 @@ def test_four_clients_converge_and_starter_recovers_after_failed_poll():
     start_and_synchronize_shared_timing(starter, now_utc=persisted_start)
     assert starter.active_race_session_id == ready.id
     assert starter.initiated_start_session_id == ready.id
+    assert starter.timing_restored_for_race_id == race.id
 
     for order, client in enumerate(clients[1:], start=1):
         repo.create_split_event(
@@ -482,6 +483,7 @@ def test_direct_start_and_detected_start_use_equivalent_authoritative_state():
     assert direct.id == detected.id == ready.id
     assert direct.started_at == detected.started_at == started_at
     assert starter.active_race_session_id == waiting.active_race_session_id
+    assert starter.timing_restored_for_race_id == waiting.timing_restored_for_race_id == race.id
     assert starter.race_clock.status == waiting.race_clock.status == "running"
     assert starter.race_clock.start_perf_counter == 112.0
     assert waiting.race_clock.start_perf_counter == 112.0

@@ -87,6 +87,8 @@ def synchronize_shared_timing(session_state, *, now_perf: float | None = None, n
     session_state.latest_event_id = ""
     session_state.latest_event_at = None
     session_state.latest_shared_action = ""
+    if session_state.get("selected_race_id"):
+        session_state.timing_restored_for_race_id = session_state.selected_race_id
     if events:
         latest = max(events, key=lambda event: (event.recorded_at, event.event_order))
         session_state.latest_event_id = latest.id

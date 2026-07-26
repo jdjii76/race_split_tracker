@@ -236,8 +236,9 @@ def _undo_tap(split) -> bool:
         _show_persistence_error("Undo split", exc)
         return False
 
-def _render_live_timing_surface() -> None:
-    """Render all authoritative shared UI inside one polling fragment."""
+def render() -> None:
+    """Render the existing controlled live-timing polling fragment."""
+    st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
     st.session_state.last_fragment_rerun_at = datetime.now(timezone.utc)
     _restore_if_needed()
     # Poll the exact connected row even while the local clock is not_started.
@@ -375,16 +376,7 @@ def _render_live_timing_surface() -> None:
         st.dataframe(board, hide_index=True, use_container_width=True)
 
 
-# Keep the stable st.Page entry point outside the fragment. Every component that
-# depends on shared state lives inside this one non-nested controlled rerun path.
-_polling_live_timing_surface = (
-    st.fragment(run_every=2)(_render_live_timing_surface)
-    if hasattr(st, "fragment")
-    else _render_live_timing_surface
-)
-
-
-def render() -> None:
-    """Render the live page and invoke its single controlled polling fragment."""
-    st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
-    _polling_live_timing_surface()
+# Preserve the original working fragment boundary: the page renderer itself is
+# the single fragment. Do not wrap it in a second page/fragment architecture.
+if hasattr(st, "fragment"):
+    render = st.fragment(run_every=2)(render)
