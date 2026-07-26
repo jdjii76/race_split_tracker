@@ -58,3 +58,40 @@ SUPABASE_KEY = "your-development-publishable-key"
 The current SQL policies intentionally allow development anon access. They are
 not suitable for a public, multi-user deployment and must be replaced by
 authenticated owner-based policies in a later phase.
+
+## Phase 4.3A shared live timing
+
+Apply `supabase/migrations/006_shared_live_timing.sql` in the Supabase SQL Editor after migrations 001–005. It adds timer attribution, a partial uniqueness constraint for active athlete/checkpoint splits, and the transactional `record_shared_split` RPC. Do not apply the migration from the application and never commit project credentials.
+
+To test manually, run `streamlit run app.py`, open the app in two different browsers (or one normal and one private window), select the same persisted meet/race in both, and enter a different **Timer / display name** in each. Start or recover the active race session and record a split in either browser. The other browser should show it within approximately two seconds. Undoing a split is synchronized on the same polling cycle. Disconnect Supabase temporarily to verify that a failed tap displays an error and can be tapped again after connectivity returns.
+
+Polling is intentionally limited to one request cycle about every two seconds while an active timing page is open. It is not realtime: displays can lag by one polling interval, each open browser generates periodic database reads, participant names are informational rather than authenticated identities, and temporary network errors remain visible until a later successful synchronization. This prototype's development anon policies are not suitable for a public deployment.
+
+The same two-second polling cycle also runs while a browser is connected to a
+ready race session and displays **Waiting for race to start**. Start the shared
+session from either browser; the other should enter active timing automatically
+without refreshing or reselecting the race. Both displays retain their own timer
+names and calculate elapsed time from the first persisted `started_at`. No
+additional migration is required for waiting-state start synchronization.
+
+During an active race, athlete button progression is rebuilt on every successful
+poll from active `split_events` and the persisted `race_session_checkpoints`
+sequence. A split or undo made in either browser should therefore advance or
+move back the other browser's **Next** checkpoint within about two seconds,
+including for custom checkpoint labels. No additional migration is required.
+
+For multi-browser development testing, expand **Development synchronization
+status** on each Live Timing page. The panel reports the browser's timer name,
+session ID, poll cycle and timestamp, last successful sync, active event count,
+latest event identity/time, local and persisted statuses, and the most recent
+error. The poll counter should continue increasing about every two seconds on
+every browser, including the starter. A failed read keeps the last good display,
+shows a warning, and is retried by the next fragment cycle. Live session and
+split reads do not use Streamlit caching. No additional migration is required.
+
+The status panel also reports whether the current browser initiated this race
+session and the last fragment rerun time. Immediately after **Start**, the app
+reloads the persisted session and events through the same synchronization
+function used by waiting browsers, then requests a fragment-scoped rerun. The
+starter's fragment timestamp and poll counter must continue advancing alongside
+the other browsers; no full-application rerun is used for this transition.

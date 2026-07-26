@@ -23,6 +23,19 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("message", "")
     session_state.setdefault("pending_duplicate", None)
     session_state.setdefault("setup_saved", False)
+    session_state.setdefault("timer_name", "")
+    session_state.setdefault("last_sync_at", None)
+    session_state.setdefault("storage_connected", False)
+    session_state.setdefault("sync_error", "")
+    session_state.setdefault("latest_shared_action", "")
+    session_state.setdefault("poll_cycle_at", None)
+    session_state.setdefault("poll_cycle_count", 0)
+    session_state.setdefault("persisted_race_status", "")
+    session_state.setdefault("loaded_split_event_count", 0)
+    session_state.setdefault("latest_event_id", "")
+    session_state.setdefault("latest_event_at", None)
+    session_state.setdefault("initiated_start_session_id", "")
+    session_state.setdefault("last_fragment_rerun_at", None)
 
 
 def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
