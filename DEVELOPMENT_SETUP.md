@@ -96,3 +96,12 @@ function used by waiting browsers, marks that race as restored, then requests a
 single fragment-scoped rerun. The starter's fragment timestamp and poll counter
 must continue advancing alongside the other browsers. The original page-level
 fragment boundary remains unchanged; do not replace it with a wrapper fragment.
+
+Athlete button actions are validated against a fresh read of the selected race
+session, active split events, and checkpoint snapshot before inserting. Expand
+**Development synchronization status** to inspect the last action's athlete,
+intended checkpoint, authoritative elapsed time, click timestamp, insert/event
+ID, duplicate or error result, and post-insert event count. A successful tap is
+reloaded immediately and other browsers should converge within about two
+seconds. The existing development anon policies and `record_shared_split` RPC
+permit the insert; this fix requires no additional migration or SQL.

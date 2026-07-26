@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -14,6 +14,15 @@ from split_tracker.repository import RaceRepository, RaceSession, RepositoryErro
 from split_tracker.session_checkpoints import get_session_checkpoints
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SplitActionResult:
+    """Outcome of one authoritative athlete-button action."""
+
+    status: str
+    event: SplitEvent | None = None
+    message: str = ""
 
 
 def utc_now() -> datetime:
@@ -132,6 +141,88 @@ def start_and_synchronize_shared_timing(
     synchronized = synchronize_shared_timing(session_state, now_perf=now_perf, now_utc=now_utc)
     session_state.initiated_start_session_id = synchronized.id
     return synchronized
+
+
+def record_authoritative_split(
+    session_state,
+    athlete_id: str,
+    *,
+    now_utc: datetime | None = None,
+) -> SplitActionResult:
+    """Revalidate and persist one split without speculative local progression."""
+    repository: RaceRepository | None = session_state.repository
+    race_session_id = session_state.get("active_race_session_id")
+    action_at = utc_now() if now_utc is None else now_utc
+    athlete = next((item for item in session_state.athletes if item.athlete_id == athlete_id), None)
+    diagnostics = {
+        "timer_name": session_state.get("timer_name", ""),
+        "athlete_id": athlete_id,
+        "athlete_name": athlete.name if athlete else "",
+        "race_session_id": race_session_id or "",
+        "click_received_at": action_at,
+        "checkpoint_number": None,
+        "checkpoint_label": "",
+        "elapsed_seconds": None,
+        "result": "validating",
+        "inserted_event_id": "",
+        "events_after_reload": session_state.get("loaded_split_event_count", 0),
+        "error": "",
+    }
+    session_state.last_split_action = diagnostics
+    if repository is None or not race_session_id:
+        diagnostics.update(result="error", error="No shared race session is connected.")
+        raise RepositoryError(diagnostics["error"])
+    if athlete is None:
+        diagnostics.update(result="error", error="Athlete not found.")
+        raise RepositoryError(diagnostics["error"])
+
+    race_session = synchronize_shared_timing(session_state, now_utc=action_at)
+    if race_session.status != "running" or race_session.started_at is None:
+        diagnostics.update(result="error", error="Splits can only be recorded while the shared race is running.")
+        raise RepositoryError(diagnostics["error"])
+    athlete_splits = [split for split in session_state.splits if split.athlete_id == athlete_id]
+    record = build_split_record(
+        split_id=str(uuid4()),
+        athlete=athlete,
+        existing_athlete_splits=athlete_splits,
+        checkpoints=session_state.meet_config.checkpoints,
+        elapsed_seconds=persisted_elapsed_seconds(race_session, action_at),
+        race_distance_meters=session_state.meet_config.race_distance_meters,
+        sequence=session_state.split_sequence + 1,
+    )
+    if record is None:
+        diagnostics.update(result="error", error=f"{athlete.name} has no remaining checkpoints.")
+        raise RepositoryError(diagnostics["error"])
+    diagnostics.update(
+        checkpoint_number=record.checkpoint_number,
+        checkpoint_label=record.checkpoint_label,
+        elapsed_seconds=record.cumulative_time_seconds,
+    )
+    event = replace(
+        split_event_from_record(record, race_session_id=race_session_id),
+        recorded_by=session_state.get("timer_name", ""),
+        recorded_at=action_at,
+    )
+    try:
+        saved = repository.create_split_event(event)
+    except RepositoryError as exc:
+        if "already has an active split" in str(exc):
+            synchronize_shared_timing(session_state, now_utc=action_at)
+            diagnostics.update(
+                result="duplicate",
+                error=str(exc),
+                events_after_reload=session_state.loaded_split_event_count,
+            )
+            return SplitActionResult(status="duplicate", message=str(exc))
+        diagnostics.update(result="error", error=str(exc))
+        raise
+    synchronize_shared_timing(session_state, now_utc=action_at)
+    diagnostics.update(
+        result="inserted",
+        inserted_event_id=saved.id,
+        events_after_reload=session_state.loaded_split_event_count,
+    )
+    return SplitActionResult(status="inserted", event=saved, message=f"Recorded {athlete.name} at {record.checkpoint_label}.")
 
 
 def rebuild_splits_from_events(

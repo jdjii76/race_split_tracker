@@ -19,6 +19,7 @@ from split_tracker.timing_persistence import (
     persist_start,
     poll_shared_timing,
     race_clock_from_session,
+    record_authoritative_split,
     rebuild_splits_from_events,
     refresh_splits_from_repository,
     restore_timing_state,
@@ -492,3 +493,104 @@ def test_direct_start_and_detected_start_use_equivalent_authoritative_state():
     assert starter.loaded_split_event_count == waiting.loaded_split_event_count == 0
     assert starter.initiated_start_session_id == ready.id
     assert waiting.get("initiated_start_session_id", "") == ""
+
+
+def test_authoritative_button_action_inserts_then_reloads_without_local_speculation():
+    from split_tracker.calculations import next_checkpoint
+
+    repo, race, client = make_repo_and_session()
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=started_at))
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+    client.timer_name = "Mile one"
+
+    result = record_authoritative_split(client, "a1", now_utc=datetime(2026, 1, 1, 12, 1, 10, tzinfo=timezone.utc))
+
+    assert result.status == "inserted"
+    assert result.event.elapsed_seconds == 70
+    assert result.event.recorded_by == "Mile one"
+    assert [split.split_id for split in client.splits] == [result.event.id]
+    assert next_checkpoint(client.splits, client.meet_config.checkpoints).number == 2
+    assert client.last_split_action["result"] == "inserted"
+    assert client.last_split_action["events_after_reload"] == 1
+
+
+def test_starter_and_nonstarter_can_both_record_authoritative_splits():
+    repo, race, starter = make_repo_and_session()
+    ready = repo.create_race_session(RaceSession(race_id=race.id, status="ready"))
+    repo.create_race_session_checkpoints(ready.id, starter.meet_config.checkpoints)
+    starter.active_race_session_id = ready.id
+    other = SessionState(**vars(starter).copy())
+    other.splits = []
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    start_and_synchronize_shared_timing(starter, now_utc=start)
+    poll_shared_timing(other, now_utc=start)
+
+    first = record_authoritative_split(starter, "a1", now_utc=datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc))
+    poll_shared_timing(other, now_utc=datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc))
+    second = record_authoritative_split(other, "a1", now_utc=datetime(2026, 1, 1, 12, 2, tzinfo=timezone.utc))
+    poll_shared_timing(starter, now_utc=datetime(2026, 1, 1, 12, 2, tzinfo=timezone.utc))
+
+    assert first.event.checkpoint_number == 1
+    assert second.event.checkpoint_number == 2
+    assert [split.split_id for split in starter.splits] == [first.event.id, second.event.id]
+    assert [split.split_id for split in other.splits] == [first.event.id, second.event.id]
+
+
+def test_concurrent_duplicate_loser_reloads_instead_of_advancing_twice():
+    repo, race, client = make_repo_and_session()
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=start))
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+
+    class ConcurrentWinner:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.inserted = False
+
+        def create_split_event(self, event):
+            if not self.inserted:
+                self.inserted = True
+                self.wrapped.create_split_event(replace(event, id="winner"))
+            return self.wrapped.create_split_event(event)
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+    client.repository = ConcurrentWinner(repo)
+    result = record_authoritative_split(client, "a1", now_utc=datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc))
+
+    assert result.status == "duplicate"
+    assert [event.id for event in repo.list_active_split_events(shared.id)] == ["winner"]
+    assert [split.split_id for split in client.splits] == ["winner"]
+    assert client.last_split_action["events_after_reload"] == 1
+
+
+def test_failed_authoritative_insert_does_not_advance_progress():
+    import pytest
+    from split_tracker.repository import RepositoryError
+
+    repo, race, client = make_repo_and_session()
+    shared = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=datetime.now(timezone.utc)))
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+
+    class FailedInsert:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def create_split_event(self, _event):
+            raise RepositoryError("database unavailable")
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+    client.repository = FailedInsert(repo)
+    with pytest.raises(RepositoryError, match="database unavailable"):
+        record_authoritative_split(client, "a1")
+
+    assert client.splits == []
+    assert client.split_sequence == 0
+    assert client.last_split_action["result"] == "error"

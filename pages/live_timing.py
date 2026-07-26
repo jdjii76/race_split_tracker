@@ -15,19 +15,17 @@ from split_tracker.timing_persistence import (
     persist_completion,
     persist_pause,
     persist_resume,
-    persist_split_record,
     persist_undo_split,
     poll_shared_timing,
+    record_authoritative_split,
     restore_timing_state,
     start_and_synchronize_shared_timing,
-    synchronize_shared_timing,
 )
 from split_tracker.state import (
     elapsed_seconds,
     end_race,
     is_athlete_finished,
     pause_race,
-    record_split,
     reopen_athlete,
     reset_race,
     resume_race,
@@ -83,6 +81,27 @@ def _athlete_button_label(athlete) -> str:
     if last:
         last_line = f"\nLast: {format_duration(last.segment_split_seconds)} • Cum: {format_duration(last.cumulative_time_seconds)}"
     return f"{athlete.name}\nBib {athlete.bib_number or '—'} • {status}{last_line}{target}"
+
+
+def athlete_timing_button_key(race_session_id: str, athlete_id: str, checkpoint_number: int | None) -> str:
+    """Return a stable identity for one session/athlete/checkpoint button."""
+    checkpoint_key = "complete" if checkpoint_number is None else str(checkpoint_number)
+    return f"tap_{race_session_id}_{athlete_id}_{checkpoint_key}"
+
+
+def athlete_timing_button_disabled(
+    *, shared_unavailable: bool, race_session_id: str | None, clock_status: str,
+    timer_name: str, checkpoint_number: int | None, finished: bool, reopened: bool,
+) -> bool:
+    """Return whether an authoritative checkpoint button must be disabled."""
+    return (
+        shared_unavailable
+        or not race_session_id
+        or clock_status != "running"
+        or not timer_name
+        or checkpoint_number is None
+        or (finished and not reopened)
+    )
 
 
 def _live_board_frame(filter_value: str) -> pd.DataFrame:
@@ -204,23 +223,17 @@ def _reset_timing() -> bool:
         return False
 
 
-def _record_tap(athlete_id: str, *, now: float | None = None, record_anyway: bool = False) -> bool:
-    split = record_split(st.session_state, athlete_id, now=now, record_anyway=record_anyway)
-    if split is None:
-        return False
+def _record_tap(athlete_id: str) -> bool:
+    """Handle a click by revalidating and writing only authoritative state."""
     try:
-        if _has_persisted_race():
-            persist_split_record(st.session_state, split)
+        result = record_authoritative_split(st.session_state, athlete_id)
+        st.session_state.message = result.message
+        if result.status == "duplicate":
+            st.warning(f"{result.message} Shared progress was reloaded; use the newly displayed next checkpoint.")
         return True
     except Exception as exc:
-        st.session_state.splits = [item for item in st.session_state.splits if item.split_id != split.split_id]
-        try:
-            if _has_persisted_race():
-                synchronize_shared_timing(st.session_state)
-        except Exception:
-            pass
         _show_persistence_error("Record split", exc)
-        st.session_state.message = str(exc) if "active split" in str(exc) else "Split was not saved. Check the connection and tap again to retry."
+        st.session_state.message = f"Split was not saved: {exc} Tap again after resolving the error."
         return False
 
 
@@ -290,6 +303,26 @@ def render() -> None:
             ),
             language="text",
         )
+        action = st.session_state.get("last_split_action") or {}
+        if action:
+            st.code(
+                "\n".join(
+                    [
+                        "last_split_action:",
+                        f"  timer_name: {action.get('timer_name') or 'not set'}",
+                        f"  athlete: {action.get('athlete_name') or 'unknown'} ({action.get('athlete_id') or 'unknown'})",
+                        f"  race_session_id: {action.get('race_session_id') or 'none'}",
+                        f"  intended_checkpoint: {action.get('checkpoint_number')} / {action.get('checkpoint_label') or 'unknown'}",
+                        f"  elapsed_seconds: {action.get('elapsed_seconds')}",
+                        f"  click_received_at: {action.get('click_received_at')}",
+                        f"  result: {action.get('result')}",
+                        f"  inserted_event_id: {action.get('inserted_event_id') or 'none'}",
+                        f"  events_after_reload: {action.get('events_after_reload')}",
+                        f"  error: {action.get('error') or 'none'}",
+                    ]
+                ),
+                language="text",
+            )
     if st.session_state.get("active_race_session_id") and clock.status == "not_started":
         st.info(
             f"Waiting for race to start • Session **{connected_id}** • "
@@ -340,7 +373,8 @@ def render() -> None:
         if athlete:
             st.warning(f"Duplicate tap detected for {athlete.name} within 2 seconds.")
             if st.button("Record Anyway", use_container_width=True):
-                _record_tap(athlete.athlete_id, now=pending["recorded_at"], record_anyway=True)
+                if _record_tap(athlete.athlete_id):
+                    st.rerun()
 
     if st.session_state.message:
         st.info(st.session_state.message)
@@ -349,16 +383,34 @@ def render() -> None:
     if not st.session_state.athletes:
         st.warning("Add athletes on the Meet Setup page before timing a race.")
         return
+    if not st.session_state.get("active_race_session_id") or not st.session_state.meet_config.checkpoints:
+        st.warning("Athlete buttons are disabled until an authoritative race session and checkpoint snapshot are loaded.")
 
     columns_per_row = 2 if len(st.session_state.athletes) <= 10 else 3
     for index, athlete in enumerate(st.session_state.athletes):
         if index % columns_per_row == 0:
             cols = st.columns(columns_per_row)
         finished = is_athlete_finished(st.session_state, athlete.athlete_id)
-        disabled = shared_unavailable or clock.status != "running" or not st.session_state.timer_name or (finished and not athlete.reopened_after_finish)
+        athlete_splits = [split for split in st.session_state.splits if split.athlete_id == athlete.athlete_id]
+        next_cp = next_checkpoint(athlete_splits, st.session_state.meet_config.checkpoints)
+        disabled = athlete_timing_button_disabled(
+            shared_unavailable=shared_unavailable,
+            race_session_id=st.session_state.get("active_race_session_id"),
+            clock_status=clock.status,
+            timer_name=st.session_state.timer_name,
+            checkpoint_number=next_cp.number if next_cp else None,
+            finished=finished,
+            reopened=athlete.reopened_after_finish,
+        )
+        button_key = athlete_timing_button_key(
+            st.session_state.get("active_race_session_id") or "unconnected",
+            athlete.athlete_id,
+            next_cp.number if next_cp else None,
+        )
         with cols[index % columns_per_row]:
-            if st.button(_athlete_button_label(athlete), key=f"tap_{athlete.athlete_id}", use_container_width=True, disabled=disabled):
-                _record_tap(athlete.athlete_id)
+            if st.button(_athlete_button_label(athlete), key=button_key, use_container_width=True, disabled=disabled):
+                if _record_tap(athlete.athlete_id):
+                    st.rerun(scope="fragment")
             if finished and st.button("Reopen athlete", key=f"reopen_{athlete.athlete_id}", use_container_width=True):
                 reopen_athlete(st.session_state, athlete.athlete_id)
 

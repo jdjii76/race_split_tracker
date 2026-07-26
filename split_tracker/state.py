@@ -36,6 +36,7 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("latest_event_at", None)
     session_state.setdefault("initiated_start_session_id", "")
     session_state.setdefault("last_fragment_rerun_at", None)
+    session_state.setdefault("last_split_action", {})
 
 
 def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
