@@ -11,7 +11,7 @@ from uuid import uuid4
 from split_tracker.calculations import build_split_record
 from split_tracker.models import Athlete, MeetConfig, RaceClock, SplitRecord
 from split_tracker.repository import RaceRepository, RaceSession, RepositoryError, SplitEvent
-from split_tracker.projection import project_race_state
+from split_tracker.projection import apply_inserted_event_to_projection, project_race_state
 from split_tracker.session_checkpoints import get_session_checkpoints
 
 logger = logging.getLogger(__name__)
@@ -156,11 +156,22 @@ def record_authoritative_split(
     *,
     now_utc: datetime | None = None,
 ) -> SplitActionResult:
-    """Revalidate and persist one split without speculative local progression."""
+    """Persist one split using the loaded projection and one authoritative RPC."""
+    action_started = time.perf_counter()
     repository: RaceRepository | None = session_state.repository
     race_session_id = session_state.get("active_race_session_id")
     action_at = utc_now() if now_utc is None else now_utc
-    athlete = next((item for item in session_state.athletes if item.athlete_id == athlete_id), None)
+    projection = session_state.get("projected_race_state")
+    # Compatibility/recovery path for callers that have not yet loaded the
+    # controlled live fragment. Normal button actions always have a projection.
+    if projection is None and repository is not None and race_session_id:
+        synchronize_shared_timing(session_state, now_utc=action_at)
+        projection = session_state.get("projected_race_state")
+    athlete_state = next(
+        (item for item in projection.athletes if item.athlete.athlete_id == athlete_id),
+        None,
+    ) if projection else None
+    athlete = athlete_state.athlete if athlete_state else None
     diagnostics = {
         "timer_name": session_state.get("timer_name", ""),
         "athlete_id": athlete_id,
@@ -174,20 +185,23 @@ def record_authoritative_split(
         "inserted_event_id": "",
         "events_after_reload": session_state.get("loaded_split_event_count", 0),
         "error": "",
+        "timings_ms": {"button_handler_start": 0.0},
     }
     session_state.last_split_action = diagnostics
+    validation_started = time.perf_counter()
     if repository is None or not race_session_id:
         diagnostics.update(result="error", error="No shared race session is connected.")
         raise RepositoryError(diagnostics["error"])
-    if athlete is None:
+    if athlete is None or athlete_state is None:
         diagnostics.update(result="error", error="Athlete not found.")
         raise RepositoryError(diagnostics["error"])
 
-    race_session = synchronize_shared_timing(session_state, now_utc=action_at)
+    race_session = projection.race_session
     if race_session.status != "running" or race_session.started_at is None:
         diagnostics.update(result="error", error="Splits can only be recorded while the shared race is running.")
         raise RepositoryError(diagnostics["error"])
-    athlete_splits = [split for split in session_state.splits if split.athlete_id == athlete_id]
+    diagnostics["timings_ms"]["pre_insert_validation"] = (time.perf_counter() - validation_started) * 1000
+    athlete_splits = list(athlete_state.splits)
     record = build_split_record(
         split_id=str(uuid4()),
         athlete=athlete,
@@ -195,7 +209,7 @@ def record_authoritative_split(
         checkpoints=session_state.meet_config.checkpoints,
         elapsed_seconds=persisted_elapsed_seconds(race_session, action_at),
         race_distance_meters=session_state.meet_config.race_distance_meters,
-        sequence=session_state.split_sequence + 1,
+        sequence=max([event.event_order for event in projection.events] or [0]) + 1,
     )
     if record is None:
         diagnostics.update(result="error", error=f"{athlete.name} has no remaining checkpoints.")
@@ -211,10 +225,15 @@ def record_authoritative_split(
         recorded_at=action_at,
     )
     try:
+        insert_started = time.perf_counter()
         saved = repository.create_split_event(event)
+        diagnostics["timings_ms"]["supabase_insert_rpc"] = (time.perf_counter() - insert_started) * 1000
     except RepositoryError as exc:
-        if "already has an active split" in str(exc):
+        diagnostics["timings_ms"]["supabase_insert_rpc"] = (time.perf_counter() - insert_started) * 1000
+        if any(term in str(exc).lower() for term in ("already", "duplicate", "conflict", "invalid", "checkpoint", "running")):
+            sync_started = time.perf_counter()
             synchronize_shared_timing(session_state, now_utc=action_at)
+            diagnostics["timings_ms"]["post_insert_synchronization"] = (time.perf_counter() - sync_started) * 1000
             diagnostics.update(
                 result="duplicate",
                 error=str(exc),
@@ -223,12 +242,25 @@ def record_authoritative_split(
             return SplitActionResult(status="duplicate", message=str(exc))
         diagnostics.update(result="error", error=str(exc))
         raise
-    synchronize_shared_timing(session_state, now_utc=action_at)
+    rebuild_started = time.perf_counter()
+    updated = apply_inserted_event_to_projection(
+        projection, session_state.meet_config.checkpoints, saved
+    )
+    session_state.projected_race_state = updated
+    session_state.splits = list(updated.results_rows)
+    session_state.split_sequence = max(session_state.split_sequence, saved.event_order)
+    session_state.loaded_split_event_count = len(updated.events)
+    session_state.latest_event_id = saved.id
+    session_state.latest_event_at = saved.recorded_at
+    session_state.latest_shared_action = f"{saved.athlete_name} • {saved.checkpoint_label}"
+    diagnostics["timings_ms"]["projection_rebuild"] = (time.perf_counter() - rebuild_started) * 1000
+    diagnostics["timings_ms"]["post_insert_synchronization"] = 0.0
     diagnostics.update(
         result="inserted",
         inserted_event_id=saved.id,
         events_after_reload=session_state.loaded_split_event_count,
     )
+    diagnostics["timings_ms"]["total_action"] = (time.perf_counter() - action_started) * 1000
     return SplitActionResult(status="inserted", event=saved, message=f"Recorded {athlete.name} at {record.checkpoint_label}.")
 
 

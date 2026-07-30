@@ -10,7 +10,6 @@ from split_tracker.repository import (
     InMemoryRaceRepository,
     Meet,
     Race,
-    RepositoryFactoryResult,
     SupabaseRaceRepository,
     TemplateRace,
     create_repository,

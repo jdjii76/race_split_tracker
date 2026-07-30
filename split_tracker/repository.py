@@ -431,7 +431,8 @@ class InMemoryRaceRepository:
         return sorted([session for session in self.race_sessions.values() if session.race_id == race_id], key=lambda session: (session.created_at, session.id))
 
     def create_split_event(self, event: SplitEvent) -> SplitEvent:
-        if event.race_session_id not in self.race_sessions:
+        session = self.race_sessions.get(event.race_session_id)
+        if session is None:
             raise RepositoryError("Race session not found.")
         if any(
             not existing.is_deleted
@@ -1130,6 +1131,8 @@ class SupabaseRaceRepository:
             detail = str(exc).lower()
             if "duplicate" in detail or "already" in detail or "23505" in detail:
                 raise RepositoryError("That athlete already has an active split at this checkpoint.") from exc
+            if any(term in detail for term in ("not running", "invalid athlete", "checkpoint progression", "no remaining checkpoint")):
+                raise RepositoryError(str(exc)) from exc
             logger.exception("Repository operation failed: Could not create split event.")
             raise RepositoryError("Could not create split event.") from exc
         rows = getattr(result, "data", [])

@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from split_tracker.formatting import format_distance, format_duration
+from split_tracker.projection import ordered_timing_athletes
 from split_tracker.timing_persistence import (
     persist_cancel,
     persist_completion,
@@ -208,6 +209,10 @@ def _record_tap(athlete_id: str) -> bool:
         st.session_state.message = result.message
         if result.status == "duplicate":
             st.warning(f"{result.message} Shared progress was reloaded; use the newly displayed next checkpoint.")
+        else:
+            # The widget interaction already causes a fragment rerun. Suppress
+            # its normal poll so the RPC-returned event can render immediately.
+            st.session_state.skip_next_live_poll = True
         return True
     except Exception as exc:
         _show_persistence_error("Record split", exc)
@@ -234,7 +239,8 @@ def render() -> None:
     _restore_if_needed()
     # Poll the exact connected row even while the local clock is not_started.
     # This is what lets a waiting browser observe another coach's start.
-    if st.session_state.get("active_race_session_id"):
+    skip_poll = st.session_state.pop("skip_next_live_poll", False)
+    if st.session_state.get("active_race_session_id") and not skip_poll:
         poll_shared_timing(st.session_state)
     config = st.session_state.meet_config
     clock = st.session_state.race_clock
@@ -304,6 +310,8 @@ def render() -> None:
                         f"  inserted_event_id: {action.get('inserted_event_id') or 'none'}",
                         f"  events_after_reload: {action.get('events_after_reload')}",
                         f"  error: {action.get('error') or 'none'}",
+                        "  timings_ms:",
+                        *[f"    {name}: {duration:.2f}" for name, duration in action.get("timings_ms", {}).items()],
                     ]
                 ),
                 language="text",
@@ -364,7 +372,7 @@ def render() -> None:
 
     columns_per_row = 2 if len(st.session_state.athletes) <= 10 else 3
     projection = st.session_state.get("projected_race_state")
-    projected_athletes = list(projection.athletes) if projection else []
+    projected_athletes = list(ordered_timing_athletes(projection)) if projection else []
     for index, athlete_state in enumerate(projected_athletes):
         athlete = athlete_state.athlete
         if index % columns_per_row == 0:
@@ -386,9 +394,14 @@ def render() -> None:
             next_cp.number if next_cp else None,
         )
         with cols[index % columns_per_row]:
-            if st.button(athlete_state.button_label, key=button_key, use_container_width=True, disabled=disabled):
-                if _record_tap(athlete.athlete_id):
-                    st.rerun()
+            st.button(
+                athlete_state.button_label,
+                key=button_key,
+                use_container_width=True,
+                disabled=disabled,
+                on_click=_record_tap,
+                args=(athlete.athlete_id,),
+            )
             if finished and st.button("Reopen athlete", key=f"reopen_{athlete.athlete_id}", use_container_width=True):
                 reopen_athlete(st.session_state, athlete.athlete_id)
 
