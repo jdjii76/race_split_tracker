@@ -428,3 +428,17 @@ python -m compileall .
 - Recalculate derived split fields after editing or deleting results in a future correction workflow.
 - Use clear, touch-friendly controls on the Live Timing page.
 - Avoid adding database or file persistence during the first prototype unless requested.
+
+## Live timing responsiveness
+
+Successful athlete taps use one concurrency-safe Supabase RPC and immediately
+replay its returned event into the browser's persisted-state projection. The
+two-second fragment poll remains the authoritative cross-browser reconciliation
+path; conflicts and validation failures force an immediate reload instead.
+
+Streamlit's native buttons still process widget events serially and each click
+causes a fragment rerun. The timing controls are isolated in the existing live
+fragment and avoid a full application rerun, but taps that arrive while the
+browser is submitting the previous widget event cannot be guaranteed at
+sub-second spacing. The isolated button surface is the intended seam for a
+small queued custom component if field measurements require simultaneous input.

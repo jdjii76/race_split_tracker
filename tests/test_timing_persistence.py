@@ -339,7 +339,7 @@ def test_shared_progression_converges_across_clients_with_undo_correction_and_fi
     client_b = SessionState(**vars(client_a).copy())
     client_b.splits = []
 
-    mile_one = repo.create_split_event(SplitEvent(race_session_id=shared.id, athlete_id="a1", athlete_name="Alex", checkpoint_number=10, elapsed_seconds=100, event_order=1))
+    repo.create_split_event(SplitEvent(race_session_id=shared.id, athlete_id="a1", athlete_name="Alex", checkpoint_number=10, elapsed_seconds=100, event_order=1))
     synchronize_shared_timing(client_b)
     assert next_checkpoint(client_b.splits, client_b.meet_config.checkpoints).number == 30
 
@@ -596,3 +596,49 @@ def test_failed_authoritative_insert_does_not_advance_progress():
     assert client.splits == []
     assert client.split_sequence == 0
     assert client.last_split_action["result"] == "error"
+
+
+def test_fast_path_uses_one_write_and_preserves_three_click_times():
+    from split_tracker.timing_persistence import synchronize_shared_timing
+
+    repo, race, client = make_repo_and_session()
+    athletes = [Athlete(name=name, athlete_id=athlete_id, display_order=index)
+                for index, (name, athlete_id) in enumerate((("Alex", "a1"), ("Blair", "a2"), ("Casey", "a3")))]
+    repo.replace_race_athletes(race.id, athletes)
+    client.athletes = athletes
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=start))
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+    synchronize_shared_timing(client, now_utc=start)
+
+    class CountingRepository:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.calls = []
+
+        def __getattr__(self, name):
+            operation = getattr(self.wrapped, name)
+            if not callable(operation):
+                return operation
+
+            def counted(*args, **kwargs):
+                self.calls.append(name)
+                return operation(*args, **kwargs)
+            return counted
+
+    counting = CountingRepository(repo)
+    client.repository = counting
+    clicks = [
+        datetime(2026, 1, 1, 12, 1, 0, 100000, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 12, 1, 0, 200000, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 12, 1, 0, 300000, tzinfo=timezone.utc),
+    ]
+    results = [record_authoritative_split(client, athlete_id, now_utc=clicked)
+               for athlete_id, clicked in zip(("a1", "a2", "a3"), clicks)]
+
+    assert counting.calls == ["create_split_event"] * 3
+    assert [result.event.recorded_at for result in results] == clicks
+    assert len({result.event.id for result in results}) == 3
+    assert len(client.projected_race_state.events) == 3
+    assert client.last_split_action["timings_ms"]["post_insert_synchronization"] == 0.0

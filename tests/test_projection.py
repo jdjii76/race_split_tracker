@@ -1,7 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
 from split_tracker.models import Athlete, Checkpoint
-from split_tracker.projection import project_race_state
+from split_tracker.projection import (
+    apply_inserted_event_to_projection,
+    ordered_timing_athletes,
+    project_race_state,
+)
 from split_tracker.repository import RaceSession, SplitEvent
 
 
@@ -60,3 +64,48 @@ def test_projection_normalizes_naive_and_aware_timestamps():
         _event("a", 10, 60, event_id="first", at=aware.replace(tzinfo=None)),
     ]
     assert project_race_state(session, athletes, checkpoints, events).athletes[0].finished
+
+
+def test_timing_order_is_untimed_first_then_first_split_fastest():
+    session, _, checkpoints = _fixtures()
+    athletes = [
+        Athlete("Alex", athlete_id="a", display_order=0),
+        Athlete("Blair", athlete_id="b", display_order=1),
+        Athlete("Casey", athlete_id="c", display_order=2),
+        Athlete("Devon", athlete_id="d", display_order=3),
+    ]
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    projection = project_race_state(session, athletes, checkpoints, [
+        _event("a", 10, 62, event_id="a-first", at=now),
+        _event("c", 10, 59, event_id="c-first", at=now),
+    ])
+
+    assert [item.athlete.athlete_id for item in ordered_timing_athletes(projection)] == ["b", "d", "c", "a"]
+
+    # A later checkpoint and finished status cannot alter first-split order.
+    projection = apply_inserted_event_to_projection(
+        projection,
+        checkpoints,
+        _event("c", 20, 130, event_id="c-finish", at=now + timedelta(seconds=1)),
+    )
+    assert [item.athlete.athlete_id for item in ordered_timing_athletes(projection)] == ["b", "d", "c", "a"]
+
+
+def test_equal_first_splits_use_roster_position_then_athlete_id():
+    session, _, checkpoints = _fixtures()
+    # Same persisted display order intentionally exercises the final ID key.
+    athletes = [
+        Athlete("Zulu", athlete_id="z", display_order=4),
+        Athlete("Alpha", athlete_id="a", display_order=4),
+    ]
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    events = [
+        _event("z", 10, 60, event_id="z-first", at=now),
+        _event("a", 10, 60, event_id="a-first", at=now),
+    ]
+    projection = project_race_state(session, athletes, checkpoints, events)
+    # Persisted roster position precedes ID; reconstruction is identical.
+    expected = ["z", "a"]
+    assert [item.athlete.athlete_id for item in ordered_timing_athletes(projection)] == expected
+    rebuilt = project_race_state(session, athletes, checkpoints, list(reversed(events)))
+    assert [item.athlete.athlete_id for item in ordered_timing_athletes(rebuilt)] == expected

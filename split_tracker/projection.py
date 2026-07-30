@@ -43,6 +43,56 @@ class ProjectedRaceState:
     results_rows: tuple[SplitRecord, ...]
 
 
+def first_split_order_key(
+    athlete_state: ProjectedAthleteState,
+    roster_order: int,
+) -> tuple[int, float, int, str]:
+    """Sort untimed athletes first, then by persisted first-split time."""
+    first_time = (
+        athlete_state.splits[0].cumulative_time_seconds
+        if athlete_state.splits
+        else float("inf")
+    )
+    return (
+        1 if athlete_state.splits else 0,
+        first_time,
+        roster_order,
+        athlete_state.athlete.athlete_id,
+    )
+
+
+def ordered_timing_athletes(
+    projection: ProjectedRaceState,
+) -> tuple[ProjectedAthleteState, ...]:
+    """Return the live display order without changing the persisted roster."""
+    roster_positions = {
+        state.athlete.athlete_id: index
+        for index, state in enumerate(projection.athletes)
+    }
+    return tuple(
+        sorted(
+            projection.athletes,
+            key=lambda state: first_split_order_key(
+                state, roster_positions[state.athlete.athlete_id]
+            ),
+        )
+    )
+
+
+def apply_inserted_event_to_projection(
+    projection: ProjectedRaceState,
+    checkpoints: list[Checkpoint],
+    event: SplitEvent,
+) -> ProjectedRaceState:
+    """Deterministically replay one RPC-returned event into a local snapshot."""
+    return project_race_state(
+        projection.race_session,
+        [state.athlete for state in projection.athletes],
+        checkpoints,
+        [*projection.events, event],
+    )
+
+
 def project_race_state(
     race_session: RaceSession,
     race_athletes: list[Athlete],
