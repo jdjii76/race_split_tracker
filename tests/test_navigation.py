@@ -49,7 +49,7 @@ def test_race_setup_user_facing_labels_are_consistent():
     live_source = (ROOT / "pages/live_timing.py").read_text(encoding="utf-8")
 
     assert 'title="Race Setup"' in app_source
-    assert 'st.title("Race Setup")' in setup_source
+    assert 'render_school_header(profile, "Configure Race")' in setup_source
     assert "Configure the race details, checkpoints, and roster before starting live timing." in setup_source
     assert 'st.text_input("Meet name"' in setup_source
     assert 'button("Open in Race Setup"' in management_source

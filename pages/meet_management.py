@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 import streamlit as st
+from split_tracker.branding import render_school_header
 
 from split_tracker.formatting import format_distance
 from split_tracker.repository import Meet, MeetTemplate, Race, RepositoryError, TemplateRace
@@ -301,7 +302,7 @@ def _templates() -> None:
 
 def render() -> None:
     """Render the dashboard."""
-    st.title("Race Setup")
+    render_school_header(st.session_state.school_profile, "Race Setup")
     _storage_notice()
     if _repo() is None:
         st.stop()

@@ -5,13 +5,17 @@ from __future__ import annotations
 import streamlit as st
 
 from pages import live_timing, meet_dashboard, meet_management, meet_setup, results
+from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.navigation import resolve_active_meet_id
 from split_tracker.repository import create_repository
 from split_tracker.state import initialize_persistence_state, initialize_state
 
-st.set_page_config(page_title="Race Split Tracker", page_icon="⏱️", layout="wide")
+school_profile, school_profile_warnings = load_school_profile(secrets=st.secrets)
+st.set_page_config(page_title=school_profile.app_title, page_icon="🏃", layout="wide")
+apply_school_theme(school_profile)
 initialize_state(st.session_state)
 initialize_persistence_state(st.session_state)
+st.session_state.school_profile = school_profile
 
 if st.session_state.repository_result is None:
     repository_result = create_repository()
@@ -32,6 +36,9 @@ if st.session_state.repository is not None:
     except Exception:
         pass
 with st.sidebar:
+    render_school_sidebar_brand(school_profile)
+    for warning in school_profile_warnings:
+        st.caption(f"Branding configuration: {warning}")
     if repository_result is not None:
         st.caption(f"Storage: {repository_result.storage_label}")
         if repository_result.error:

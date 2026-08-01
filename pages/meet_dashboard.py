@@ -1,6 +1,7 @@
 """Race-day dashboard for the active meet."""
 from __future__ import annotations
 import streamlit as st
+from split_tracker.branding import render_school_header
 from split_tracker.navigation import get_meet_race_summaries
 from split_tracker.state import load_race_into_setup
 
@@ -15,7 +16,7 @@ def _open_race(meet, summary) -> None:
 
 def render() -> None:
     """Render the current meet and direct race actions."""
-    st.title("Current Meet")
+    profile = st.session_state.school_profile
     repository = st.session_state.repository
     if repository is None:
         st.error("Meet data is unavailable. Check the storage connection and try again.")
@@ -27,11 +28,13 @@ def render() -> None:
         st.error(f"Could not load the current meet: {exc}")
         return
     if meet is None:
-        st.info("No current meet is selected. Choose or create one in Race Setup.")
+        render_school_header(profile, f"Welcome to {profile.app_title}")
+        st.info("Create the first meet to begin setting up races and athletes.")
         if st.button("Open Race Setup", type="primary"):
             st.switch_page(st.session_state.page_registry["race_setup"])
         return
 
+    render_school_header(profile, "Current Meet", subtitle=meet.name)
     st.header(meet.name)
     details = [str(meet.meet_date or "Date not set")]
     if meet.location:
