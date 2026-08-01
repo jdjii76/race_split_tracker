@@ -6,7 +6,7 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 
 ## Current Prototype Features
 
-### Meet Setup
+### Race Setup
 
 - Meet name and race name fields
 - Course type selector for Track or Cross Country
@@ -32,7 +32,7 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 - Athlete buttons show bib, next checkpoint, latest segment, cumulative time, and target variance when available
 - Tap an athlete to record the exact elapsed time
 - Automatic calculation of checkpoint, segment split, cumulative time, average pace, projected finish, and target variance
-- Two-second duplicate-tap protection with an explicit Record Anyway action
+- Persisted athlete/checkpoint uniqueness with graceful concurrent-tap handling
 - Finished-athlete handling with reopen controls for corrections
 - Live split board sorted by latest checkpoint and cumulative time
 - Active/finished filtering and race-complete messaging
@@ -48,7 +48,8 @@ This prototype focuses on fast race-day data entry, session-state storage, CSV e
 - Python 3.11 or newer
 - Streamlit for the web interface
 - `st.Page` and `st.navigation` for multipage app navigation
-- Streamlit session state for prototype data storage
+- Supabase-authoritative shared live-race status, roster, checkpoints, and splits
+- Streamlit session state only for browser-local UI and diagnostics
 - `time.perf_counter()` for race timing
 - Raw durations stored as decimal seconds
 - Distances stored internally in meters
@@ -146,7 +147,7 @@ Do not commit `.streamlit/secrets.toml`, `.env`, service-role keys, database pas
 
 | Data | Supabase mode | Fallback mode |
 | --- | --- | --- |
-| Meet setup | Persistent in `meets` | Existing local/in-memory behavior |
+| Meet details entered in Race Setup | Persistent in `meets` | Existing local/in-memory behavior |
 | Race setup | Persistent in `races` | Existing local/in-memory behavior |
 | Rosters | Persistent in `race_athletes` by `race_id` | Current race-scoped fallback behavior |
 | Race sessions | Persistent in `race_sessions` | Temporary in-memory repository |
@@ -207,7 +208,7 @@ There is currently no `002` migration file in the repository; keep the existing 
 
 ## Meet Dashboard and Templates
 
-The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the existing Meet Setup workflow.
+The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the Race Setup workflow.
 
 The Templates section includes an idempotently seeded default XC meet template containing Boys JV, Girls JV, Boys Varsity, and Girls Varsity races. Each default XC race is 5000 meters. Coaches can create and edit custom templates, archive templates, and create a new meet from a template without generating timing data or results.
 
@@ -363,7 +364,7 @@ Supported destructive actions:
 - **Delete race session** from Results: deletes one selected `race_sessions` row and its `split_events`; it does not delete the race or roster.
 - **Delete race** from Meet Dashboard: deletes one race plus its roster rows, timing sessions, and split events; it does not delete the parent meet or sibling races.
 - **Delete meet** from Meet Dashboard: deletes one meet plus its races, race rosters, timing sessions, and split events; it does not delete meet templates or template races.
-- **Clear selected race roster** from Meet Setup: deletes only `race_athletes` rows for the selected race and leaves race sessions/splits intact. The UI warns when timing sessions already exist.
+- **Clear selected race roster** from Race Setup: deletes only `race_athletes` rows for the selected race and leaves race sessions/splits intact. The UI warns when timing sessions already exist.
 - **Development/Admin cleanup** from Meet Dashboard: hidden unless `RACE_SPLIT_TRACKER_ENABLE_DEV_CLEANUP=true`; requires typing `DELETE TEST DATA`; can remove timing data, race rosters, meets/races, or all application test data while preserving templates, template races, schema objects, migrations, and Supabase configuration.
 
 Meet, race, session, roster, and cleanup actions all require explicit typed confirmation. After a successful deletion, Streamlit session-state selections and race-specific caches are cleared so deleted records are not shown until a manual refresh.
@@ -375,6 +376,23 @@ Start the Streamlit app with:
 ```bash
 streamlit run app.py
 ```
+
+### Two-browser shared-timing acceptance test
+
+1. Open the app in a normal window and an incognito/private window.
+2. Select the same meet and race in both windows; confirm the displayed race
+   session IDs match exactly, then enter a different timer name in each.
+3. Start in Window 1. Within one two-second poll, confirm Window 2 shows
+   `running` and the same persisted start timestamp without a manual refresh.
+4. Tap an athlete in Window 1. Confirm both split boards show the event and both
+   athlete buttons advance to the same next checkpoint.
+5. Tap a different athlete in Window 2 and confirm both boards converge.
+6. Refresh either browser and confirm the status, official elapsed clock,
+   athlete progress, and results reconstruct from Supabase.
+7. Tap the same athlete/checkpoint nearly simultaneously in both windows.
+   Confirm only one event exists and the other client reloads shared progress.
+8. Pause, resume, and end in one window, confirming the other window follows
+   each persisted status transition.
 
 Streamlit will print a local URL that you can open in a browser. For race-day use, open the app on a phone or tablet connected to the same development machine or deployment environment.
 
@@ -394,7 +412,7 @@ python -m compileall .
 
 ## Prototype Workflow
 
-1. Open the Meet Setup page.
+1. Open the Race Setup page.
 2. Enter meet and race details.
 3. Add athletes, bib numbers, and optional target paces.
 4. Go to the Live Timing page.
@@ -410,3 +428,17 @@ python -m compileall .
 - Recalculate derived split fields after editing or deleting results in a future correction workflow.
 - Use clear, touch-friendly controls on the Live Timing page.
 - Avoid adding database or file persistence during the first prototype unless requested.
+
+## Live timing responsiveness
+
+Successful athlete taps use one concurrency-safe Supabase RPC and immediately
+replay its returned event into the browser's persisted-state projection. The
+two-second fragment poll remains the authoritative cross-browser reconciliation
+path; conflicts and validation failures force an immediate reload instead.
+
+Streamlit's native buttons still process widget events serially and each click
+causes a fragment rerun. The timing controls are isolated in the existing live
+fragment and avoid a full application rerun, but taps that arrive while the
+browser is submitting the previous widget event cannot be guaranteed at
+sub-second spacing. The isolated button surface is the intended seam for a
+small queued custom component if field measurements require simultaneous input.
