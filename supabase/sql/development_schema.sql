@@ -423,18 +423,27 @@ end;
 $$;
 
 grant execute on function public.record_shared_split(jsonb) to anon;
--- Application-level single-school branding settings. Image bytes live in Storage.
+-- School branding identity and permanent school athlete roster.
+-- Existing race-athlete rows remain unlinked; this migration never matches by name.
+create extension if not exists pgcrypto;
+
+-- The athlete school reference uses the existing school_profiles UUID primary key.
 create table if not exists public.school_profiles (
     id uuid primary key default gen_random_uuid(),
     profile_key text not null unique,
     school_name text not null check (length(trim(school_name)) > 0),
     short_name text not null check (length(trim(short_name)) > 0),
-    program_name text, mascot text, city text, state text, app_title text,
+    program_name text,
+    mascot text,
+    city text,
+    state text,
+    app_title text,
     primary_color text not null check (primary_color ~ '^#[0-9A-Fa-f]{6}$'),
     secondary_color text not null check (secondary_color ~ '^#[0-9A-Fa-f]{6}$'),
     accent_color text not null check (accent_color ~ '^#[0-9A-Fa-f]{6}$'),
     text_on_primary text not null check (text_on_primary ~ '^#[0-9A-Fa-f]{6}$'),
-    logo_path text, compact_logo_path text,
+    logo_path text,
+    compact_logo_path text,
     header_style text not null default 'standard' check (header_style in ('standard','logo_left','compact','text_only')),
     show_logo_on_dashboard boolean not null default true,
     show_logo_on_timing boolean not null default true,
@@ -442,17 +451,10 @@ create table if not exists public.school_profiles (
     created_at timestamptz not null default timezone('utc', now()),
     updated_at timestamptz not null default timezone('utc', now())
 );
-alter table public.school_profiles enable row level security;
--- DEVELOPMENT ONLY: the in-app passcode is a UI gate, not database authorization.
--- Replace with authenticated administrator policies before public deployment.
-do $$ begin
-    if not exists (select 1 from pg_policies where schemaname='public' and tablename='school_profiles' and policyname='dev_anon_all_school_profiles') then
-        create policy dev_anon_all_school_profiles on public.school_profiles for all to anon using (true) with check (true);
-    end if;
-end $$;
--- Permanent school roster with backward-compatible race roster linkage.
+
 create table if not exists public.athletes (
     id uuid primary key default gen_random_uuid(),
+    school_profile_id uuid null,
     first_name text not null check (length(trim(first_name)) > 0),
     last_name text not null check (length(trim(last_name)) > 0),
     preferred_name text,
@@ -463,33 +465,78 @@ create table if not exists public.athletes (
     athlete_number text,
     notes text,
     created_at timestamptz not null default timezone('utc', now()),
-    updated_at timestamptz not null default timezone('utc', now())
+    updated_at timestamptz not null default timezone('utc', now()),
+    constraint athletes_school_profile_id_fkey foreign key (school_profile_id)
+        references public.school_profiles(id) on delete restrict
 );
+alter table public.athletes add column if not exists school_profile_id uuid null;
+do $$
+begin
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid = 'public.athletes'::regclass
+          and conname = 'athletes_school_profile_id_fkey'
+    ) then
+        alter table public.athletes
+            add constraint athletes_school_profile_id_fkey
+            foreign key (school_profile_id) references public.school_profiles(id) on delete restrict;
+    end if;
+end $$;
+create index if not exists idx_athletes_school_profile on public.athletes(school_profile_id);
 create index if not exists idx_athletes_status on public.athletes(status);
 create index if not exists idx_athletes_graduation_year on public.athletes(graduation_year);
 create index if not exists idx_athletes_last_name on public.athletes(lower(last_name));
 
--- Phase 4 used a text athlete_id as the race-local identity. Preserve it rather
--- than guessing at name matches, then add the nullable permanent UUID reference.
-do $$ begin
-    if exists (select 1 from information_schema.columns where table_schema='public' and table_name='race_athletes' and column_name='athlete_id' and data_type='text') then
+-- Migration 004 used athlete_id text as a race-local identity. Rename that
+-- column only when it is still text, preserving every existing value and row.
+do $$
+begin
+    if exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'race_athletes'
+          and column_name = 'athlete_id' and data_type = 'text'
+    ) then
         alter table public.race_athletes drop constraint if exists race_athletes_race_athlete_unique;
         alter table public.race_athletes rename column athlete_id to legacy_athlete_id;
     end if;
 end $$;
-alter table public.race_athletes add column if not exists athlete_id uuid null references public.athletes(id) on delete restrict;
-create unique index if not exists race_athletes_race_permanent_unique on public.race_athletes(race_id, athlete_id) where athlete_id is not null;
-create unique index if not exists race_athletes_race_legacy_unique on public.race_athletes(race_id, legacy_athlete_id) where athlete_id is null and legacy_athlete_id is not null;
-create index if not exists idx_race_athletes_permanent_athlete on public.race_athletes(athlete_id);
 
+alter table public.race_athletes add column if not exists athlete_id uuid null;
+do $$
+begin
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid = 'public.race_athletes'::regclass
+          and conname = 'race_athletes_athlete_id_fkey'
+    ) then
+        alter table public.race_athletes
+            add constraint race_athletes_athlete_id_fkey
+            foreign key (athlete_id) references public.athletes(id) on delete restrict;
+    end if;
+end $$;
+create unique index if not exists race_athletes_race_permanent_unique
+    on public.race_athletes(race_id, athlete_id) where athlete_id is not null;
+create unique index if not exists race_athletes_race_legacy_unique
+    on public.race_athletes(race_id, legacy_athlete_id)
+    where athlete_id is null and legacy_athlete_id is not null;
+create index if not exists idx_race_athletes_permanent_athlete
+    on public.race_athletes(athlete_id);
+
+alter table public.school_profiles enable row level security;
 alter table public.athletes enable row level security;
--- DEVELOPMENT ONLY, consistent with the prototype's current anon policies.
-do $$ begin
+-- DEVELOPMENT ONLY: matches the current publishable/anon-key prototype access.
+-- Replace with authenticated administrator/coach policies before production.
+do $$
+begin
+    if not exists (select 1 from pg_policies where schemaname='public' and tablename='school_profiles' and policyname='dev_anon_all_school_profiles') then
+        create policy dev_anon_all_school_profiles on public.school_profiles for all to anon using (true) with check (true);
+    end if;
     if not exists (select 1 from pg_policies where schemaname='public' and tablename='athletes' and policyname='dev_anon_all_athletes') then
         create policy dev_anon_all_athletes on public.athletes for all to anon using (true) with check (true);
     end if;
 end $$;
--- Keep authoritative split validation compatible with permanent and legacy roster rows.
+
+-- Preserve shared split validation for both new permanent UUIDs and old text IDs.
 create or replace function public.record_shared_split(p_event jsonb)
 returns setof public.split_events language plpgsql security invoker set search_path = public as $$
 declare

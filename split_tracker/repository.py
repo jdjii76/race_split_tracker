@@ -948,7 +948,8 @@ def _athlete_from_row(row: dict[str, Any]) -> Athlete:
 
 def _permanent_athlete_to_row(athlete: PermanentAthlete) -> dict[str, Any]:
     return {
-        "id": athlete.id, "first_name": athlete.first_name, "last_name": athlete.last_name,
+        "id": athlete.id, "school_profile_id": athlete.school_profile_id,
+        "first_name": athlete.first_name, "last_name": athlete.last_name,
         "preferred_name": athlete.preferred_name or None, "graduation_year": athlete.graduation_year,
         "gender": athlete.gender or None, "team_division": athlete.team_division or None,
         "status": athlete.status, "athlete_number": athlete.athlete_number or None, "notes": athlete.notes or None,
@@ -958,7 +959,8 @@ def _permanent_athlete_to_row(athlete: PermanentAthlete) -> dict[str, Any]:
 
 def _permanent_athlete_from_row(row: dict[str, Any]) -> PermanentAthlete:
     return PermanentAthlete(
-        id=str(row["id"]), first_name=str(row["first_name"]), last_name=str(row["last_name"]),
+        id=str(row["id"]), school_profile_id=str(row["school_profile_id"]) if row.get("school_profile_id") else None,
+        first_name=str(row["first_name"]), last_name=str(row["last_name"]),
         preferred_name=row.get("preferred_name") or "", graduation_year=int(row["graduation_year"]) if row.get("graduation_year") else None,
         gender=row.get("gender") or "", team_division=row.get("team_division") or "", status=row.get("status") or "active",
         athlete_number=row.get("athlete_number") or "", notes=row.get("notes") or "",
@@ -1076,6 +1078,13 @@ class SupabaseRaceRepository:
     def create_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete:
         try: saved = normalize_athlete(athlete)
         except ValueError as exc: raise RepositoryError(str(exc)) from exc
+        if saved.school_profile_id is None:
+            profile_row = self._single(
+                self.client.table("school_profiles").select("id").eq("profile_key", "default"),
+                "Could not resolve the default school profile.",
+            )
+            if profile_row:
+                saved = replace(saved, school_profile_id=str(profile_row["id"]))
         row = self._single(self.client.table("athletes").insert(_permanent_athlete_to_row(saved)), "Could not create permanent athlete.")
         return _permanent_athlete_from_row(row) if row else saved
 

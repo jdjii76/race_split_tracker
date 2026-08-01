@@ -102,7 +102,7 @@ timing polling loop.
 
 ### Permanent Athlete Roster
 
-Apply `supabase/migrations/009_permanent_athletes.sql` before deploying this
+Apply `supabase/migrations/008_permanent_athlete_roster.sql` before deploying this
 version. The migration creates the permanent `athletes` table and adds a nullable
 UUID relationship from `race_athletes`, while renaming the former text identity
 to `legacy_athlete_id`. Existing race rows are deliberately **not** matched by

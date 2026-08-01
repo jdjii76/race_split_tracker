@@ -47,6 +47,7 @@ class PermanentAthlete:
     first_name: str
     last_name: str
     id: str = field(default_factory=lambda: str(uuid4()))
+    school_profile_id: str | None = None
     preferred_name: str = ""
     graduation_year: int | None = None
     gender: str = ""
