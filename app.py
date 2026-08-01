@@ -16,6 +16,7 @@ school_profile, school_profile_warnings = load_school_profile(secrets=st.secrets
 st.set_page_config(page_title=school_profile.app_title, page_icon="🏃", layout="wide")
 initialize_state(st.session_state)
 initialize_persistence_state(st.session_state)
+st.session_state.school_profile = school_profile
 
 if st.session_state.repository_result is None:
     repository_result = create_repository()
