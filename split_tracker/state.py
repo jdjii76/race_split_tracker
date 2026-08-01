@@ -288,6 +288,8 @@ def cleanup_after_meet_delete(session_state, meet_id: str, race_ids: list[str] |
     """Clear selected meet/race state after deleting a meet cascade."""
     for race_id in race_ids or []:
         session_state.setdefault("race_rosters", {}).pop(race_id, None)
+    if session_state.get("active_meet_id") == meet_id:
+        session_state.active_meet_id = None
     if session_state.get("selected_meet_id") == meet_id:
         session_state.selected_meet_id = None
         session_state.selected_race_id = None
@@ -301,6 +303,7 @@ def cleanup_after_test_data_delete(session_state) -> None:
     """Clear all local app data that mirrors repository test data."""
     session_state.race_rosters = {}
     session_state.selected_meet_id = None
+    session_state.active_meet_id = None
     session_state.selected_race_id = None
     session_state.active_race_session_id = None
     session_state.selected_results_session_id = None
@@ -319,6 +322,7 @@ def cleanup_after_all_timing_delete(session_state) -> None:
 def initialize_persistence_state(session_state) -> None:
     """Initialize selected persisted meet/race session keys."""
     session_state.setdefault("selected_meet_id", None)
+    session_state.setdefault("active_meet_id", None)
     session_state.setdefault("selected_race_id", None)
     session_state.setdefault("repository_result", None)
     session_state.setdefault("repository", None)
@@ -382,6 +386,7 @@ def load_race_into_setup(session_state, meet, race) -> None:
         session_state.active_race_session_id = None
         session_state.timing_restored_for_race_id = None
     session_state.selected_meet_id = meet.id
+    session_state.active_meet_id = meet.id
     session_state.selected_race_id = race.id
     session_state.meet_config = MeetConfig(
         meet_name=meet.name,

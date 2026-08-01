@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from split_tracker.branding import branded_export_filename, render_school_header
 
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.formatting import format_distance, format_duration
@@ -56,7 +57,8 @@ def _legacy_results() -> None:
         st.info("No saved sessions or local splits are available yet.")
         return
     st.dataframe(frame, hide_index=True, use_container_width=True)
-    st.download_button("Download CSV", data=frame.to_csv(index=False).encode("utf-8"), file_name="race_splits.csv", mime="text/csv", use_container_width=True)
+    profile = st.session_state.school_profile
+    st.download_button("Download CSV", data=frame.to_csv(index=False).encode("utf-8"), file_name=branded_export_filename(profile, ["race", "splits"], "csv"), mime="text/csv", use_container_width=True)
 
 
 def _filter_options(rows: list[dict[str, object]], key: str) -> list[str]:
@@ -66,7 +68,8 @@ def _filter_options(rows: list[dict[str, object]], key: str) -> list[str]:
 
 def render() -> None:
     """Render the results page."""
-    st.title("Results")
+    profile = st.session_state.school_profile
+    render_school_header(profile, f"{profile.program_name} Results")
     repository = _repo()
     if repository is None:
         st.warning("Persistent storage is unavailable. Showing only local session-state splits.")
@@ -100,6 +103,7 @@ def render() -> None:
     if race is None:
         return
     st.session_state.selected_race_id = race.id
+    st.caption(f"**{meet.name}** • **{race.name}**")
     checkpoints = _race_checkpoints(race)
 
     try:
@@ -179,7 +183,7 @@ def render() -> None:
     st.download_button(
         "Download selected session CSV",
         data=frame.to_csv(index=False).encode("utf-8"),
-        file_name=f"{meet.name}_{race.name}_{summary.session_id[:8]}_results.csv".replace(" ", "_"),
+        file_name=branded_export_filename(profile, [meet.meet_date.year if meet.meet_date else "", meet.name, race.name, summary.session_id[:8], "Results"], "csv"),
         mime="text/csv",
         use_container_width=True,
     )

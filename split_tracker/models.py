@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 from uuid import uuid4
+from datetime import datetime, timezone
 
 CourseType = Literal["Track", "Cross Country"]
 RaceStatus = Literal["not_started", "running", "paused", "ended"]
@@ -37,6 +38,29 @@ class Athlete:
     active: bool = True
     athlete_id: str = field(default_factory=lambda: str(uuid4()))
     reopened_after_finish: bool = False
+
+
+@dataclass(frozen=True)
+class PermanentAthlete:
+    """A school athlete whose stable ID may be selected into many races."""
+
+    first_name: str
+    last_name: str
+    id: str = field(default_factory=lambda: str(uuid4()))
+    school_profile_id: str | None = None
+    preferred_name: str = ""
+    graduation_year: int | None = None
+    gender: str = ""
+    team_division: str = ""
+    status: str = "active"
+    athlete_number: str = ""
+    notes: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def display_name(self) -> str:
+        return f"{self.preferred_name or self.first_name} {self.last_name}".strip()
 
 
 @dataclass
