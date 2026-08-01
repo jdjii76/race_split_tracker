@@ -1,5 +1,12 @@
 # Race Split Tracker
 
+The app opens on **Current Meet** whenever a valid active meet is available. The
+dashboard shows every race, its roster count and authoritative session status,
+with direct Start Timing, Resume Timing, or View Results actions. Use the compact
+sidebar control to change meets; the selection is also stored in the page query
+parameters so it can be restored after a browser refresh. Meet, race, roster, and
+checkpoint administration remains under **Race Setup**.
+
 Race Split Tracker is a Streamlit web application for coaches to record lap, mile, and checkpoint splits for multiple athletes during track and cross country races.
 
 This prototype focuses on fast race-day data entry, session-state storage, CSV export, and tested timing calculations.
