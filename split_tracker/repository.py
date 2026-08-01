@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from split_tracker.config import load_supabase_config
+from split_tracker.branding import DEFAULT_SCHOOL_PROFILE, SchoolProfile
 from split_tracker.models import Athlete, Checkpoint
 from split_tracker.supabase_client import SupabaseConnectionResult, create_supabase_connection
 
@@ -170,6 +171,11 @@ class RaceRepository(Protocol):
     def apply_template_to_meet(self, template_id: str, meet: Meet) -> tuple[Meet, list[Race]]: ...
     def archive_template(self, template_id: str) -> MeetTemplate: ...
     def seed_default_xc_template(self) -> MeetTemplate: ...
+    def get_school_profile(self) -> SchoolProfile | None: ...
+    def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile: ...
+    def restore_default_school_profile(self) -> SchoolProfile: ...
+    def upload_branding_asset(self, object_path: str, content: bytes, content_type: str) -> str: ...
+    def get_branding_asset_url(self, object_path: str) -> str | None: ...
 
     def create_race_session(self, session: RaceSession) -> RaceSession: ...
     def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
@@ -203,6 +209,23 @@ class InMemoryRaceRepository:
         self.split_events: dict[str, SplitEvent] = {}
         self.race_session_checkpoints: dict[tuple[str, int], RaceSessionCheckpoint] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
+        self.school_profile: SchoolProfile | None = None
+
+    def get_school_profile(self) -> SchoolProfile | None:
+        return self.school_profile
+
+    def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile:
+        self.school_profile = profile
+        return profile
+
+    def restore_default_school_profile(self) -> SchoolProfile:
+        return self.save_school_profile(DEFAULT_SCHOOL_PROFILE)
+
+    def upload_branding_asset(self, object_path: str, content: bytes, content_type: str) -> str:
+        raise RepositoryError("Logo uploads require configured Supabase Storage.")
+
+    def get_branding_asset_url(self, object_path: str) -> str | None:
+        return None
 
     def create_meet(self, meet: Meet) -> Meet:
         saved = replace(meet, created_at=meet.created_at, updated_at=utc_now())
@@ -861,6 +884,30 @@ def _athlete_from_row(row: dict[str, Any]) -> Athlete:
     )
 
 
+def _school_profile_to_row(profile: SchoolProfile) -> dict[str, Any]:
+    """Serialize settings only; image bytes are always stored separately."""
+    return {
+        "profile_key": "default", "school_name": profile.school_name, "short_name": profile.short_name,
+        "program_name": profile.program_name, "mascot": profile.mascot, "city": profile.city,
+        "state": profile.state, "app_title": profile.app_title, "primary_color": profile.primary_color,
+        "secondary_color": profile.secondary_color, "accent_color": profile.accent_color,
+        "text_on_primary": profile.text_on_primary, "logo_path": profile.logo_path,
+        "compact_logo_path": profile.compact_logo_path, "header_style": profile.header_style,
+        "show_logo_on_dashboard": profile.show_logo_on_dashboard,
+        "show_logo_on_timing": profile.show_logo_on_timing,
+        "include_branding_on_exports": profile.include_branding_on_exports,
+        "updated_at": utc_now().isoformat(),
+    }
+
+
+def _school_profile_from_row(row: dict[str, Any]) -> SchoolProfile:
+    defaults = DEFAULT_SCHOOL_PROFILE
+    return SchoolProfile(**{
+        name: row.get(name) if row.get(name) is not None else getattr(defaults, name)
+        for name in SchoolProfile.__dataclass_fields__
+    })
+
+
 class SupabaseRaceRepository:
     """Supabase-backed repository using the official Python client."""
 
@@ -899,6 +946,34 @@ class SupabaseRaceRepository:
                 logger.exception("Repository operation failed: %s", message)
                 raise RepositoryError(message) from exc
             self._execute(operation, message)
+
+    def get_school_profile(self) -> SchoolProfile | None:
+        row = self._single(self.client.table("school_profiles").select("*").eq("profile_key", "default"), "Could not load school branding.")
+        return _school_profile_from_row(row) if row else None
+
+    def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile:
+        row = self._single(self.client.table("school_profiles").upsert(_school_profile_to_row(profile), on_conflict="profile_key"), "Could not save school branding.")
+        return _school_profile_from_row(row) if row else profile
+
+    def restore_default_school_profile(self) -> SchoolProfile:
+        return self.save_school_profile(DEFAULT_SCHOOL_PROFILE)
+
+    def upload_branding_asset(self, object_path: str, content: bytes, content_type: str) -> str:
+        try:
+            self.client.storage.from_("branding").upload(object_path, content, {"content-type": content_type, "upsert": "true"})
+            return object_path
+        except Exception as exc:
+            logger.exception("Branding asset upload failed")
+            raise RepositoryError("Could not upload branding image. Verify the branding bucket and policies.") from exc
+
+    def get_branding_asset_url(self, object_path: str) -> str | None:
+        if not object_path:
+            return None
+        try:
+            return self.client.storage.from_("branding").get_public_url(object_path)
+        except Exception:
+            logger.warning("Branding asset URL unavailable")
+            return None
 
     def create_meet(self, meet: Meet) -> Meet:
         row = self._single(self.client.table("meets").insert(_meet_to_row(meet)), "Could not create meet.")

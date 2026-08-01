@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from split_tracker.branding import branded_export_filename, render_school_header
 
 from split_tracker.calculations import TRACK_DISTANCE_PRESETS, XC_DISTANCE_PRESETS, generate_checkpoints, race_distance_from_preset
 from split_tracker.formatting import format_distance, format_duration, format_pace, parse_time_to_seconds
@@ -147,7 +148,8 @@ def _render_summary(config: MeetConfig, athletes: list[Athlete]) -> None:
 
 def render() -> None:
     """Render the race setup page."""
-    st.title("Race Setup")
+    profile = st.session_state.school_profile
+    render_school_header(profile, "Configure Race")
     st.caption("Configure the race details, checkpoints, and roster before starting live timing.")
     if st.session_state.get("selected_race_id"):
         st.info("Loaded from a saved race. The roster is saved for this race only; checkpoints, splits, and results remain session-only.")
@@ -186,7 +188,7 @@ def render() -> None:
         roster_frame = pd.read_csv(uploaded).fillna("")
         if "Athlete ID" not in roster_frame.columns:
             roster_frame["Athlete ID"] = ""
-    st.download_button("Download roster template CSV", data=_template_csv(), file_name="race_roster_template.csv", mime="text/csv")
+    st.download_button("Download roster template CSV", data=_template_csv(), file_name=branded_export_filename(profile, ["race", "roster", "template"], "csv"), mime="text/csv")
     roster = st.data_editor(
         roster_frame,
         num_rows="dynamic",
