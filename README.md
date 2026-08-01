@@ -1,8 +1,53 @@
 # Race Split Tracker
 
+The app opens on **Current Meet** whenever a valid active meet is available. The
+dashboard shows every race, its roster count and authoritative session status,
+with direct Start Timing, Resume Timing, or View Results actions. Use the compact
+sidebar control to change meets; the selection is also stored in the page query
+parameters so it can be restored after a browser refresh. Meet, race, roster, and
+checkpoint administration remains under **Race Setup**.
+
 Race Split Tracker is a Streamlit web application for coaches to record lap, mile, and checkpoint splits for multiple athletes during track and cross country races.
 
 This prototype focuses on fast race-day data entry, session-state storage, CSV export, and tested timing calculations.
+
+## School Branding Configuration
+
+The immutable default profile is `DEFAULT_SCHOOL_PROFILE` in
+`split_tracker/branding.py`. It supplies the KMHS school, program, mascot,
+location, application title, and all theme colors. The current colors
+(`#243447`, `#F5F7FA`, `#B7791F`, and `#FFFFFF`) are accessible temporary
+fallbacks—not claimed official colors—and can be replaced in one configuration
+section when approved values are available.
+
+School settings are optional. For each field, Streamlit secrets take precedence
+over `SCHOOL_*` environment variables, which take precedence over defaults. A
+partial override inherits every unspecified KMHS value. For example:
+
+```toml
+# .streamlit/secrets.toml
+[school]
+school_name = "Kennesaw Mountain High School"
+short_name = "KMHS"
+program_name = "KMHS Cross Country"
+mascot = "Mustangs"
+city = "Kennesaw"
+state = "Georgia"
+primary_color = "#243447" # replace after official approval
+secondary_color = "#F5F7FA"
+accent_color = "#B7791F"
+text_on_primary = "#FFFFFF"
+logo_path = "assets/branding/approved_logo.png"
+compact_logo_path = "assets/branding/approved_mark.png"
+```
+
+Approved PNG, JPG, JPEG, and SVG assets may be placed in `assets/branding/` and
+selected with `logo_path` or `compact_logo_path`. Missing, unreadable, or
+unsupported assets safely fall back to the KMHS text identity. See
+`assets/branding/README.md`; the included SVG is placeholder text, not an
+official logo. CSV export names are generated centrally, begin with the configured
+school abbreviation, replace unsafe filename characters with underscores, and do
+not change exported data.
 
 ## Current Prototype Features
 
