@@ -9,7 +9,9 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from split_tracker.config import load_supabase_config
-from split_tracker.models import Athlete, Checkpoint
+from split_tracker.branding import DEFAULT_SCHOOL_PROFILE, SchoolProfile
+from split_tracker.models import Athlete, Checkpoint, PermanentAthlete
+from split_tracker.athletes import normalize_athlete
 from split_tracker.supabase_client import SupabaseConnectionResult, create_supabase_connection
 
 MEET_STATUSES = {"draft", "active", "upcoming", "completed", "archived"}
@@ -162,6 +164,13 @@ class RaceRepository(Protocol):
     def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]: ...
     def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool: ...
     def clear_race_roster(self, race_id: str) -> bool: ...
+    def list_athletes(self, *, status: str | None = None, graduation_year: int | None = None, gender: str | None = None, team_division: str | None = None, search: str | None = None) -> list[PermanentAthlete]: ...
+    def get_athlete(self, athlete_id: str) -> PermanentAthlete | None: ...
+    def create_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete: ...
+    def update_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete: ...
+    def set_athlete_status(self, athlete_id: str, status: str) -> PermanentAthlete: ...
+    def list_race_athlete_ids(self, race_id: str) -> list[str]: ...
+    def replace_race_athletes_from_roster(self, race_id: str, athlete_ids: list[str]) -> list[Athlete]: ...
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate: ...
     def update_template(self, template: MeetTemplate) -> MeetTemplate: ...
     def get_template(self, template_id: str) -> MeetTemplate | None: ...
@@ -170,6 +179,11 @@ class RaceRepository(Protocol):
     def apply_template_to_meet(self, template_id: str, meet: Meet) -> tuple[Meet, list[Race]]: ...
     def archive_template(self, template_id: str) -> MeetTemplate: ...
     def seed_default_xc_template(self) -> MeetTemplate: ...
+    def get_school_profile(self) -> SchoolProfile | None: ...
+    def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile: ...
+    def restore_default_school_profile(self) -> SchoolProfile: ...
+    def upload_branding_asset(self, object_path: str, content: bytes, content_type: str) -> str: ...
+    def get_branding_asset_url(self, object_path: str) -> str | None: ...
 
     def create_race_session(self, session: RaceSession) -> RaceSession: ...
     def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
@@ -203,6 +217,72 @@ class InMemoryRaceRepository:
         self.split_events: dict[str, SplitEvent] = {}
         self.race_session_checkpoints: dict[tuple[str, int], RaceSessionCheckpoint] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
+        self.school_profile: SchoolProfile | None = None
+        self.athletes: dict[str, PermanentAthlete] = {}
+
+    def get_school_profile(self) -> SchoolProfile | None:
+        return self.school_profile
+
+    def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile:
+        self.school_profile = profile
+        return profile
+
+    def restore_default_school_profile(self) -> SchoolProfile:
+        return self.save_school_profile(DEFAULT_SCHOOL_PROFILE)
+
+    def upload_branding_asset(self, object_path: str, content: bytes, content_type: str) -> str:
+        raise RepositoryError("Logo uploads require configured Supabase Storage.")
+
+    def get_branding_asset_url(self, object_path: str) -> str | None:
+        return None
+
+    def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None) -> list[PermanentAthlete]:
+        athletes = list(self.athletes.values())
+        if status: athletes = [item for item in athletes if item.status == status]
+        if graduation_year is not None: athletes = [item for item in athletes if item.graduation_year == graduation_year]
+        if gender: athletes = [item for item in athletes if item.gender == gender]
+        if team_division: athletes = [item for item in athletes if item.team_division == team_division]
+        if search:
+            term = search.casefold().strip()
+            athletes = [item for item in athletes if term in item.display_name.casefold() or term in item.athlete_number.casefold()]
+        return sorted(athletes, key=lambda item: (item.last_name.casefold(), item.first_name.casefold(), item.id))
+
+    def get_athlete(self, athlete_id: str) -> PermanentAthlete | None:
+        return self.athletes.get(athlete_id)
+
+    def create_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete:
+        saved = normalize_athlete(athlete)
+        if saved.id in self.athletes: raise RepositoryError("Athlete already exists.")
+        self.athletes[saved.id] = saved
+        return saved
+
+    def update_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete:
+        if athlete.id not in self.athletes: raise RepositoryError("Athlete not found.")
+        saved = replace(normalize_athlete(athlete), updated_at=utc_now())
+        self.athletes[saved.id] = saved
+        return saved
+
+    def set_athlete_status(self, athlete_id: str, status: str) -> PermanentAthlete:
+        athlete = self.get_athlete(athlete_id)
+        if athlete is None: raise RepositoryError("Athlete not found.")
+        return self.update_athlete(replace(athlete, status=status))
+
+    def list_race_athlete_ids(self, race_id: str) -> list[str]:
+        return [item.athlete_id for item in self.list_race_athletes(race_id, include_inactive=True) if item.athlete_id in self.athletes]
+
+    def replace_race_athletes_from_roster(self, race_id: str, athlete_ids: list[str]) -> list[Athlete]:
+        if len(athlete_ids) != len(set(athlete_ids)): raise RepositoryError("An athlete can only be selected once per race.")
+        existing = {item.athlete_id: item for item in self.list_race_athletes(race_id, include_inactive=True)}
+        removed = set(existing) - set(athlete_ids)
+        if removed and any(session.started_at or self.list_all_split_events(session.id) for session in self.list_race_sessions_for_race(race_id)):
+            raise RepositoryError("Athletes cannot be removed after timing has started or split events exist.")
+        for athlete_id in removed: self.race_athletes.pop((race_id, athlete_id), None)
+        for index, athlete_id in enumerate(athlete_ids):
+            permanent = self.get_athlete(athlete_id)
+            if permanent is None: raise RepositoryError("Selected permanent athlete was not found.")
+            snapshot = existing.get(athlete_id) or Athlete(name=permanent.display_name, athlete_id=permanent.id, gender=permanent.gender, team=permanent.team_division)
+            self.race_athletes[(race_id, athlete_id)] = replace(snapshot, display_order=index)
+        return self.list_race_athletes(race_id, include_inactive=True)
 
     def create_meet(self, meet: Meet) -> Meet:
         saved = replace(meet, created_at=meet.created_at, updated_at=utc_now())
@@ -301,8 +381,12 @@ class InMemoryRaceRepository:
 
     def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]:
         self._require_race(race_id)
-        for key in [key for key in self.race_athletes if key[0] == race_id]:
-            self.race_athletes.pop(key)
+        existing_ids = {item.athlete_id for item in self.list_race_athletes(race_id, include_inactive=True)}
+        removed = existing_ids - {item.athlete_id for item in athletes}
+        if removed and any(session.started_at or self.list_all_split_events(session.id) for session in self.list_race_sessions_for_race(race_id)):
+            raise RepositoryError("Athletes cannot be removed after timing has started or split events exist.")
+        for athlete_id in removed:
+            self.race_athletes.pop((race_id, athlete_id), None)
         saved = [replace(athlete, display_order=index) for index, athlete in enumerate(athletes)]
         for athlete in saved:
             self.race_athletes[(race_id, athlete.athlete_id)] = athlete
@@ -521,13 +605,14 @@ class InMemoryRaceRepository:
         return had_data
 
     def delete_all_application_test_data(self) -> bool:
-        had_data = bool(self.meets or self.races or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints)
+        had_data = bool(self.meets or self.races or self.athletes or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints)
         self.split_events.clear()
         self.race_session_checkpoints.clear()
         self.race_sessions.clear()
         self.race_athletes.clear()
         self.races.clear()
         self.meets.clear()
+        self.athletes.clear()
         return had_data
 
     def _require_meet(self, meet_id: str) -> Meet:
@@ -831,7 +916,7 @@ def _session_checkpoint_rpc_payload(checkpoint: Checkpoint) -> dict[str, Any]:
 def _athlete_to_row(race_id: str, athlete: Athlete, display_order: int | None = None) -> dict[str, Any]:
     return {
         "race_id": race_id,
-        "athlete_id": athlete.athlete_id,
+        "legacy_athlete_id": athlete.athlete_id,
         "name": athlete.name,
         "bib_number": athlete.bib_number or None,
         "gender": athlete.gender or None,
@@ -847,7 +932,7 @@ def _athlete_to_row(race_id: str, athlete: Athlete, display_order: int | None = 
 
 def _athlete_from_row(row: dict[str, Any]) -> Athlete:
     return Athlete(
-        athlete_id=str(row.get("athlete_id") or row["id"]),
+        athlete_id=str(row.get("athlete_id") or row.get("legacy_athlete_id") or row["id"]),
         name=str(row["name"]),
         bib_number=row.get("bib_number") or "",
         gender=row.get("gender") or "",
@@ -859,6 +944,50 @@ def _athlete_from_row(row: dict[str, Any]) -> Athlete:
         display_order=int(row.get("display_order") or 0),
         active=bool(row.get("active", True)),
     )
+
+
+def _permanent_athlete_to_row(athlete: PermanentAthlete) -> dict[str, Any]:
+    return {
+        "id": athlete.id, "first_name": athlete.first_name, "last_name": athlete.last_name,
+        "preferred_name": athlete.preferred_name or None, "graduation_year": athlete.graduation_year,
+        "gender": athlete.gender or None, "team_division": athlete.team_division or None,
+        "status": athlete.status, "athlete_number": athlete.athlete_number or None, "notes": athlete.notes or None,
+        "created_at": athlete.created_at.isoformat(), "updated_at": athlete.updated_at.isoformat(),
+    }
+
+
+def _permanent_athlete_from_row(row: dict[str, Any]) -> PermanentAthlete:
+    return PermanentAthlete(
+        id=str(row["id"]), first_name=str(row["first_name"]), last_name=str(row["last_name"]),
+        preferred_name=row.get("preferred_name") or "", graduation_year=int(row["graduation_year"]) if row.get("graduation_year") else None,
+        gender=row.get("gender") or "", team_division=row.get("team_division") or "", status=row.get("status") or "active",
+        athlete_number=row.get("athlete_number") or "", notes=row.get("notes") or "",
+        created_at=_parse_datetime(row.get("created_at")) or utc_now(), updated_at=_parse_datetime(row.get("updated_at")) or utc_now(),
+    )
+
+
+def _school_profile_to_row(profile: SchoolProfile) -> dict[str, Any]:
+    """Serialize settings only; image bytes are always stored separately."""
+    return {
+        "profile_key": "default", "school_name": profile.school_name, "short_name": profile.short_name,
+        "program_name": profile.program_name, "mascot": profile.mascot, "city": profile.city,
+        "state": profile.state, "app_title": profile.app_title, "primary_color": profile.primary_color,
+        "secondary_color": profile.secondary_color, "accent_color": profile.accent_color,
+        "text_on_primary": profile.text_on_primary, "logo_path": profile.logo_path,
+        "compact_logo_path": profile.compact_logo_path, "header_style": profile.header_style,
+        "show_logo_on_dashboard": profile.show_logo_on_dashboard,
+        "show_logo_on_timing": profile.show_logo_on_timing,
+        "include_branding_on_exports": profile.include_branding_on_exports,
+        "updated_at": utc_now().isoformat(),
+    }
+
+
+def _school_profile_from_row(row: dict[str, Any]) -> SchoolProfile:
+    defaults = DEFAULT_SCHOOL_PROFILE
+    return SchoolProfile(**{
+        name: row.get(name) if row.get(name) is not None else getattr(defaults, name)
+        for name in SchoolProfile.__dataclass_fields__
+    })
 
 
 class SupabaseRaceRepository:
@@ -890,6 +1019,7 @@ class SupabaseRaceRepository:
             ("race_sessions", "id"),
             ("split_events", "id"),
             ("race_session_checkpoints", "id"),
+            ("athletes", "id"),
         )
         for table_name, columns in checks:
             message = f"Supabase schema check failed for {table_name}. Apply the required migrations."
@@ -899,6 +1029,97 @@ class SupabaseRaceRepository:
                 logger.exception("Repository operation failed: %s", message)
                 raise RepositoryError(message) from exc
             self._execute(operation, message)
+
+    def get_school_profile(self) -> SchoolProfile | None:
+        row = self._single(self.client.table("school_profiles").select("*").eq("profile_key", "default"), "Could not load school branding.")
+        return _school_profile_from_row(row) if row else None
+
+    def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile:
+        row = self._single(self.client.table("school_profiles").upsert(_school_profile_to_row(profile), on_conflict="profile_key"), "Could not save school branding.")
+        return _school_profile_from_row(row) if row else profile
+
+    def restore_default_school_profile(self) -> SchoolProfile:
+        return self.save_school_profile(DEFAULT_SCHOOL_PROFILE)
+
+    def upload_branding_asset(self, object_path: str, content: bytes, content_type: str) -> str:
+        try:
+            self.client.storage.from_("branding").upload(object_path, content, {"content-type": content_type, "upsert": "true"})
+            return object_path
+        except Exception as exc:
+            logger.exception("Branding asset upload failed")
+            raise RepositoryError("Could not upload branding image. Verify the branding bucket and policies.") from exc
+
+    def get_branding_asset_url(self, object_path: str) -> str | None:
+        if not object_path:
+            return None
+        try:
+            return self.client.storage.from_("branding").get_public_url(object_path)
+        except Exception:
+            logger.warning("Branding asset URL unavailable")
+            return None
+
+    def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None) -> list[PermanentAthlete]:
+        query = self.client.table("athletes").select("*")
+        for column, value in (("status", status), ("graduation_year", graduation_year), ("gender", gender), ("team_division", team_division)):
+            if value is not None and value != "": query = query.eq(column, value)
+        result = self._execute(query.order("last_name", desc=False).order("first_name", desc=False), "Could not list permanent athletes.")
+        athletes = [_permanent_athlete_from_row(row) for row in getattr(result, "data", [])]
+        if search:
+            term = search.casefold().strip()
+            athletes = [item for item in athletes if term in item.display_name.casefold() or term in item.athlete_number.casefold()]
+        return athletes
+
+    def get_athlete(self, athlete_id: str) -> PermanentAthlete | None:
+        row = self._single(self.client.table("athletes").select("*").eq("id", athlete_id), "Could not load permanent athlete.")
+        return _permanent_athlete_from_row(row) if row else None
+
+    def create_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete:
+        try: saved = normalize_athlete(athlete)
+        except ValueError as exc: raise RepositoryError(str(exc)) from exc
+        row = self._single(self.client.table("athletes").insert(_permanent_athlete_to_row(saved)), "Could not create permanent athlete.")
+        return _permanent_athlete_from_row(row) if row else saved
+
+    def update_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete:
+        try: saved = replace(normalize_athlete(athlete), updated_at=utc_now())
+        except ValueError as exc: raise RepositoryError(str(exc)) from exc
+        row = self._single(self.client.table("athletes").update(_permanent_athlete_to_row(saved)).eq("id", saved.id), "Could not update permanent athlete.")
+        if row is None and self.get_athlete(saved.id) is None: raise RepositoryError("Athlete not found.")
+        return _permanent_athlete_from_row(row) if row else saved
+
+    def set_athlete_status(self, athlete_id: str, status: str) -> PermanentAthlete:
+        athlete = self.get_athlete(athlete_id)
+        if athlete is None: raise RepositoryError("Athlete not found.")
+        return self.update_athlete(replace(athlete, status=status))
+
+    def list_race_athlete_ids(self, race_id: str) -> list[str]:
+        result = self._execute(self.client.table("race_athletes").select("athlete_id").eq("race_id", race_id).not_.is_("athlete_id", "null"), "Could not list selected permanent athletes.")
+        return [str(row["athlete_id"]) for row in getattr(result, "data", []) if row.get("athlete_id")]
+
+    def replace_race_athletes_from_roster(self, race_id: str, athlete_ids: list[str]) -> list[Athlete]:
+        if len(athlete_ids) != len(set(athlete_ids)): raise RepositoryError("An athlete can only be selected once per race.")
+        existing_rows_result = self._execute(self.client.table("race_athletes").select("*").eq("race_id", race_id), "Could not inspect race roster.")
+        existing_rows = {str(row["athlete_id"]): row for row in getattr(existing_rows_result, "data", []) if row.get("athlete_id")}
+        removed = set(existing_rows) - set(athlete_ids)
+        if removed:
+            for session in self.list_race_sessions_for_race(race_id):
+                if session.started_at is not None or self.list_all_split_events(session.id):
+                    raise RepositoryError("Athletes cannot be removed after timing has started or split events exist.")
+        for athlete_id in removed:
+            self._execute(self.client.table("race_athletes").delete().eq("race_id", race_id).eq("athlete_id", athlete_id), "Could not remove athlete from race.")
+        for temporary_order, row in enumerate(existing_rows.values(), start=1):
+            if str(row["athlete_id"]) not in removed:
+                self._execute(self.client.table("race_athletes").update({"display_order": -temporary_order}).eq("id", row["id"]), "Could not prepare permanent roster ordering.")
+        for index, athlete_id in enumerate(athlete_ids):
+            permanent = self.get_athlete(athlete_id)
+            if permanent is None: raise RepositoryError("Selected permanent athlete was not found.")
+            if athlete_id in existing_rows:
+                self._execute(self.client.table("race_athletes").update({"display_order": index}).eq("race_id", race_id).eq("athlete_id", athlete_id), "Could not reorder race athlete.")
+            else:
+                snapshot = Athlete(name=permanent.display_name, athlete_id=permanent.id, gender=permanent.gender, team=permanent.team_division, display_order=index)
+                row = _athlete_to_row(race_id, snapshot, index)
+                row["athlete_id"], row["legacy_athlete_id"] = permanent.id, None
+                self._execute(self.client.table("race_athletes").insert(row), "Could not select permanent athlete for race.")
+        return self.list_race_athletes(race_id, include_inactive=True)
 
     def create_meet(self, meet: Meet) -> Meet:
         row = self._single(self.client.table("meets").insert(_meet_to_row(meet)), "Could not create meet.")
@@ -992,9 +1213,29 @@ class SupabaseRaceRepository:
     def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]:
         if self.get_race(race_id) is None:
             raise RepositoryError("Race not found.")
-        self._execute(self.client.table("race_athletes").delete().eq("race_id", race_id), "Could not clear race roster.")
+        result = self._execute(self.client.table("race_athletes").select("*").eq("race_id", race_id), "Could not inspect race roster.")
+        existing = {str(row.get("athlete_id") or row.get("legacy_athlete_id") or row["id"]): row for row in getattr(result, "data", [])}
+        removed = set(existing) - {athlete.athlete_id for athlete in athletes}
+        if removed and any(session.started_at or self.list_all_split_events(session.id) for session in self.list_race_sessions_for_race(race_id)):
+            raise RepositoryError("Athletes cannot be removed after timing has started or split events exist.")
+        for athlete_id in removed:
+            self._execute(self.client.table("race_athletes").delete().eq("id", existing[athlete_id]["id"]), "Could not remove race athlete.")
+        for temporary_order, prior in enumerate(existing.values(), start=1):
+            identity = str(prior.get("athlete_id") or prior.get("legacy_athlete_id") or prior["id"])
+            if identity not in removed:
+                self._execute(self.client.table("race_athletes").update({"display_order": -temporary_order}).eq("id", prior["id"]), "Could not prepare race roster ordering.")
         for index, athlete in enumerate(athletes):
-            self._execute(self.client.table("race_athletes").insert(_athlete_to_row(race_id, athlete, index)), "Could not save race roster.")
+            row = _athlete_to_row(race_id, athlete, index)
+            prior = existing.get(athlete.athlete_id)
+            if prior:
+                row["athlete_id"] = prior.get("athlete_id")
+                row["legacy_athlete_id"] = prior.get("legacy_athlete_id")
+                self._execute(self.client.table("race_athletes").update(row).eq("id", prior["id"]), "Could not update race roster.")
+            else:
+                permanent = self.get_athlete(athlete.athlete_id)
+                if permanent:
+                    row["athlete_id"], row["legacy_athlete_id"] = permanent.id, None
+                self._execute(self.client.table("race_athletes").insert(row), "Could not save race roster.")
         return self.list_race_athletes(race_id, include_inactive=True)
 
     def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool:
@@ -1207,9 +1448,11 @@ class SupabaseRaceRepository:
         meets = self._execute(self.client.table("meets").select("id"), "Could not inspect meets.")
         sessions = self._execute(self.client.table("race_sessions").select("id"), "Could not inspect timing sessions.")
         rosters = self._execute(self.client.table("race_athletes").select("id"), "Could not inspect race rosters.")
-        had_data = bool(getattr(meets, "data", []) or getattr(sessions, "data", []) or getattr(rosters, "data", []))
+        athletes = self._execute(self.client.table("athletes").select("id"), "Could not inspect permanent athletes.")
+        had_data = bool(getattr(meets, "data", []) or getattr(sessions, "data", []) or getattr(rosters, "data", []) or getattr(athletes, "data", []))
         self._execute(self.client.table("race_sessions").delete().neq("id", DELETE_ALL_FILTER_SENTINEL), "Could not delete timing sessions.")
         self._execute(self.client.table("meets").delete().neq("id", DELETE_ALL_FILTER_SENTINEL), "Could not delete meets and races.")
+        self._execute(self.client.table("athletes").delete().neq("id", DELETE_ALL_FILTER_SENTINEL), "Could not delete permanent athletes.")
         return had_data
 
 

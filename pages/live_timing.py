@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+from split_tracker.branding import render_school_header
 
 from split_tracker.formatting import format_distance, format_duration
 from split_tracker.projection import ordered_timing_athletes
@@ -247,7 +248,12 @@ def render() -> None:
     valid_setup = setup_is_valid(st.session_state)
     status = STATUS_LABELS[clock.status]
 
-    st.title("Live Timing")
+    render_school_header(
+        st.session_state.school_profile,
+        config.race_name or "Live Timing",
+        subtitle=f"{config.meet_name or 'Meet not selected'} • {status}",
+        compact=True,
+    )
     repository_result = st.session_state.get("repository_result")
     if repository_result is not None and repository_result.is_temporary:
         st.error("Shared live timing requires Supabase. Starting or recording a shared race is disabled; the app will not fall back to an isolated browser stopwatch.")
