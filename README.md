@@ -100,6 +100,34 @@ timing polling loop.
 
 ## Current Prototype Features
 
+### Permanent Athlete Roster
+
+Apply `supabase/migrations/009_permanent_athletes.sql` before deploying this
+version. The migration creates the permanent `athletes` table and adds a nullable
+UUID relationship from `race_athletes`, while renaming the former text identity
+to `legacy_athlete_id`. Existing race rows are deliberately **not** matched by
+name: their snapshot name and legacy identity remain readable, and they can be
+linked later through a reviewed administrative backfill.
+
+Use **Athletes** to create, filter, edit, injure, deactivate, graduate, or
+reactivate school athletes. Status changes and name edits retain the permanent
+UUID. Race Setup's **Select Athletes** section writes permanent IDs into the
+race-specific roster while retaining race-time names and metadata as historical
+snapshots. The existing editable race-only roster remains available for legacy
+or guest athletes because removing it would break established workflows.
+
+An unchanged race selection updates its existing row rather than recreating it.
+Deselection is allowed before timing starts, but is blocked once a race session
+has started or split events exist. Live Timing continues to read only
+`race_athletes`; it never queries the master roster. The migration also replaces
+the authoritative split RPC so both nullable legacy identities and permanent
+UUID identities remain synchronized across timer clients.
+
+The migration enables RLS with the same development-only anon policy used by the
+prototype. Before production, replace it with authenticated coach policies that
+permit the deployed Streamlit credentials to read and write `athletes`; do not
+use the development policy as production authorization.
+
 ### Race Setup
 
 - Meet name and race name fields

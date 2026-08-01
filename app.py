@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 from dataclasses import replace
 
-from pages import live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding
+from pages import athletes, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
 from split_tracker.navigation import resolve_active_meet_id
@@ -104,6 +104,7 @@ MEET_SETUP_PAGE = st.Page(
     icon="📝",
     url_path="meet-setup",
 )
+ATHLETES_PAGE = st.Page(athletes.render, title="Athletes", icon="🏃", url_path="athletes")
 CONFIGURE_RACE_PAGE = st.Page(
     meet_setup.render,
     title="Configure Race",
@@ -136,10 +137,11 @@ st.session_state.page_registry = {
     "live_timing": LIVE_TIMING_PAGE,
     "results": RESULTS_PAGE,
     "school_branding": SCHOOL_BRANDING_PAGE,
+    "athletes": ATHLETES_PAGE,
 }
 
 pages = {
-    "Race Day": [MEET_DASHBOARD_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE],
+    "Race Day": [MEET_DASHBOARD_PAGE, ATHLETES_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE],
     "Setup": [MEET_SETUP_PAGE, CONFIGURE_RACE_PAGE],
     "Settings": [SCHOOL_BRANDING_PAGE],
 }
