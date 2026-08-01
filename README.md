@@ -102,7 +102,8 @@ timing polling loop.
 
 ### Permanent Athlete Roster
 
-Apply `supabase/migrations/008_permanent_athlete_roster.sql` before deploying this
+Apply `supabase/migrations/008_school_branding.sql` followed by
+`supabase/migrations/009_permanent_athletes.sql` before deploying this
 version. The migration creates the permanent `athletes` table and adds a nullable
 UUID relationship from `race_athletes`, while renaming the former text identity
 to `legacy_athlete_id`. Existing race rows are deliberately **not** matched by
@@ -127,6 +128,15 @@ The migration enables RLS with the same development-only anon policy used by the
 prototype. Before production, replace it with authenticated coach policies that
 permit the deployed Streamlit credentials to read and write `athletes`; do not
 use the development policy as production authorization.
+
+Migration numbering was consolidated after two independently prepared changes
+both used version `008`: school branding remains the sole `008`, and the
+authoritative permanent-roster schema is `009`. The retired combined
+`008_permanent_athlete_roster.sql` must not be applied. If branding migration 008
+is already recorded in Supabase, apply only 009. If an earlier athlete draft was
+manually applied, run the current idempotent 009 SQL in the SQL Editor to add the
+school-profile relationship and authoritative constraints without matching or
+deleting legacy race athletes.
 
 ### Race Setup
 
