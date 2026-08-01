@@ -49,6 +49,55 @@ official logo. CSV export names are generated centrally, begin with the configur
 school abbreviation, replace unsafe filename characters with underscores, and do
 not change exported data.
 
+## In-App School Branding
+
+Apply `supabase/migrations/008_school_branding.sql`, then add an administrator
+passcode to Streamlit secrets (never commit the real value):
+
+```toml
+[admin]
+settings_passcode = "replace-this-value"
+```
+
+Open **Settings → School & Branding**, enter the passcode, and edit identity,
+colors, header layout, logo visibility, and export branding. The passcode is
+compared in memory and authorization lasts only for the current browser session;
+it is never logged or saved to Supabase. If the secret is absent, the settings
+page explains that editing is disabled while all race-day pages remain available.
+
+The page previews unsaved full and compact headers, a race card, action button,
+and uploaded images. **Save Changes** validates required text, six-digit colors,
+contrast, and images before saving. **Reset Unsaved Changes** reloads stored
+values. **Restore KMHS Defaults** requires confirmation and can retain logo
+references; it never deletes Storage objects automatically.
+
+### Supabase Storage setup
+
+Logo bytes are stored in Supabase Storage, never in `school_profiles`:
+
+1. Open the Supabase project and select **Storage**.
+2. Create a bucket named `branding`.
+3. Choose public access if public logo URLs fit the deployment security model, or
+   private access with equivalent authenticated/signed-URL policies.
+4. Add narrowly scoped read and upload/update policies for
+   `schools/default/*`. The development anon policies in the SQL migrations are
+   not suitable authorization for production.
+5. Verify the Streamlit deployment's existing publishable credentials can upload
+   and read objects; never expose or commit a service-role key.
+6. Test with a small PNG file (maximum 5 MB).
+
+Uploads accept matching PNG, JPG, or JPEG extensions and MIME types and use the
+safe object paths `schools/default/logo.*` and `schools/default/icon.*`. A profile
+row stores only those paths. Configure Storage policies before upload; a missing
+bucket, rejected upload, missing row, or branding read failure preserves the prior
+profile or activates built-in KMHS defaults without blocking timing.
+
+On Streamlit Community Cloud, configure both the `[admin]` passcode and existing
+Supabase values in the deployment's Secrets panel, apply the migration through
+Supabase, and create the bucket/policies manually. Branding is loaded once into
+session cache, refreshed after save/restore, and is never queried by the live
+timing polling loop.
+
 ## Current Prototype Features
 
 ### Race Setup
