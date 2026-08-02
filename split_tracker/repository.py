@@ -141,6 +141,23 @@ class RepositoryFactoryResult:
 class RepositoryError(RuntimeError):
     """Raised when a repository operation cannot be completed."""
 
+    def __init__(self, message: str, *, diagnostic: str = "") -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+def _safe_repository_diagnostic(exc: Exception) -> str:
+    """Return bounded Supabase error metadata without requests or credentials."""
+    parts: list[str] = []
+    for label, attribute in (("Code", "code"), ("Message", "message"), ("Details", "details"), ("Hint", "hint")):
+        value = getattr(exc, attribute, None)
+        if value:
+            text = " ".join(str(value).split())[:500]
+            parts.append(f"{label}: {text}")
+    if not parts:
+        parts.append("Message: No structured Supabase diagnostic was provided.")
+    return "\n".join(parts)
+
 
 class RaceRepository(Protocol):
     """Persistence contract for meet, race, and template management."""
@@ -1003,7 +1020,7 @@ class SupabaseRaceRepository:
             return operation.execute()
         except Exception as exc:
             logger.exception("Repository operation failed: %s", message)
-            raise RepositoryError(message) from exc
+            raise RepositoryError(message, diagnostic=_safe_repository_diagnostic(exc)) from exc
 
     def _single(self, operation: Any, message: str) -> dict[str, Any] | None:
         result = self._execute(operation, message)

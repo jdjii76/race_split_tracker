@@ -10,6 +10,7 @@ from split_tracker.repository import (
     InMemoryRaceRepository,
     Meet,
     Race,
+    RepositoryError,
     SupabaseRaceRepository,
     TemplateRace,
     create_repository,
@@ -216,3 +217,24 @@ def test_repository_factory_reports_missing_migration_health_check_failure(monke
     assert result.storage_label == "Supabase unavailable"
     assert result.error is not None
     assert "Apply the required migrations" in result.error
+
+
+def test_supabase_repository_error_exposes_sanitized_code_and_message():
+    class SupabaseFailure(Exception):
+        code = "23502"
+        message = "null value violates not-null constraint"
+        details = "Failing row contains identifiers only"
+
+    class Operation:
+        def execute(self):
+            raise SupabaseFailure("raw fallback")
+
+    repository = SupabaseRaceRepository(client=None)
+    try:
+        repository._execute(Operation(), "Could not select permanent athlete for race.")
+    except RepositoryError as exc:
+        assert str(exc) == "Could not select permanent athlete for race."
+        assert "Code: 23502" in exc.diagnostic
+        assert "Message: null value violates not-null constraint" in exc.diagnostic
+    else:
+        raise AssertionError("Expected RepositoryError")

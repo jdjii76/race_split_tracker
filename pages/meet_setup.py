@@ -64,6 +64,9 @@ def _permanent_athlete_selector() -> None:
             st.rerun()
         except RepositoryError as exc:
             st.error(str(exc))
+            if exc.diagnostic:
+                with st.expander("Supabase diagnostic details"):
+                    st.code(exc.diagnostic)
 
 
 def _athletes_to_frame(athletes: list[Athlete]) -> pd.DataFrame:

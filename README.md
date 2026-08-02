@@ -148,6 +148,15 @@ manually applied, run the current idempotent 009 SQL in the SQL Editor to add th
 school-profile relationship and authoritative constraints without matching or
 deleting legacy race athletes.
 
+After migration 009, apply
+`supabase/migrations/010_fix_race_athlete_identity_nullability.sql`. Migration
+004 originally made the text identity `NOT NULL`; renaming it in 009 preserved
+that constraint. Migration 010 makes the permanent UUID and legacy text identity
+individually nullable, requires at least one identity, retains both partial unique
+indexes, does not rewrite race or split history, and reloads the PostgREST schema
+cache. This allows permanent selections to store only `athlete_id` and legacy
+race-only athletes to store only `legacy_athlete_id`.
+
 ### Race Setup
 
 - Meet name and race name fields
