@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from split_tracker.branding import branded_export_filename, render_school_header
 
 from split_tracker.calculations import TRACK_DISTANCE_PRESETS, XC_DISTANCE_PRESETS, generate_checkpoints, race_distance_from_preset
 from split_tracker.formatting import format_distance, format_duration, format_pace, parse_time_to_seconds
@@ -13,6 +14,59 @@ from split_tracker.state import cleanup_after_roster_clear, clear_setup, replace
 
 TRACK_PRESETS = [*TRACK_DISTANCE_PRESETS.keys(), "Custom"]
 XC_PRESETS = [*XC_DISTANCE_PRESETS.keys(), "Custom"]
+
+
+def _permanent_athlete_selector() -> None:
+    race_id = st.session_state.get("selected_race_id")
+    repository = st.session_state.get("repository")
+    if not race_id or repository is None:
+        return
+    st.subheader("Select Athletes")
+    st.caption("Selections affect only this race. They do not remove anyone from the permanent school roster.")
+    c1, c2, c3, c4 = st.columns(4)
+    search = c1.text_input("Search school roster", key=f"permanent_search_{race_id}")
+    include_nonactive = c2.checkbox("Include injured/inactive", key=f"include_nonactive_{race_id}")
+    try:
+        roster = repository.list_athletes(search=search or None)
+        selected_ids = repository.list_race_athlete_ids(race_id)
+    except RepositoryError as exc:
+        st.error(f"Permanent roster could not be loaded: {exc}")
+        return
+    years = sorted({item.graduation_year for item in roster if item.graduation_year})
+    year = c3.selectbox("Graduation year", ["All", *years], key=f"permanent_year_{race_id}")
+    divisions = sorted({value for item in roster for value in (item.gender, item.team_division) if value})
+    division = c4.selectbox("Gender / division", ["All", *divisions], key=f"permanent_division_{race_id}")
+    filtered = [item for item in roster if (include_nonactive or item.status == "active") and (year == "All" or item.graduation_year == year) and (division == "All" or division in {item.gender, item.team_division})]
+    selection_key = f"permanent_race_selection_{race_id}"
+    if selection_key not in st.session_state:
+        st.session_state[selection_key] = selected_ids
+    controls = st.columns(2)
+    if controls[0].button("Select all filtered active athletes", key=f"select_filtered_{race_id}", use_container_width=True):
+        st.session_state[selection_key] = list(dict.fromkeys([*st.session_state[selection_key], *(item.id for item in filtered if item.status == "active")]))
+        st.rerun()
+    if controls[1].button("Clear race selection", key=f"clear_permanent_{race_id}", use_container_width=True):
+        st.session_state[selection_key] = []
+        st.rerun()
+    options = {item.id: item for item in roster}
+    # Keep already-selected nonmatching athletes visible so filtering never silently deselects them.
+    visible_ids = list(dict.fromkeys([*(item.id for item in filtered), *st.session_state[selection_key]]))
+    selected = st.multiselect(
+        "Permanent athletes selected for this race", visible_ids,
+        format_func=lambda athlete_id: f"{options[athlete_id].display_name} • {options[athlete_id].status}" if athlete_id in options else athlete_id,
+        key=selection_key,
+    )
+    st.write(f"**{len(selected)} selected**")
+    if st.button("Save Selected Athletes to Race", type="primary", key=f"save_permanent_{race_id}", use_container_width=True):
+        try:
+            st.session_state.athletes = repository.replace_race_athletes_from_roster(race_id, selected)
+            st.session_state.race_rosters[race_id] = st.session_state.athletes
+            st.success("Race selection saved. Race-specific names and metadata are preserved as history snapshots.")
+            st.rerun()
+        except RepositoryError as exc:
+            st.error(str(exc))
+            if exc.diagnostic:
+                with st.expander("Supabase diagnostic details"):
+                    st.code(exc.diagnostic)
 
 
 def _athletes_to_frame(athletes: list[Athlete]) -> pd.DataFrame:
@@ -147,10 +201,12 @@ def _render_summary(config: MeetConfig, athletes: list[Athlete]) -> None:
 
 def render() -> None:
     """Render the race setup page."""
-    st.title("Race Setup")
+    profile = st.session_state.school_profile
+    render_school_header(profile, "Configure Race")
     st.caption("Configure the race details, checkpoints, and roster before starting live timing.")
     if st.session_state.get("selected_race_id"):
         st.info("Loaded from a saved race. The roster is saved for this race only; checkpoints, splits, and results remain session-only.")
+        _permanent_athlete_selector()
 
     saved_config: MeetConfig = st.session_state.meet_config
     course_type = st.radio("Race type", ["Track", "Cross Country"], index=0 if saved_config.course_type == "Track" else 1, horizontal=True)
@@ -186,7 +242,7 @@ def render() -> None:
         roster_frame = pd.read_csv(uploaded).fillna("")
         if "Athlete ID" not in roster_frame.columns:
             roster_frame["Athlete ID"] = ""
-    st.download_button("Download roster template CSV", data=_template_csv(), file_name="race_roster_template.csv", mime="text/csv")
+    st.download_button("Download roster template CSV", data=_template_csv(), file_name=branded_export_filename(profile, ["race", "roster", "template"], "csv"), mime="text/csv")
     roster = st.data_editor(
         roster_frame,
         num_rows="dynamic",
