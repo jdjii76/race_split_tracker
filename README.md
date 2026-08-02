@@ -117,6 +117,16 @@ race-specific roster while retaining race-time names and metadata as historical
 snapshots. The existing editable race-only roster remains available for legacy
 or guest athletes because removing it would break established workflows.
 
+The **Import Athlete Roster** expander on the Athletes page provides a permanent-
+roster CSV template, validation preview, duplicate review, and an explicit import
+confirmation. Uploading a file never writes data by itself. Required columns are
+`first_name` and `last_name`; supported optional columns are `preferred_name`,
+`graduation_year`, `gender`, `team_division`, `athlete_number`, `status`, and
+`notes`. Coaches can skip possible existing duplicates, update the matched stable
+athlete ID, or intentionally create another athlete after reviewing the preview.
+Imported athletes are saved through the repository to `public.athletes`, not to a
+specific race.
+
 An unchanged race selection updates its existing row rather than recreating it.
 Deselection is allowed before timing starts, but is blocked once a race session
 has started or split events exist. Live Timing continues to read only

@@ -5,11 +5,64 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 from split_tracker.athletes import grade_from_graduation_year
+from split_tracker.athlete_import import csv_template_bytes, import_athlete_rows, parse_athlete_csv
 from split_tracker.branding import render_school_header
 from split_tracker.models import PermanentAthlete
 from split_tracker.repository import RepositoryError
 
 STATUSES = ["active", "inactive", "injured", "graduated"]
+
+
+def _import_roster(repository) -> None:
+    with st.expander("Import Athlete Roster"):
+        st.write("Upload once to populate the permanent school roster. Review every row before confirming; this does not select athletes for a race.")
+        st.download_button(
+            "Download CSV Template", csv_template_bytes(),
+            file_name="KMHS_permanent_athlete_roster_template.csv", mime="text/csv",
+            use_container_width=True,
+        )
+        uploaded = st.file_uploader("Upload permanent athlete roster CSV", type=["csv"], key="permanent_roster_csv")
+        if uploaded is None:
+            st.caption("Required columns: first_name and last_name. Use the template for all supported optional fields.")
+            return
+        try:
+            existing = repository.list_athletes()
+            rows = parse_athlete_csv(uploaded.getvalue(), existing)
+        except RepositoryError as exc:
+            st.error(f"The existing roster could not be checked: {exc}")
+            return
+        preview = pd.DataFrame([{
+            "CSV row": row.row_number,
+            "Name": row.athlete.display_name if row.athlete else "—",
+            "Graduation year": row.athlete.graduation_year if row.athlete else "—",
+            "Gender": row.athlete.gender if row.athlete else "—",
+            "Division": row.athlete.team_division if row.athlete else "—",
+            "Athlete number": row.athlete.athlete_number if row.athlete else "—",
+            "Status": row.athlete.status if row.athlete else "—",
+            "Validation": "; ".join(row.errors) or "Valid",
+            "Duplicate review": row.duplicate_reason or "New athlete",
+        } for row in rows])
+        st.subheader("CSV Preview")
+        st.dataframe(preview, hide_index=True, use_container_width=True)
+        invalid_count = sum(bool(row.errors) for row in rows)
+        duplicate_count = sum(bool(row.duplicate_athlete_id) for row in rows)
+        if invalid_count:
+            st.error(f"{invalid_count} row(s) are invalid and will not be imported. Correct the CSV and upload it again for a clean import.")
+        else:
+            st.success(f"All {len(rows)} row(s) passed validation.")
+        if duplicate_count:
+            st.warning(f"{duplicate_count} possible duplicate(s) require a policy choice. Same names are allowed; review carefully before updating.")
+        labels = {
+            "Skip possible duplicates": "skip",
+            "Update matched permanent athletes": "update",
+            "Create new athletes anyway": "create",
+        }
+        choice = st.radio("Duplicate behavior", list(labels), key="permanent_import_duplicate_policy")
+        confirm = st.checkbox("I reviewed the preview and confirm this permanent-roster import.", key="confirm_permanent_import")
+        if st.button("Import Permanent Athletes", type="primary", disabled=not confirm or invalid_count > 0, use_container_width=True):
+            summary = import_athlete_rows(repository, rows, labels[choice])
+            st.session_state.athlete_import_summary = summary
+            st.rerun()
 
 
 def _year_end() -> int:
@@ -54,6 +107,10 @@ def render() -> None:
         return
     if st.session_state.get("athlete_roster_flash"):
         st.success(st.session_state.pop("athlete_roster_flash"))
+    if st.session_state.get("athlete_import_summary"):
+        summary = st.session_state.pop("athlete_import_summary")
+        st.success(f"Import complete: {summary.created} created, {summary.updated} updated, {summary.skipped} skipped, {summary.failed} failed.")
+    _import_roster(repository)
     _save_new()
     st.subheader("School Roster")
     c1, c2, c3, c4 = st.columns(4)
