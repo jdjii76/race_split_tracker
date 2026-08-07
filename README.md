@@ -335,7 +335,11 @@ The app does **not** persist authentication data, user ownership, parent views, 
 
 ## Database Schema
 
-The initial schema is in `supabase/migrations/001_initial_schema.sql` and creates:
+The ordered files in `supabase/migrations/` are the **only authoritative
+production schema history**. Apply every file in numeric order; do not use the
+bootstrap/reference SQL files as substitutes for the migration chain.
+
+The initial migration, `supabase/migrations/001_initial_schema.sql`, creates:
 
 - `meets`
 - `races`
@@ -354,8 +358,45 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 2. `supabase/migrations/003_timing_persistence.sql`
 3. `supabase/migrations/004_race_rosters.sql`
 4. `supabase/migrations/005_race_session_checkpoints.sql`
+5. `supabase/migrations/006_shared_live_timing.sql`
+6. `supabase/migrations/007_fast_validated_split_rpc.sql`
+7. `supabase/migrations/008_school_branding.sql`
+8. `supabase/migrations/009_permanent_athletes.sql`
+9. `supabase/migrations/010_fix_race_athlete_identity_nullability.sql`
+10. `supabase/migrations/011_atomic_active_race_session.sql`
 
-There is currently no `002` migration file in the repository; keep the existing numbering gap and apply only the files present above. After running them, confirm these tables exist: `meets`, `races`, `meet_templates`, `template_races`, `race_sessions`, `split_events`, `race_athletes`, and `race_session_checkpoints`. Also confirm the `create_started_race_session_with_checkpoints` RPC function exists.
+There is no `002` migration file; retain that historical numbering gap. Every
+present migration version is unique. Migration `008_school_branding.sql` must
+precede `009_permanent_athletes.sql` because permanent athletes reference
+`school_profiles`. Migration `010` then reconciles permanent UUID and preserved
+legacy text identities without matching or updating rows by athlete name.
+
+An obsolete expanded file formerly named
+`008_permanent_athlete_roster.sql` duplicated both branding and permanent-roster
+work and shared version `008`. It is intentionally not part of the canonical
+chain. If that SQL was manually run in an existing development project, do not
+drop or recreate its objects and do not remove version `008` from Supabase's
+migration history. Continue with the canonical `009` and `010` migrations as
+needed: their guarded DDL preserves existing rows and identity values. If the
+Supabase migration-history table already records `008`, treat it as the branding
+step and verify the branding table before continuing rather than rerunning a
+destructive rollback.
+
+After running the chain, confirm these tables exist: `meets`, `races`,
+`meet_templates`, `template_races`, `race_sessions`, `split_events`,
+`race_athletes`, `race_session_checkpoints`, `school_profiles`, and `athletes`.
+Also confirm the `create_started_race_session_with_checkpoints`,
+`get_or_create_active_race_session`, and `record_shared_split` RPC functions
+exist. Migration `011` preserves terminal history while enforcing at most one
+`ready`, `running`, or `paused` session per race. Apply that complete file to an
+existing development project after migration `010`; do not edit the migration
+history table manually.
+
+`supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
+an empty, isolated development project. `database/migrations/001_initial_schema.sql`
+is a retained legacy copy of the initial schema. Neither is an independently
+maintained migration history; production and upgrades must use
+`supabase/migrations/`.
 
 ## Meet Dashboard and Templates
 

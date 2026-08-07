@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any, Protocol
@@ -204,6 +205,7 @@ class RaceRepository(Protocol):
 
     def create_race_session(self, session: RaceSession) -> RaceSession: ...
     def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
+    def get_or_create_active_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def get_race_session(self, race_session_id: str) -> RaceSession | None: ...
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None: ...
@@ -236,6 +238,7 @@ class InMemoryRaceRepository:
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
+        self._race_session_start_lock = threading.Lock()
 
     def get_school_profile(self) -> SchoolProfile | None:
         return self.school_profile
@@ -500,6 +503,29 @@ class InMemoryRaceRepository:
             self.delete_race_session(saved.id)
             raise
 
+    def get_or_create_active_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession:
+        """Atomically return the race's nonterminal session or create one."""
+        if not checkpoints:
+            raise RepositoryError("At least one checkpoint is required to start a race session.")
+        self._require_race(race_id)
+        with self._race_session_start_lock:
+            active = [
+                session for session in self.list_race_sessions_for_race(race_id)
+                if session.status in {"ready", "running", "paused"}
+            ]
+            if active:
+                session = active[-1]
+                if session.status == "ready":
+                    self.create_race_session_checkpoints(session.id, checkpoints)
+                    session = self.update_race_session(
+                        replace(session, status="running", started_at=session.started_at or utc_now())
+                    )
+                return session
+            return self.create_started_race_session_with_checkpoints(
+                RaceSession(race_id=race_id, status="running", started_at=utc_now()),
+                checkpoints,
+            )
+
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         return self.race_sessions.get(race_session_id)
 
@@ -516,7 +542,7 @@ class InMemoryRaceRepository:
 
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None:
         sessions = self.list_race_sessions_for_race(race_id)
-        active = [session for session in sessions if session.status in {"running", "paused"}]
+        active = [session for session in sessions if session.status in {"ready", "running", "paused"}]
         if active:
             return active[-1]
         return sessions[-1] if sessions else None
@@ -1348,6 +1374,26 @@ class SupabaseRaceRepository:
             raise RepositoryError("Could not create started race session with checkpoint snapshot.")
         return _race_session_from_row(data[0])
 
+    def get_or_create_active_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession:
+        """Use the database-serialized start operation for one race."""
+        if not checkpoints:
+            raise RepositoryError("At least one checkpoint is required to start a race session.")
+        result = self._execute(
+            self.client.rpc(
+                "get_or_create_active_race_session",
+                {
+                    "p_race_id": race_id,
+                    "p_checkpoints": [_session_checkpoint_rpc_payload(checkpoint) for checkpoint in checkpoints],
+                },
+            ),
+            "Could not get or create the active race session.",
+        )
+        data = getattr(result, "data", [])
+        if not data:
+            raise RepositoryError("Could not get or create the active race session.")
+        row = data[0] if isinstance(data, list) else data
+        return _race_session_from_row(row)
+
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         row = self._single(self.client.table("race_sessions").select("*").eq("id", race_session_id), "Could not load race session.")
         return _race_session_from_row(row) if row else None
@@ -1374,7 +1420,7 @@ class SupabaseRaceRepository:
         raise RepositoryError("Race session cannot be started from its current state.")
 
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None:
-        active_result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).in_("status", ["running", "paused"]).order("created_at", desc=False), "Could not load active race session.")
+        active_result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).in_("status", ["ready", "running", "paused"]).order("created_at", desc=False), "Could not load active race session.")
         active_rows = getattr(active_result, "data", [])
         if active_rows:
             return _race_session_from_row(active_rows[-1])
