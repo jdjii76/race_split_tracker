@@ -363,6 +363,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 7. `supabase/migrations/008_school_branding.sql`
 8. `supabase/migrations/009_permanent_athletes.sql`
 9. `supabase/migrations/010_fix_race_athlete_identity_nullability.sql`
+10. `supabase/migrations/011_atomic_active_race_session.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -384,8 +385,12 @@ destructive rollback.
 After running the chain, confirm these tables exist: `meets`, `races`,
 `meet_templates`, `template_races`, `race_sessions`, `split_events`,
 `race_athletes`, `race_session_checkpoints`, `school_profiles`, and `athletes`.
-Also confirm the `create_started_race_session_with_checkpoints` and
-`record_shared_split` RPC functions exist.
+Also confirm the `create_started_race_session_with_checkpoints`,
+`get_or_create_active_race_session`, and `record_shared_split` RPC functions
+exist. Migration `011` preserves terminal history while enforcing at most one
+`ready`, `running`, or `paused` session per race. Apply that complete file to an
+existing development project after migration `010`; do not edit the migration
+history table manually.
 
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from split_tracker.calculations import generate_checkpoints
@@ -265,7 +266,7 @@ def test_waiting_client_observes_other_clients_authoritative_start():
     client_b.timer_name = "Finish tablet"
     original_start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
-    persist_start(client_a, now_perf=100.0, now_utc=original_start)
+    started = persist_start(client_a, now_perf=100.0, now_utc=original_start)
     observed = synchronize_shared_timing(
         client_b,
         now_perf=230.0,
@@ -273,10 +274,11 @@ def test_waiting_client_observes_other_clients_authoritative_start():
     )
 
     assert observed.id == ready.id
-    assert observed.started_at == original_start
+    assert observed.started_at == started.started_at
     assert client_b.active_race_session_id == ready.id
     assert client_b.race_clock.status == "running"
-    assert client_b.race_clock.start_perf_counter == 200.0
+    expected_elapsed = (datetime(2026, 1, 1, 12, 0, 30, tzinfo=timezone.utc) - started.started_at).total_seconds()
+    assert client_b.race_clock.start_perf_counter == 230.0 - max(0.0, expected_elapsed)
     assert client_b.timer_name == "Finish tablet"
 
 
@@ -292,8 +294,73 @@ def test_nearly_simultaneous_starts_preserve_first_started_at():
     observed_by_second = persist_start(second, now_utc=later_attempt)
 
     assert started_by_first.id == observed_by_second.id == ready.id
-    assert started_by_first.started_at == observed_by_second.started_at == first_start
-    assert repo.get_race_session(ready.id).started_at == first_start
+    assert started_by_first.started_at == observed_by_second.started_at
+    assert repo.get_race_session(ready.id).started_at == started_by_first.started_at
+
+
+def test_independent_clients_without_session_id_converge_on_atomic_start():
+    repo, race, first = make_repo_and_session()
+    second = SessionState(**vars(first).copy())
+    first_start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    later_attempt = datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc)
+
+    started_by_first = persist_start(first, now_utc=first_start)
+    observed_by_second = persist_start(second, now_utc=later_attempt)
+
+    sessions = repo.list_race_sessions_for_race(race.id)
+    assert started_by_first.id == observed_by_second.id
+    assert first.active_race_session_id == second.active_race_session_id == sessions[0].id
+    assert started_by_first.started_at == observed_by_second.started_at
+    assert len(sessions) == 1
+    assert len(repo.list_race_session_checkpoints(sessions[0].id)) == len(first.meet_config.checkpoints)
+
+
+def test_repository_serializes_simultaneous_session_creation():
+    repo, race, state = make_repo_and_session()
+
+    def start():
+        return repo.get_or_create_active_race_session(race.id, state.meet_config.checkpoints)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = list(executor.map(lambda _: start(), range(2)))
+
+    sessions = repo.list_race_sessions_for_race(race.id)
+    snapshots = repo.list_race_session_checkpoints(first.id)
+    assert first.id == second.id
+    assert first.started_at == second.started_at
+    assert len([item for item in sessions if item.status in {"ready", "running", "paused"}]) == 1
+    assert len(snapshots) == len(state.meet_config.checkpoints)
+
+
+def test_terminal_sessions_allow_a_later_new_active_session():
+    for terminal_status in ("completed", "cancelled"):
+        repo, race, state = make_repo_and_session()
+        historical = repo.create_race_session(
+            RaceSession(
+                race_id=race.id,
+                status=terminal_status,
+                started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+
+        active = persist_start(state, now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc))
+
+        assert active.id != historical.id
+        assert [item.status for item in repo.list_race_sessions_for_race(race.id)] == [terminal_status, "running"]
+
+
+def test_refresh_restores_session_created_by_another_client():
+    _, _, starter = make_repo_and_session()
+    waiting = SessionState(**vars(starter).copy())
+    started = persist_start(starter, now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    restored = restore_timing_state(
+        waiting, now_utc=datetime(2026, 1, 1, 0, 0, 5, tzinfo=timezone.utc)
+    )
+
+    assert restored.id == started.id
+    assert waiting.active_race_session_id == started.id
+    assert waiting.race_clock.status == "running"
 
 
 def test_waiting_poll_failure_preserves_session_and_timer_identity():
@@ -403,7 +470,7 @@ def test_four_clients_converge_and_starter_recovers_after_failed_poll():
         clients.append(client)
 
     persisted_start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    start_and_synchronize_shared_timing(starter, now_utc=persisted_start)
+    started = start_and_synchronize_shared_timing(starter, now_utc=persisted_start)
     assert starter.active_race_session_id == ready.id
     assert starter.initiated_start_session_id == ready.id
     assert starter.timing_restored_for_race_id == race.id
@@ -447,7 +514,7 @@ def test_four_clients_converge_and_starter_recovers_after_failed_poll():
     assert starter.latest_event_id == repo.list_active_split_events(ready.id)[-1].id
     assert [split.checkpoint_number for split in starter.splits] == [1, 2, 3]
     assert next_checkpoint(starter.splits, starter.meet_config.checkpoints).label == "Finish"
-    assert repo.get_race_session(ready.id).started_at == persisted_start
+    assert repo.get_race_session(ready.id).started_at == started.started_at
 
     # Every other client performs fresh reads and converges with the starter.
     for client in clients[1:]:
@@ -470,7 +537,6 @@ def test_direct_start_and_detected_start_use_equivalent_authoritative_state():
     waiting = SessionState(**vars(starter).copy())
     waiting.splits = []
     started_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    observed_at = datetime(2026, 1, 1, 12, 0, 12, tzinfo=timezone.utc)
 
     direct = start_and_synchronize_shared_timing(
         starter,
@@ -480,11 +546,11 @@ def test_direct_start_and_detected_start_use_equivalent_authoritative_state():
     detected = poll_shared_timing(
         waiting,
         now_perf=124.0,
-        now_utc=observed_at,
+        now_utc=direct.started_at + timedelta(seconds=12),
     )
 
     assert direct.id == detected.id == ready.id
-    assert direct.started_at == detected.started_at == started_at
+    assert direct.started_at == detected.started_at
     assert starter.active_race_session_id == waiting.active_race_session_id
     assert starter.timing_restored_for_race_id == waiting.timing_restored_for_race_id == race.id
     assert starter.race_clock.status == waiting.race_clock.status == "running"
@@ -526,13 +592,14 @@ def test_starter_and_nonstarter_can_both_record_authoritative_splits():
     other = SessionState(**vars(starter).copy())
     other.splits = []
     start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    start_and_synchronize_shared_timing(starter, now_utc=start)
+    started = start_and_synchronize_shared_timing(starter, now_utc=start)
+    start = started.started_at
     poll_shared_timing(other, now_utc=start)
 
-    first = record_authoritative_split(starter, "a1", now_utc=datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc))
-    poll_shared_timing(other, now_utc=datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc))
-    second = record_authoritative_split(other, "a1", now_utc=datetime(2026, 1, 1, 12, 2, tzinfo=timezone.utc))
-    poll_shared_timing(starter, now_utc=datetime(2026, 1, 1, 12, 2, tzinfo=timezone.utc))
+    first = record_authoritative_split(starter, "a1", now_utc=start + timedelta(minutes=1))
+    poll_shared_timing(other, now_utc=start + timedelta(minutes=1))
+    second = record_authoritative_split(other, "a1", now_utc=start + timedelta(minutes=2))
+    poll_shared_timing(starter, now_utc=start + timedelta(minutes=2))
 
     assert first.event.checkpoint_number == 1
     assert second.event.checkpoint_number == 2
