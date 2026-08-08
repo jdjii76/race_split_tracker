@@ -12,6 +12,8 @@ from split_tracker.models import Athlete, MeetConfig
 from split_tracker.repository import RepositoryError
 from split_tracker.roster_selection import (
     athlete_checkbox_key,
+    clear_race_checkbox_state,
+    initialize_athlete_checkbox,
     persisted_selection_changed,
     selection_dirty_key,
     selection_key,
@@ -60,6 +62,7 @@ def _permanent_athlete_selector() -> list[Athlete]:
         st.warning("The saved race roster changed elsewhere while you have unsaved selections.")
         if st.button("Reload Saved Race Roster", key=f"reload_saved_roster_{race_id}", use_container_width=True):
             set_race_selection(st.session_state, race_id, persisted_ids, saved=True)
+            clear_race_checkbox_state(st.session_state, race_id)
             st.rerun()
     years = sorted({item.graduation_year for item in roster if item.graduation_year})
     year = c3.selectbox("Graduation year", ["All", *years], key=f"permanent_year_{race_id}")
@@ -72,9 +75,11 @@ def _permanent_athlete_selector() -> list[Athlete]:
     controls = st.columns(2)
     if controls[0].button("Select All", key=f"select_filtered_{race_id}", use_container_width=True):
         set_race_selection(st.session_state, race_id, [*selected_ids, *(item.id for item in filtered if item.status == "active")])
+        clear_race_checkbox_state(st.session_state, race_id)
         st.rerun()
     if controls[1].button("Clear", key=f"clear_permanent_{race_id}", disabled=roster_locked, use_container_width=True):
         set_race_selection(st.session_state, race_id, [])
+        clear_race_checkbox_state(st.session_state, race_id)
         st.rerun()
 
     options = {item.id: item for item in roster}
@@ -84,9 +89,7 @@ def _permanent_athlete_selector() -> list[Athlete]:
     columns = st.columns(2)
     for index, athlete_id in enumerate(visible):
         athlete = options[athlete_id]
-        checkbox = athlete_checkbox_key(race_id, athlete_id)
-        if checkbox not in st.session_state:
-            st.session_state[checkbox] = athlete_id in selected_ids
+        checkbox = initialize_athlete_checkbox(st.session_state, race_id, athlete_id, selected_ids)
         details = [athlete.display_name]
         if athlete.athlete_number:
             details.append(f"#{athlete.athlete_number}")
