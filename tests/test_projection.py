@@ -4,6 +4,7 @@ from split_tracker.models import Athlete, Checkpoint
 from split_tracker.projection import (
     apply_inserted_event_to_projection,
     athlete_matches_search,
+    latest_projected_split,
     ordered_race_board_athletes,
     ordered_timing_athletes,
     partition_finished_athletes,
@@ -226,3 +227,25 @@ def test_name_and_bib_search_and_authoritative_button_state():
     assert athlete_matches_search(state, "42")
     assert not athlete_matches_search(state, "99")
     assert "Next: Mile 1" in state.button_label
+
+
+def test_latest_projected_split_uses_global_event_order_not_per_athlete_sequence():
+    session, _, checkpoints = _fixtures()
+    athletes = [Athlete("Alex", athlete_id="a"), Athlete("Blair", athlete_id="b")]
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    projection = project_race_state(
+        session,
+        athletes,
+        checkpoints,
+        [
+            _event("a", 10, 50, event_id="a-first", at=now, event_order=1),
+            _event("a", 20, 100, event_id="a-finish", at=now, event_order=2),
+            _event("b", 10, 110, event_id="b-latest", at=now, event_order=3),
+        ],
+    )
+
+    latest = latest_projected_split(projection)
+
+    assert latest is not None
+    assert latest.split_id == "b-latest"
+    assert latest.athlete_id == "b"

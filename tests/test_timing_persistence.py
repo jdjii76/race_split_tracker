@@ -7,9 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.models import Athlete, MeetConfig, RaceClock
-from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, SplitEvent, SupabaseRaceRepository, _race_session_to_row, _split_event_to_row
+from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError, SplitEvent, SupabaseRaceRepository, _race_session_to_row, _split_event_to_row
 from split_tracker.state import record_split, start_race
 from split_tracker.timing_persistence import (
     persist_completion,
@@ -25,6 +27,7 @@ from split_tracker.timing_persistence import (
     refresh_splits_from_repository,
     restore_timing_state,
     start_and_synchronize_shared_timing,
+    synchronize_shared_timing,
 )
 
 
@@ -70,23 +73,79 @@ def test_race_session_creation_and_active_lookup():
     assert repo.list_race_sessions_for_race(race.id) == [created]
 
 
-def test_pause_resume_and_completion_elapsed_persistence():
+def test_pause_resume_and_completion_elapsed_persistence(monkeypatch):
     repo, race, session = make_repo_and_session()
     started = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
     session.active_race_session_id = started.id
+    server_times = iter([
+        datetime(2026, 1, 1, 12, 1, 15, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 12, 2, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 12, 3, 5, tzinfo=timezone.utc),
+    ])
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: next(server_times))
 
-    paused = persist_pause(session, 75.5, now_utc=datetime(2026, 1, 1, 12, 1, 15, tzinfo=timezone.utc))
-    resumed = persist_resume(session, now_utc=datetime(2026, 1, 1, 12, 2, tzinfo=timezone.utc))
+    paused = persist_pause(session, now_utc=datetime(2036, 1, 1, tzinfo=timezone.utc))
+    resumed = persist_resume(session, now_utc=datetime(2036, 1, 1, tzinfo=timezone.utc))
     elapsed_after_resume = persisted_elapsed_seconds(resumed, datetime(2026, 1, 1, 12, 2, 10, tzinfo=timezone.utc))
-    completed = persist_completion(session, 150.0, now_utc=datetime(2026, 1, 1, 12, 3, tzinfo=timezone.utc))
+    completed = persist_completion(session, now_utc=datetime(2036, 1, 1, tzinfo=timezone.utc))
 
     assert paused.status == "paused"
-    assert paused.elapsed_offset_seconds == 75.5
+    assert paused.elapsed_offset_seconds == 75
     assert resumed.status == "running"
-    assert elapsed_after_resume == 85.5
+    assert elapsed_after_resume == 85
     assert completed.status == "completed"
-    assert completed.elapsed_offset_seconds == 150.0
+    assert completed.elapsed_offset_seconds == 140
     assert completed.ended_at is not None
+
+
+def test_rejected_stale_pause_reloads_completed_shared_state(monkeypatch):
+    repo, race, client = make_repo_and_session()
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=started_at))
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+    synchronize_shared_timing(client, now_utc=started_at)
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: started_at + timedelta(minutes=1))
+    repo.transition_race_session(shared.id, "complete")
+
+    with pytest.raises(RepositoryError, match="shared race is completed"):
+        persist_pause(client, now_utc=datetime(2036, 1, 1, tzinfo=timezone.utc))
+
+    assert client.persisted_race_status == "completed"
+    assert client.race_clock.status == "ended"
+    assert client.projected_race_state.race_session.status == "completed"
+
+
+def test_refresh_reconstructs_each_authoritative_lifecycle_state(monkeypatch):
+    repo, race, controller = make_repo_and_session()
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(RaceSession(race_id=race.id, status="running", started_at=started_at))
+    repo.create_race_session_checkpoints(shared.id, controller.meet_config.checkpoints)
+    controller.active_race_session_id = shared.id
+    times = iter([
+        started_at + timedelta(seconds=30),
+        started_at + timedelta(seconds=60),
+        started_at + timedelta(seconds=90),
+    ])
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: next(times))
+
+    persist_pause(controller)
+    paused_browser = SessionState(**vars(controller).copy())
+    paused_browser.active_race_session_id = None
+    assert restore_timing_state(paused_browser).status == "paused"
+    assert paused_browser.race_clock.status == "paused"
+
+    persist_resume(controller)
+    running_browser = SessionState(**vars(controller).copy())
+    running_browser.active_race_session_id = None
+    assert restore_timing_state(running_browser).status == "running"
+    assert running_browser.race_clock.status == "running"
+
+    persist_completion(controller)
+    completed_browser = SessionState(**vars(controller).copy())
+    completed_browser.active_race_session_id = None
+    assert restore_timing_state(completed_browser).status == "completed"
+    assert completed_browser.race_clock.status == "ended"
 
 
 def test_race_clock_restore_from_paused_and_running_session():
@@ -868,3 +927,24 @@ def test_supabase_split_rpc_payload_omits_authoritative_timing_fields():
     assert "elapsed_seconds" not in params["p_event"]
     assert "recorded_at" not in params["p_event"]
     assert event.elapsed_seconds == 60
+
+
+def test_supabase_lifecycle_rpc_sends_only_session_and_action():
+    class Result:
+        data = [{"id": "session-1", "race_id": "race-1", "status": "paused", "started_at": "2026-01-01T12:00:00+00:00", "paused_at": "2026-01-01T12:01:00+00:00", "elapsed_offset_seconds": 60}]
+
+    class Operation:
+        def execute(self): return Result()
+
+    class Client:
+        def __init__(self): self.calls = []
+        def rpc(self, name, params):
+            self.calls.append((name, params))
+            return Operation()
+
+    client = Client()
+    session = SupabaseRaceRepository(client).transition_race_session("session-1", "pause")
+
+    assert client.calls == [("transition_race_session", {"p_session_id": "session-1", "p_action": "pause"})]
+    assert session.status == "paused"
+    assert session.elapsed_offset_seconds == 60

@@ -355,49 +355,55 @@ def persist_start(session_state, *, now_perf: float | None = None, now_utc: date
     return session
 
 
-def persist_pause(session_state, elapsed_seconds: float, *, now_utc: datetime | None = None) -> RaceSession | None:
+def _apply_lifecycle_session(session_state, session: RaceSession, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession:
+    """Apply an RPC-returned session without inventing lifecycle fields."""
+    session_state.race_clock = race_clock_from_session(session, now_perf=now_perf, now_utc=now_utc)
+    session_state.persisted_race_status = session.status
+    session_state.persisted_started_at = session.started_at
+    projection = session_state.get("projected_race_state")
+    if projection is not None:
+        updated = project_race_state(
+            session,
+            [state.athlete for state in projection.athletes],
+            session_state.meet_config.checkpoints,
+            list(projection.events),
+        )
+        session_state.projected_race_state = updated
+        session_state.splits = list(updated.results_rows)
+    return session
+
+
+def _persist_lifecycle_transition(session_state, action: str, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
     repository: RaceRepository | None = session_state.repository
     race_session_id = session_state.get("active_race_session_id")
     if repository is None or not race_session_id:
         return None
-    session = repository.get_race_session(race_session_id)
-    if session is None:
-        raise RepositoryError("Race session not found.")
-    saved = repository.update_race_session(replace(session, status="paused", paused_at=utc_now() if now_utc is None else now_utc, elapsed_offset_seconds=elapsed_seconds))
-    return saved
+    try:
+        saved = repository.transition_race_session(race_session_id, action)
+    except RepositoryError as exc:
+        # Converge to the winner's state; never retry a rejected stale action.
+        try:
+            current = synchronize_shared_timing(session_state, now_perf=now_perf, now_utc=now_utc)
+        except RepositoryError:
+            raise exc
+        raise RepositoryError(f"{action.title()} was not applied; the shared race is {current.status}.") from exc
+    return _apply_lifecycle_session(session_state, saved, now_perf=now_perf, now_utc=now_utc)
 
 
-def persist_resume(session_state, *, now_utc: datetime | None = None) -> RaceSession | None:
-    repository: RaceRepository | None = session_state.repository
-    race_session_id = session_state.get("active_race_session_id")
-    if repository is None or not race_session_id:
-        return None
-    session = repository.get_race_session(race_session_id)
-    if session is None:
-        raise RepositoryError("Race session not found.")
-    return repository.update_race_session(replace(session, status="running", started_at=utc_now() if now_utc is None else now_utc, paused_at=None))
+def persist_pause(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
+    return _persist_lifecycle_transition(session_state, "pause", now_perf=now_perf, now_utc=now_utc)
 
 
-def persist_completion(session_state, elapsed_seconds: float, *, now_utc: datetime | None = None) -> RaceSession | None:
-    repository: RaceRepository | None = session_state.repository
-    race_session_id = session_state.get("active_race_session_id")
-    if repository is None or not race_session_id:
-        return None
-    session = repository.get_race_session(race_session_id)
-    if session is None:
-        raise RepositoryError("Race session not found.")
-    return repository.update_race_session(replace(session, status="completed", ended_at=utc_now() if now_utc is None else now_utc, paused_at=None, elapsed_offset_seconds=elapsed_seconds))
+def persist_resume(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
+    return _persist_lifecycle_transition(session_state, "resume", now_perf=now_perf, now_utc=now_utc)
 
 
-def persist_cancel(session_state, elapsed_seconds: float, *, now_utc: datetime | None = None) -> RaceSession | None:
-    repository: RaceRepository | None = session_state.repository
-    race_session_id = session_state.get("active_race_session_id")
-    if repository is None or not race_session_id:
-        return None
-    session = repository.get_race_session(race_session_id)
-    if session is None:
-        raise RepositoryError("Race session not found.")
-    return repository.update_race_session(replace(session, status="cancelled", ended_at=utc_now() if now_utc is None else now_utc, paused_at=None, elapsed_offset_seconds=elapsed_seconds))
+def persist_completion(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
+    return _persist_lifecycle_transition(session_state, "complete", now_perf=now_perf, now_utc=now_utc)
+
+
+def persist_cancel(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
+    return _persist_lifecycle_transition(session_state, "cancel", now_perf=now_perf, now_utc=now_utc)
 
 
 def persist_split_record(session_state, record: SplitRecord) -> SplitEvent | None:

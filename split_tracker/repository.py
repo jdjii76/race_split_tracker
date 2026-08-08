@@ -209,6 +209,7 @@ class RaceRepository(Protocol):
     def get_race_session(self, race_session_id: str) -> RaceSession | None: ...
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None: ...
+    def transition_race_session(self, race_session_id: str, action: str) -> RaceSession: ...
     def update_race_session(self, session: RaceSession) -> RaceSession: ...
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]: ...
     def create_split_event(self, event: SplitEvent) -> SplitEvent: ...
@@ -240,7 +241,8 @@ class InMemoryRaceRepository:
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
         self._race_session_start_lock = threading.Lock()
-        self._split_event_lock = threading.Lock()
+        # Mirrors PostgreSQL's race_sessions row lock for lifecycle/split races.
+        self._race_session_lock = threading.RLock()
 
     def get_school_profile(self) -> SchoolProfile | None:
         return self.school_profile
@@ -556,6 +558,37 @@ class InMemoryRaceRepository:
         self.race_sessions[saved.id] = saved
         return saved
 
+    def transition_race_session(self, race_session_id: str, action: str) -> RaceSession:
+        """Model the locked, server-timed lifecycle RPC for local/test storage."""
+        normalized = action.strip().lower()
+        if normalized not in {"pause", "resume", "complete", "cancel"}:
+            raise RepositoryError(f"Unknown race session action: {action}")
+        with self._race_session_lock:
+            session = self.race_sessions.get(race_session_id)
+            if session is None:
+                raise RepositoryError("Race session not found.")
+            idempotent_status = {"pause": "paused", "resume": "running", "complete": "completed", "cancel": "cancelled"}[normalized]
+            if session.status == idempotent_status:
+                return session
+            allowed = {"pause": {"running"}, "resume": {"paused"}, "complete": {"running", "paused"}, "cancel": {"ready", "running", "paused"}}[normalized]
+            if session.status not in allowed:
+                raise RepositoryError(f"Invalid race session transition: {normalized} from {session.status}.")
+            server_now = utc_now()
+            elapsed = session.elapsed_offset_seconds
+            if session.status == "running" and session.started_at is not None:
+                elapsed += max(0.0, (server_now - session.started_at).total_seconds())
+            if normalized == "pause":
+                saved = replace(session, status="paused", paused_at=server_now, elapsed_offset_seconds=elapsed)
+            elif normalized == "resume":
+                saved = replace(session, status="running", started_at=server_now, paused_at=None)
+            elif normalized == "complete":
+                saved = replace(session, status="completed", ended_at=server_now, paused_at=None, elapsed_offset_seconds=elapsed)
+            else:
+                saved = replace(session, status="cancelled", ended_at=server_now if session.started_at is not None else None, paused_at=None, elapsed_offset_seconds=elapsed)
+            saved = replace(saved, updated_at=server_now)
+            self.race_sessions[saved.id] = saved
+            return saved
+
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         return sorted([session for session in self.race_sessions.values() if session.race_id == race_id], key=lambda session: (session.created_at, session.id))
 
@@ -577,7 +610,7 @@ class InMemoryRaceRepository:
 
     def record_shared_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, recorded_by: str, request_id: str) -> SplitEvent:
         """Model the server-authoritative split RPC for local/test storage."""
-        with self._split_event_lock:
+        with self._race_session_lock:
             existing = self.split_events.get(request_id)
             if existing is not None:
                 if existing.race_session_id != race_session_id or existing.athlete_id != athlete_id:
@@ -1496,6 +1529,25 @@ class SupabaseRaceRepository:
         saved = replace(session, updated_at=utc_now())
         row = self._single(self.client.table("race_sessions").update(_race_session_to_row(saved)).eq("id", saved.id), "Could not update race session.")
         return _race_session_from_row(row or _race_session_to_row(saved))
+
+    def transition_race_session(self, race_session_id: str, action: str) -> RaceSession:
+        """Request one locked, server-authoritative lifecycle transition."""
+        try:
+            result = self.client.rpc(
+                "transition_race_session",
+                {"p_session_id": race_session_id, "p_action": action},
+            ).execute()
+        except Exception as exc:
+            detail = str(exc).lower()
+            if any(term in detail for term in ("invalid race session transition", "unknown race session action", "race session not found")):
+                raise RepositoryError(str(exc)) from exc
+            logger.exception("Repository operation failed: Could not transition race session.")
+            raise RepositoryError("Could not transition race session.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row:
+            raise RepositoryError("Could not transition race session.")
+        return _race_session_from_row(row)
 
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).order("created_at", desc=False), "Could not list race sessions.")

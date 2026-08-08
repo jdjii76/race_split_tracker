@@ -366,6 +366,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 9. `supabase/migrations/010_fix_race_athlete_identity_nullability.sql`
 10. `supabase/migrations/011_atomic_active_race_session.sql`
 11. `supabase/migrations/012_server_authoritative_split_timing.sql`
+12. `supabase/migrations/013_server_authoritative_race_lifecycle.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -388,8 +389,8 @@ After running the chain, confirm these tables exist: `meets`, `races`,
 `meet_templates`, `template_races`, `race_sessions`, `split_events`,
 `race_athletes`, `race_session_checkpoints`, `school_profiles`, and `athletes`.
 Also confirm the `create_started_race_session_with_checkpoints`,
-`get_or_create_active_race_session`, and `record_shared_split` RPC functions
-exist. Migration `011` preserves terminal history while enforcing at most one
+`get_or_create_active_race_session`, `record_shared_split`, and
+`transition_race_session` RPC functions exist. Migration `011` preserves terminal history while enforcing at most one
 `ready`, `running`, or `paused` session per race. Apply that complete file to an
 existing development project after migration `010`; do not edit the migration
 history table manually.
@@ -398,6 +399,11 @@ Migration `012` replaces `record_shared_split(jsonb)` so PostgreSQL assigns the
 official split timestamp, elapsed time, and event order. Apply it after `011`
 and before deploying Python code that calls the reduced authoritative RPC
 payload.
+
+Migration `013` adds `transition_race_session(uuid, text)`. Apply it after `012`
+and before deploying Python code that performs persisted Pause, Resume, End, or
+Cancel actions. The RPC locks the session row, validates the state transition,
+and derives lifecycle timestamps and elapsed offsets from PostgreSQL time.
 
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`

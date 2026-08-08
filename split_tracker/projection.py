@@ -125,6 +125,32 @@ def partition_finished_athletes(
     return active, finished
 
 
+def latest_projected_split(
+    projection: ProjectedRaceState | None,
+) -> SplitRecord | None:
+    """Return the visible split belonging to the latest accepted event."""
+    if projection is None or not projection.events:
+        return None
+    latest_event_id = projection.events[-1].id
+    return next(
+        (
+            split
+            for split in projection.results_rows
+            if split.split_id == latest_event_id
+        ),
+        None,
+    )
+
+
+def partition_finished_athletes(
+    athlete_states: tuple[ProjectedAthleteState, ...] | list[ProjectedAthleteState],
+) -> tuple[tuple[ProjectedAthleteState, ...], tuple[ProjectedAthleteState, ...]]:
+    """Separate active timing targets from de-emphasized finishers."""
+    active = tuple(state for state in athlete_states if not state.finished)
+    finished = tuple(state for state in athlete_states if state.finished)
+    return active, finished
+
+
 def apply_inserted_event_to_projection(
     projection: ProjectedRaceState,
     checkpoints: list[Checkpoint],

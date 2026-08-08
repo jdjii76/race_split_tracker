@@ -31,4 +31,6 @@ def test_server_timing_migration_is_next_unique_version():
     migrations = sorted(MIGRATION.parent.glob("*.sql"))
     versions = [path.name.split("_", 1)[0] for path in migrations]
     assert len(versions) == len(set(versions))
-    assert migrations[-1] == MIGRATION
+    assert MIGRATION in migrations
+    assert MIGRATION.name.startswith("012_")
+    assert any(path.name.startswith("013_") for path in migrations)

@@ -12,6 +12,7 @@ from split_tracker.branding import render_school_header
 from split_tracker.formatting import format_distance, format_duration
 from split_tracker.projection import (
     athlete_matches_search,
+    latest_projected_split,
     ordered_race_board_athletes,
     ordered_timing_athletes,
     partition_finished_athletes,
@@ -198,10 +199,10 @@ def _start_timing() -> bool:
 
 def _pause_timing() -> bool:
     try:
-        current_elapsed = elapsed_seconds(st.session_state.race_clock)
         if _has_persisted_race():
-            persist_pause(st.session_state, current_elapsed)
-        pause_race(st.session_state)
+            persist_pause(st.session_state)
+        else:
+            pause_race(st.session_state)
         return True
     except Exception as exc:
         _show_persistence_error("Pause race", exc)
@@ -212,7 +213,8 @@ def _resume_timing() -> bool:
     try:
         if _has_persisted_race():
             persist_resume(st.session_state)
-        resume_race(st.session_state)
+        else:
+            resume_race(st.session_state)
         return True
     except Exception as exc:
         _show_persistence_error("Resume race", exc)
@@ -221,10 +223,10 @@ def _resume_timing() -> bool:
 
 def _end_timing() -> bool:
     try:
-        current_elapsed = elapsed_seconds(st.session_state.race_clock)
         if _has_persisted_race():
-            persist_completion(st.session_state, current_elapsed)
-        end_race(st.session_state)
+            persist_completion(st.session_state)
+        else:
+            end_race(st.session_state)
         return True
     except Exception as exc:
         _show_persistence_error("End race", exc)
@@ -233,9 +235,8 @@ def _end_timing() -> bool:
 
 def _reset_timing() -> bool:
     try:
-        current_elapsed = elapsed_seconds(st.session_state.race_clock)
         if _has_persisted_race() and st.session_state.get("active_race_session_id"):
-            persist_cancel(st.session_state, current_elapsed)
+            persist_cancel(st.session_state)
             st.session_state.active_race_session_id = None
             st.session_state.timing_restored_for_race_id = None
         reset_race(st.session_state)
@@ -445,10 +446,8 @@ def render() -> None:
         ):
             if _end_timing():
                 st.rerun()
-        last_split = (
-            max(st.session_state.splits, key=lambda split: split.sequence)
-            if st.session_state.splits
-            else None
+        last_split = latest_projected_split(
+            st.session_state.get("projected_race_state")
         )
         if last_split:
             c2.caption(f"Undo: {last_split.athlete_name} {last_split.checkpoint_label}")
