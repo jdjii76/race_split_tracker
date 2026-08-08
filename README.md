@@ -630,6 +630,14 @@ python -m compileall .
 
 ## Live timing responsiveness
 
+Live Timing uses a race-day focus layout: the authoritative race clock and a
+compact synchronization indicator stay above a searchable, touch-friendly
+athlete grid. **Stable** button order preserves race-roster positions by
+default; optional Expected Arrival and Race Order views consume the same
+projected race state. Finished athletes move to a collapsed summary while
+remaining visible on the progress-ranked Live Race Board. End, undo, reset, and
+development diagnostics are secondary so they do not compete with split taps.
+
 Successful athlete taps use one concurrency-safe Supabase RPC and immediately
 replay its returned event into the browser's persisted-state projection. The
 two-second fragment poll remains the authoritative cross-browser reconciliation
