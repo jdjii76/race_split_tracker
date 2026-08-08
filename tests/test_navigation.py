@@ -48,10 +48,17 @@ def test_race_setup_user_facing_labels_are_consistent():
     management_source = (ROOT / "pages/meet_management.py").read_text(encoding="utf-8")
     live_source = (ROOT / "pages/live_timing.py").read_text(encoding="utf-8")
 
+    assert 'title="Meets & Races"' in app_source
     assert 'title="Race Setup"' in app_source
-    assert 'render_school_header(profile, "Configure Race")' in setup_source
-    assert "Configure the race details, checkpoints, and roster before starting live timing." in setup_source
-    assert 'st.text_input("Meet name"' in setup_source
+    assert 'render_school_header(profile, "Race Setup")' in setup_source
+    assert "select its Race Roster from the permanent team" in setup_source
+    assert 'st.subheader("Race Information")' in setup_source
+    assert 'st.subheader("Select Athletes")' in setup_source
+    assert 'st.subheader("Configure Splits")' in setup_source
+    assert 'st.subheader("Review")' in setup_source
+    assert "Advanced Manual Race Roster" in setup_source
+    assert '"Save Race Roster"' in setup_source
+    assert '"Start Race"' in setup_source
     assert 'button("Open in Race Setup"' in management_source
     assert "Complete Race Setup before starting the race." in live_source
     assert "Add athletes on the Race Setup page" in live_source

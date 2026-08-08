@@ -112,10 +112,11 @@ linked later through a reviewed administrative backfill.
 
 Use **Athletes** to create, filter, edit, injure, deactivate, graduate, or
 reactivate school athletes. Status changes and name edits retain the permanent
-UUID. Race Setup's **Select Athletes** section writes permanent IDs into the
-race-specific roster while retaining race-time names and metadata as historical
-snapshots. The existing editable race-only roster remains available for legacy
-or guest athletes because removing it would break established workflows.
+UUID. Race Setup's primary **Select Athletes** section uses visible, race-scoped
+checkboxes and writes permanent IDs into the race-specific roster while retaining
+race-time names and metadata as historical snapshots. The editable race-only
+roster remains available in the collapsed **Race-Specific Details / Advanced
+Manual Race Roster** section for legacy or guest athletes.
 
 The **Import Athlete Roster** expander on the Athletes page provides a permanent-
 roster CSV template, validation preview, duplicate review, and an explicit import
@@ -159,17 +160,17 @@ race-only athletes to store only `legacy_athlete_id`.
 
 ### Race Setup
 
-- Meet name and race name fields
-- Course type selector for Track or Cross Country
-- Track and cross country race-distance presets with custom meter distances
+- Read-only saved race information with meet, date, category, distance, course, and status
+- Primary permanent-team selection with search, filters, visible checkboxes, Select All, Clear, and Save Race Roster
+- Race-scoped selection state that reloads persistence unless the coach has explicit unsaved edits
+- Saved-athlete removal lock after timing starts, preserving historical race snapshots
+- Collapsed race-specific details/manual athlete editor with optional CSV import
+- Legacy local meet/race and manual-roster setup when no persisted race is selected
 - Internal distance storage in meters
 - Checkpoint modes for standard laps, fixed intervals, and custom checkpoints
 - Finish checkpoint inclusion even when intervals do not divide the race evenly
-- Editable athlete roster with add/delete rows and paste support through the data editor
-- CSV roster import and roster template download
 - Roster fields for athlete name, bib number, target finish time, optional target pace, and group/category
-- Setup summary before saving
-- Clear Setup confirmation and Start Timing navigation
+- Compact review followed by Save Race Setup and Start Race actions
 - Validation for required meet/race names, athlete names, duplicate bibs, target-time formats, and at least one athlete
 
 ### Live Timing
