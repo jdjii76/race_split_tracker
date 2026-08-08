@@ -142,6 +142,15 @@ def latest_projected_split(
     )
 
 
+def partition_finished_athletes(
+    athlete_states: tuple[ProjectedAthleteState, ...] | list[ProjectedAthleteState],
+) -> tuple[tuple[ProjectedAthleteState, ...], tuple[ProjectedAthleteState, ...]]:
+    """Separate active timing targets from de-emphasized finishers."""
+    active = tuple(state for state in athlete_states if not state.finished)
+    finished = tuple(state for state in athlete_states if state.finished)
+    return active, finished
+
+
 def apply_inserted_event_to_projection(
     projection: ProjectedRaceState,
     checkpoints: list[Checkpoint],
