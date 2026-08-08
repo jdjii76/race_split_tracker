@@ -1,3 +1,7 @@
+-- LEGACY REFERENCE COPY ONLY.
+-- The authoritative production history is the ordered chain in
+-- supabase/migrations/. Do not apply this copy in addition to that chain.
+--
 -- Race Split Tracker Phase 1 schema.
 -- SECURITY WARNING: The RLS policies below are DEVELOPMENT-ONLY policies for a
 -- prototype using the publishable/anon role. Replace these with authenticated,
