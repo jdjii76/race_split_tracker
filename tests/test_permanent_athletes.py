@@ -62,3 +62,27 @@ def test_legacy_race_athlete_without_permanent_link_remains_readable():
     legacy = _athlete_from_row({"id": "row", "legacy_athlete_id": "legacy-id", "name": "Historic Runner"})
     assert legacy.athlete_id == "legacy-id"
     assert legacy.name == "Historic Runner"
+
+
+def test_duplicate_names_remain_distinct_and_clear_before_timing():
+    repo, race = setup_repository()
+    first = repo.create_athlete(PermanentAthlete(first_name="Jordan", last_name="Lee"))
+    second = repo.create_athlete(PermanentAthlete(first_name="Jordan", last_name="Lee"))
+
+    selected = repo.replace_race_athletes_from_roster(race.id, [first.id, second.id])
+    cleared = repo.replace_race_athletes_from_roster(race.id, [])
+
+    assert len({item.athlete_id for item in selected}) == 2
+    assert cleared == []
+
+
+def test_deactivated_permanent_athlete_retains_historical_race_snapshot():
+    repo, race = setup_repository()
+    athlete = repo.create_athlete(PermanentAthlete(first_name="Alex", last_name="Smith"))
+    snapshot = repo.replace_race_athletes_from_roster(race.id, [athlete.id])[0]
+
+    repo.set_athlete_status(athlete.id, "inactive")
+
+    restored = repo.list_race_athletes(race.id, include_inactive=True)[0]
+    assert restored.athlete_id == athlete.id
+    assert restored.name == snapshot.name == "Alex Smith"
