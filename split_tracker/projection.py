@@ -17,9 +17,12 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def split_event_sort_key(event: SplitEvent) -> tuple[datetime, datetime, str]:
-    """Return the canonical persisted-event ordering key."""
-    return (_utc(event.recorded_at), _utc(event.created_at), event.id)
+def split_event_sort_key(event: SplitEvent) -> tuple[int, int, datetime, datetime, str]:
+    """Prefer authoritative sequence, with timestamps only for legacy rows."""
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    if event.event_order > 0:
+        return (0, event.event_order, epoch, epoch, event.id)
+    return (1, 0, _utc(event.recorded_at), _utc(event.created_at), event.id)
 
 
 @dataclass(frozen=True)
@@ -43,40 +46,83 @@ class ProjectedRaceState:
     results_rows: tuple[SplitRecord, ...]
 
 
-def first_split_order_key(
+def race_progress_order_key(
     athlete_state: ProjectedAthleteState,
-    roster_order: int,
-) -> tuple[int, float, int, str]:
-    """Sort untimed athletes first, then by persisted first-split time."""
-    first_time = (
-        athlete_state.splits[0].cumulative_time_seconds
-        if athlete_state.splits
-        else float("inf")
-    )
+) -> tuple[int, float, str, str]:
+    """Rank current race progress using only the authoritative projection."""
     return (
-        1 if athlete_state.splits else 0,
-        first_time,
-        roster_order,
+        -athlete_state.completed_split_count,
+        (
+            athlete_state.latest_elapsed_seconds
+            if athlete_state.latest_elapsed_seconds is not None
+            else float("inf")
+        ),
+        athlete_state.athlete.name.casefold(),
         athlete_state.athlete.athlete_id,
     )
 
 
 def ordered_timing_athletes(
     projection: ProjectedRaceState,
+    mode: str = "Stable",
 ) -> tuple[ProjectedAthleteState, ...]:
-    """Return the live display order without changing the persisted roster."""
+    """Return a button order without changing the persisted race roster.
+
+    Stable is deliberately the default: recording a split does not move any
+    unrelated button. Expected Arrival groups athletes by their next checkpoint
+    while preserving roster order inside each group. Race Order mirrors the
+    progress-ranked live board.
+    """
+    if mode == "Stable":
+        return projection.athletes
     roster_positions = {
         state.athlete.athlete_id: index
         for index, state in enumerate(projection.athletes)
     }
-    return tuple(
-        sorted(
-            projection.athletes,
-            key=lambda state: first_split_order_key(
-                state, roster_positions[state.athlete.athlete_id]
-            ),
+    if mode == "Expected Arrival":
+        return tuple(
+            sorted(
+                projection.athletes,
+                key=lambda state: (
+                    -state.completed_split_count,
+                    roster_positions[state.athlete.athlete_id],
+                    state.athlete.athlete_id,
+                ),
+            )
         )
+    if mode != "Race Order":
+        raise ValueError(f"Unknown timing order mode: {mode}")
+    return tuple(sorted(projection.athletes, key=race_progress_order_key))
+
+
+def ordered_race_board_athletes(
+    projection: ProjectedRaceState,
+) -> tuple[ProjectedAthleteState, ...]:
+    """Return athletes in current-progress order for the live race board."""
+    return tuple(sorted(projection.athletes, key=race_progress_order_key))
+
+
+def athlete_matches_search(
+    athlete_state: ProjectedAthleteState,
+    query: str,
+) -> bool:
+    """Match a race-day search against athlete name or bib number."""
+    normalized = query.strip().casefold()
+    if not normalized:
+        return True
+    return (
+        normalized in athlete_state.athlete.name.casefold()
+        or normalized in str(athlete_state.athlete.bib_number or "").casefold()
     )
+
+
+def partition_finished_athletes(
+    athlete_states: tuple[ProjectedAthleteState, ...] | list[ProjectedAthleteState],
+) -> tuple[tuple[ProjectedAthleteState, ...], tuple[ProjectedAthleteState, ...]]:
+    """Separate active timing targets from de-emphasized finishers."""
+    active = tuple(state for state in athlete_states if not state.finished)
+    finished = tuple(state for state in athlete_states if state.finished)
+    return active, finished
 
 
 def apply_inserted_event_to_projection(
@@ -106,12 +152,18 @@ def project_race_state(
     for legacy rows created before the database uniqueness constraint existed.
     """
     ordered = sorted(
-        (event for event in split_events if event.race_session_id == race_session.id and not event.is_deleted),
+        (
+            event
+            for event in split_events
+            if event.race_session_id == race_session.id and not event.is_deleted
+        ),
         key=split_event_sort_key,
     )
     checkpoint_by_number = {checkpoint.number: checkpoint for checkpoint in checkpoints}
     accepted: list[SplitEvent] = []
-    accepted_by_athlete: dict[str, list[SplitEvent]] = {athlete.athlete_id: [] for athlete in race_athletes}
+    accepted_by_athlete: dict[str, list[SplitEvent]] = {
+        athlete.athlete_id: [] for athlete in race_athletes
+    }
     for event in ordered:
         history = accepted_by_athlete.get(event.athlete_id)
         if history is None or len(history) >= len(checkpoints):
@@ -146,7 +198,9 @@ def project_race_state(
         next_cp = checkpoints[len(records)] if len(records) < len(checkpoints) else None
         latest = history[-1] if history else None
         finished = next_cp is None and bool(checkpoints)
-        status = "FINISHED" if finished else f"Next: {next_cp.label if next_cp else '—'}"
+        status = (
+            "FINISHED" if finished else f"Next: {next_cp.label if next_cp else '—'}"
+        )
         last_line = ""
         if records:
             last = records[-1]
@@ -166,4 +220,6 @@ def project_race_state(
         )
         results.extend(records)
     results.sort(key=lambda split: (split.cumulative_time_seconds, split.split_id))
-    return ProjectedRaceState(race_session, tuple(projected_athletes), tuple(accepted), tuple(results))
+    return ProjectedRaceState(
+        race_session, tuple(projected_athletes), tuple(accepted), tuple(results)
+    )

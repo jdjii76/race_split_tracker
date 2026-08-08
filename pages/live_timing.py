@@ -10,7 +10,12 @@ import streamlit as st
 from split_tracker.branding import render_school_header
 
 from split_tracker.formatting import format_distance, format_duration
-from split_tracker.projection import ordered_timing_athletes
+from split_tracker.projection import (
+    athlete_matches_search,
+    ordered_race_board_athletes,
+    ordered_timing_athletes,
+    partition_finished_athletes,
+)
 from split_tracker.timing_persistence import (
     persist_cancel,
     persist_completion,
@@ -26,7 +31,6 @@ from split_tracker.state import (
     elapsed_seconds,
     end_race,
     pause_race,
-    reopen_athlete,
     reset_race,
     resume_race,
     setup_is_valid,
@@ -39,14 +43,17 @@ logger = logging.getLogger(__name__)
 _BUTTON_CSS = """
 <style>
 div[data-testid="stButton"] > button {
-    min-height: 5rem;
+    min-height: 3rem;
     font-size: 1.05rem;
     font-weight: 700;
     border-radius: 0.9rem;
     white-space: pre-wrap;
 }
+div[data-testid="stButton"] > button[kind="primary"] { min-height: 5rem; }
 [data-testid="stMetricValue"] { font-size: 2.7rem; }
-.finished-athlete { opacity: 0.65; }
+.sync-ok { color: #16803a; font-weight: 700; }
+.sync-warn { color: #b26a00; font-weight: 700; }
+.sync-error { color: #b42318; font-weight: 700; }
 </style>
 """
 
@@ -59,18 +66,28 @@ STATUS_LABELS = {
 
 
 def _clock_metric() -> None:
-    st.metric("Race Clock", format_duration(elapsed_seconds(st.session_state.race_clock)))
+    st.metric(
+        "Race Clock", format_duration(elapsed_seconds(st.session_state.race_clock))
+    )
 
 
-def athlete_timing_button_key(race_session_id: str, athlete_id: str, checkpoint_number: int | None) -> str:
+def athlete_timing_button_key(
+    race_session_id: str, athlete_id: str, checkpoint_number: int | None
+) -> str:
     """Return a stable identity for one session/athlete/checkpoint button."""
     checkpoint_key = "complete" if checkpoint_number is None else str(checkpoint_number)
     return f"split:{race_session_id}:{athlete_id}:{checkpoint_key}"
 
 
 def athlete_timing_button_disabled(
-    *, shared_unavailable: bool, race_session_id: str | None, clock_status: str,
-    timer_name: str, checkpoint_number: int | None, finished: bool, reopened: bool,
+    *,
+    shared_unavailable: bool,
+    race_session_id: str | None,
+    clock_status: str,
+    timer_name: str,
+    checkpoint_number: int | None,
+    finished: bool,
+    reopened: bool,
 ) -> bool:
     """Return whether an authoritative checkpoint button must be disabled."""
     return (
@@ -83,10 +100,11 @@ def athlete_timing_button_disabled(
     )
 
 
-def _live_board_frame(filter_value: str) -> pd.DataFrame:
+def _live_board_frame(filter_value: str, search_value: str = "") -> pd.DataFrame:
     rows = []
     projection = st.session_state.get("projected_race_state")
-    for athlete_state in projection.athletes if projection else ():
+    ordered = ordered_race_board_athletes(projection) if projection else ()
+    for place, athlete_state in enumerate(ordered, start=1):
         athlete = athlete_state.athlete
         latest = athlete_state.splits[-1] if athlete_state.splits else None
         finished = athlete_state.finished
@@ -94,36 +112,60 @@ def _live_board_frame(filter_value: str) -> pd.DataFrame:
             continue
         if filter_value == "Finished" and not finished:
             continue
+        if not athlete_matches_search(athlete_state, search_value):
+            continue
         rows.append(
             {
+                "Place": place,
                 "Athlete": athlete.name,
                 "Bib": athlete.bib_number,
-                "Latest checkpoint": latest.checkpoint_label if latest else "—",
-                "Checkpoint order": latest.checkpoint_number if latest else 0,
-                "Latest segment": format_duration(latest.segment_split_seconds) if latest else "—",
-                "Cumulative time": format_duration(latest.cumulative_time_seconds) if latest else "—",
-                "Target variance": format_duration(latest.target_variance_seconds) if latest and latest.target_variance_seconds is not None else "—",
-                "Finish status": "Finished" if finished else "Active",
-                "Sort time": latest.cumulative_time_seconds if latest else float("inf"),
+                "Checkpoint": latest.checkpoint_label if latest else "Not started",
+                "Cumulative": (
+                    format_duration(latest.cumulative_time_seconds) if latest else "—"
+                ),
+                "Latest split": (
+                    format_duration(latest.segment_split_seconds) if latest else "—"
+                ),
+                "Status": (
+                    "Finished" if finished else ("Racing" if latest else "Not started")
+                ),
             }
         )
-    frame = pd.DataFrame(rows)
-    if frame.empty:
-        return frame
-    frame = frame.sort_values(["Checkpoint order", "Sort time"], ascending=[False, True])
-    return frame.drop(columns=["Checkpoint order", "Sort time"])
+    return pd.DataFrame(rows)
 
+
+def _sync_status() -> tuple[str, str]:
+    """Return a compact race-day connection label and CSS class."""
+    if st.session_state.get("sync_error"):
+        return "● Connection problem", "sync-error"
+    if st.session_state.get("active_race_session_id") and st.session_state.get(
+        "storage_connected"
+    ):
+        return "● Synced", "sync-ok"
+    return "● Updating", "sync-warn"
 
 
 def _has_persisted_race() -> bool:
     result = st.session_state.get("repository_result")
     shared_storage = result is None or not result.is_temporary
-    return bool(shared_storage and st.session_state.get("selected_race_id") and st.session_state.get("repository"))
+    return bool(
+        shared_storage
+        and st.session_state.get("selected_race_id")
+        and st.session_state.get("repository")
+    )
 
 
 def _show_persistence_error(operation: str, exc: Exception) -> None:
-    logger.exception("Live timing persistence failed", extra={"operation": operation, "race_id": st.session_state.get("selected_race_id")})
-    st.error(f"{operation} could not be saved. The underlying error was logged; no Supabase secrets were displayed.")
+    logger.exception(
+        "Live timing persistence failed",
+        extra={
+            "operation": operation,
+            "race_id": st.session_state.get("selected_race_id"),
+        },
+    )
+    st.error(
+        f"{operation} could not be saved. The underlying error was logged; no Supabase secrets were displayed."
+    )
 
 
 def _restore_if_needed() -> None:
@@ -209,7 +251,9 @@ def _record_tap(athlete_id: str) -> bool:
         result = record_authoritative_split(st.session_state, athlete_id)
         st.session_state.message = result.message
         if result.status == "duplicate":
-            st.warning(f"{result.message} Shared progress was reloaded; use the newly displayed next checkpoint.")
+            st.warning(
+                f"{result.message} Shared progress was reloaded; use the newly displayed next checkpoint."
+            )
         else:
             # The widget interaction already causes a fragment rerun. Suppress
             # its normal poll so the RPC-returned event can render immediately.
@@ -217,7 +261,9 @@ def _record_tap(athlete_id: str) -> bool:
         return True
     except Exception as exc:
         _show_persistence_error("Record split", exc)
-        st.session_state.message = f"Split was not saved: {exc} Tap again after resolving the error."
+        st.session_state.message = (
+            f"Split was not saved: {exc} Tap again after resolving the error."
+        )
         return False
 
 
@@ -225,13 +271,16 @@ def _undo_tap(split) -> bool:
     try:
         if _has_persisted_race() and st.session_state.get("active_race_session_id"):
             persist_undo_split(st.session_state, split)
-            st.session_state.message = f"Undid {split.athlete_name} at {split.checkpoint_label}."
+            st.session_state.message = (
+                f"Undid {split.athlete_name} at {split.checkpoint_label}."
+            )
         else:
             undo_last_split(st.session_state)
         return True
     except Exception as exc:
         _show_persistence_error("Undo split", exc)
         return False
+
 
 def render() -> None:
     """Render the existing controlled live-timing polling fragment."""
@@ -256,178 +305,272 @@ def render() -> None:
     )
     repository_result = st.session_state.get("repository_result")
     if repository_result is not None and repository_result.is_temporary:
-        st.error("Shared live timing requires Supabase. Starting or recording a shared race is disabled; the app will not fall back to an isolated browser stopwatch.")
-    timer_name = st.text_input("Timer / display name", value=st.session_state.timer_name, placeholder="e.g. Finish line tablet")
-    st.session_state.timer_name = timer_name.strip()
+        st.error(
+            "Shared live timing requires Supabase. Starting or recording a shared race is disabled; the app will not fall back to an isolated browser stopwatch."
+        )
     connected_id = st.session_state.get("active_race_session_id") or "Not connected"
     sync_at = st.session_state.get("last_sync_at")
-    storage = "Connected" if st.session_state.get("storage_connected") else ("Unavailable" if st.session_state.get("sync_error") else "Not synchronized")
-    st.caption(
-        f"Session: **{connected_id}** • Timer: **{st.session_state.timer_name or 'Name required'}** • "
-        f"Storage: **{storage}** • Last sync: **{sync_at.strftime('%H:%M:%S UTC') if sync_at else 'Never'}**"
-    )
-    if st.session_state.get("latest_shared_action"):
-        st.caption(f"Latest action: **{st.session_state.latest_shared_action}**")
-    if st.session_state.get("sync_error"):
-        st.error(f"Shared timing synchronization failed: {st.session_state.sync_error}. Existing shared data remains displayed; retry is automatic.")
-    with st.expander("Development synchronization status", expanded=False):
-        poll_at = st.session_state.get("poll_cycle_at")
-        latest_at = st.session_state.get("latest_event_at")
-        action = st.session_state.get("last_split_action") or {}
-        st.code(
-            "\n".join(
-                [
-                    f"timer_name: {st.session_state.timer_name or 'not set'}",
-                    f"race_session_id: {connected_id}",
-                    f"initiated_start: {st.session_state.get('initiated_start_session_id') == connected_id}",
-                    f"last_fragment_rerun: {st.session_state.last_fragment_rerun_at.isoformat()}",
-                    f"poll_cycle: {st.session_state.get('poll_cycle_count', 0)}",
-                    f"poll_cycle_at: {poll_at.isoformat() if poll_at else 'never'}",
-                    f"last_successful_sync: {sync_at.isoformat() if sync_at else 'never'}",
-                    f"loaded_active_events: {st.session_state.get('loaded_split_event_count', 0)}",
-                    f"latest_event_id: {st.session_state.get('latest_event_id') or 'none'}",
-                    f"latest_event_at: {latest_at.isoformat() if latest_at else 'none'}",
-                    f"local_clock_status: {clock.status}",
-                    f"persisted_session_status: {st.session_state.get('persisted_race_status') or 'unknown'}",
-                    f"persisted_started_at: {st.session_state.get('persisted_started_at') or 'none'}",
-                    f"projected_event_count: {len(getattr(st.session_state.get('projected_race_state'), 'events', ())) }",
-                    f"projected_results_row_count: {len(getattr(st.session_state.get('projected_race_state'), 'results_rows', ())) }",
-                    f"sync_error: {st.session_state.get('sync_error') or 'none'}",
-                    f"last_write_attempt: {action.get('click_received_at') if action else 'none'}",
-                    f"last_write_success: {action.get('result') == 'inserted' if action else False}",
-                    f"last_write_event_id: {action.get('inserted_event_id') or 'none' if action else 'none'}",
-                    f"last_write_error: {action.get('error') or 'none' if action else 'none'}",
-                ]
-            ),
-            language="text",
+    storage = (
+        "Connected"
+        if st.session_state.get("storage_connected")
+        else (
+            "Unavailable" if st.session_state.get("sync_error") else "Not synchronized"
         )
-        if action:
+    )
+    sync_label, sync_class = _sync_status()
+    top_clock, top_status = st.columns([2, 1])
+    with top_clock:
+        _clock_metric()
+    with top_status:
+        st.markdown(f'<p class="{sync_class}">{sync_label}</p>', unsafe_allow_html=True)
+        st.caption(
+            f"{status} • {sync_at.strftime('%H:%M:%S UTC') if sync_at else 'Connecting'}"
+        )
+    if st.session_state.get("sync_error"):
+        st.warning(
+            "Connection problem. Existing race data remains visible and retry is automatic."
+        )
+    if st.session_state.get("debug_mode"):
+        with st.expander("Development synchronization status", expanded=False):
+            poll_at = st.session_state.get("poll_cycle_at")
+            latest_at = st.session_state.get("latest_event_at")
+            action = st.session_state.get("last_split_action") or {}
             st.code(
                 "\n".join(
                     [
-                        "last_split_action:",
-                        f"  timer_name: {action.get('timer_name') or 'not set'}",
-                        f"  athlete: {action.get('athlete_name') or 'unknown'} ({action.get('athlete_id') or 'unknown'})",
-                        f"  race_session_id: {action.get('race_session_id') or 'none'}",
-                        f"  intended_checkpoint: {action.get('checkpoint_number')} / {action.get('checkpoint_label') or 'unknown'}",
-                        f"  elapsed_seconds: {action.get('elapsed_seconds')}",
-                        f"  click_received_at: {action.get('click_received_at')}",
-                        f"  result: {action.get('result')}",
-                        f"  inserted_event_id: {action.get('inserted_event_id') or 'none'}",
-                        f"  events_after_reload: {action.get('events_after_reload')}",
-                        f"  error: {action.get('error') or 'none'}",
-                        "  timings_ms:",
-                        *[f"    {name}: {duration:.2f}" for name, duration in action.get("timings_ms", {}).items()],
+                        f"timer_name: {st.session_state.timer_name or 'not set'}",
+                        f"race_session_id: {connected_id}",
+                        f"initiated_start: {st.session_state.get('initiated_start_session_id') == connected_id}",
+                        f"last_fragment_rerun: {st.session_state.last_fragment_rerun_at.isoformat()}",
+                        f"poll_cycle: {st.session_state.get('poll_cycle_count', 0)}",
+                        f"poll_cycle_at: {poll_at.isoformat() if poll_at else 'never'}",
+                        f"last_successful_sync: {sync_at.isoformat() if sync_at else 'never'}",
+                        f"loaded_active_events: {st.session_state.get('loaded_split_event_count', 0)}",
+                        f"latest_event_id: {st.session_state.get('latest_event_id') or 'none'}",
+                        f"latest_event_at: {latest_at.isoformat() if latest_at else 'none'}",
+                        f"local_clock_status: {clock.status}",
+                        f"persisted_session_status: {st.session_state.get('persisted_race_status') or 'unknown'}",
+                        f"persisted_started_at: {st.session_state.get('persisted_started_at') or 'none'}",
+                        f"projected_event_count: {len(getattr(st.session_state.get('projected_race_state'), 'events', ())) }",
+                        f"projected_results_row_count: {len(getattr(st.session_state.get('projected_race_state'), 'results_rows', ())) }",
+                        f"sync_error: {st.session_state.get('sync_error') or 'none'}",
+                        f"last_write_attempt: {action.get('click_received_at') if action else 'none'}",
+                        f"last_write_success: {action.get('result') == 'inserted' if action else False}",
+                        f"last_write_event_id: {action.get('inserted_event_id') or 'none' if action else 'none'}",
+                        f"last_write_error: {action.get('error') or 'none' if action else 'none'}",
                     ]
                 ),
                 language="text",
             )
+            if action:
+                st.code(
+                    "\n".join(
+                        [
+                            "last_split_action:",
+                            f"  timer_name: {action.get('timer_name') or 'not set'}",
+                            f"  athlete: {action.get('athlete_name') or 'unknown'} ({action.get('athlete_id') or 'unknown'})",
+                            f"  race_session_id: {action.get('race_session_id') or 'none'}",
+                            f"  intended_checkpoint: {action.get('checkpoint_number')} / {action.get('checkpoint_label') or 'unknown'}",
+                            f"  elapsed_seconds: {action.get('elapsed_seconds')}",
+                            f"  click_received_at: {action.get('click_received_at')}",
+                            f"  result: {action.get('result')}",
+                            f"  inserted_event_id: {action.get('inserted_event_id') or 'none'}",
+                            f"  events_after_reload: {action.get('events_after_reload')}",
+                            f"  error: {action.get('error') or 'none'}",
+                            "  timings_ms:",
+                            *[
+                                f"    {name}: {duration:.2f}"
+                                for name, duration in action.get(
+                                    "timings_ms", {}
+                                ).items()
+                            ],
+                        ]
+                    ),
+                    language="text",
+                )
     if st.session_state.get("active_race_session_id") and clock.status == "not_started":
         st.info(
             f"Waiting for race to start • Session **{connected_id}** • "
             f"Timer **{st.session_state.timer_name or 'Name required'}** • Storage **{storage}**"
         )
-    h1, h2, h3 = st.columns([2, 1, 1])
-    h1.subheader(f"{config.meet_name or 'Meet required'} • {config.race_name or 'Race required'}")
-    h2.metric("Distance", format_distance(config.race_distance_meters))
-    h3.metric("Splits", len(st.session_state.splits))
-    st.caption(f"Status: **{status}** • Checkpoints: {len(config.checkpoints)}")
-    _clock_metric()
+    st.caption(
+        f"**{config.meet_name or 'Meet required'} • {config.race_name or 'Race required'}** · "
+        f"{format_distance(config.race_distance_meters)} · {len(config.checkpoints)} checkpoints"
+    )
 
     if not valid_setup:
-        st.warning("Complete Race Setup before starting the race. Meet name, race name, checkpoints, and at least one athlete are required.")
+        st.warning(
+            "Complete Race Setup before starting the race. Meet name, race name, checkpoints, and at least one athlete are required."
+        )
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    shared_unavailable = repository_result is not None and repository_result.is_temporary
-    if c1.button("Start", use_container_width=True, disabled=shared_unavailable or not valid_setup or clock.status == "running" or (clock.status == "ended" and bool(st.session_state.splits))):
+    shared_unavailable = (
+        repository_result is not None and repository_result.is_temporary
+    )
+    quick_start, quick_pause, quick_resume = st.columns(3)
+    if quick_start.button(
+        "Start Race",
+        use_container_width=True,
+        disabled=shared_unavailable
+        or not valid_setup
+        or clock.status == "running"
+        or (clock.status == "ended" and bool(st.session_state.splits)),
+    ):
         if _start_timing():
             st.rerun()
-    if c2.button("Pause", use_container_width=True, disabled=clock.status != "running"):
+    if quick_pause.button(
+        "Pause", use_container_width=True, disabled=clock.status != "running"
+    ):
         if _pause_timing():
             st.rerun()
-    if c3.button("Resume", use_container_width=True, disabled=clock.status != "paused"):
+    if quick_resume.button(
+        "Resume", use_container_width=True, disabled=clock.status != "paused"
+    ):
         if _resume_timing():
             st.rerun()
 
-    confirm_end = c4.checkbox("Confirm end")
-    if c4.button("End Race", use_container_width=True, disabled=clock.status not in {"running", "paused"} or not confirm_end):
-        if _end_timing():
-            st.rerun()
-
-    last_split = max(st.session_state.splits, key=lambda split: split.sequence) if st.session_state.splits else None
-    if last_split:
-        c5.caption(f"Undo: {last_split.athlete_name} {last_split.checkpoint_label}")
-    confirm_undo = c5.checkbox("Confirm undo")
-    if c5.button("Undo Last Tap", use_container_width=True, disabled=not last_split or not confirm_undo):
-        if _undo_tap(last_split):
-            st.rerun()
-
-    confirm_reset = c6.checkbox("Confirm reset")
-    if c6.button("Reset Race", use_container_width=True, disabled=not confirm_reset):
-        _reset_timing()
+    with st.expander("Race Controls", expanded=False):
+        timer_name = st.text_input(
+            "Timer / display name",
+            value=st.session_state.timer_name,
+            placeholder="e.g. Finish line tablet",
+        )
+        st.session_state.timer_name = timer_name.strip()
+        st.caption(f"Session: {connected_id} • Storage: {storage}")
+        c1, c2, c3 = st.columns(3)
+        confirm_end = c1.checkbox("Confirm end")
+        if c1.button(
+            "End Race",
+            use_container_width=True,
+            disabled=clock.status not in {"running", "paused"} or not confirm_end,
+        ):
+            if _end_timing():
+                st.rerun()
+        last_split = (
+            max(st.session_state.splits, key=lambda split: split.sequence)
+            if st.session_state.splits
+            else None
+        )
+        if last_split:
+            c2.caption(f"Undo: {last_split.athlete_name} {last_split.checkpoint_label}")
+        confirm_undo = c2.checkbox("Confirm undo")
+        if c2.button(
+            "Undo Last Tap",
+            use_container_width=True,
+            disabled=not last_split or not confirm_undo,
+        ):
+            if _undo_tap(last_split):
+                st.rerun()
+        confirm_reset = c3.checkbox("Confirm reset")
+        if c3.button(
+            "Reset Race", use_container_width=True, disabled=not confirm_reset
+        ):
+            _reset_timing()
 
     if st.session_state.message:
         st.info(st.session_state.message)
+    if not st.session_state.timer_name:
+        st.warning(
+            "Set a Timer / display name in Race Controls before recording splits."
+        )
 
-    st.subheader("Athlete Timing Buttons")
+    st.subheader("Record Athlete Split")
     if not st.session_state.athletes:
         st.warning("Add athletes on the Race Setup page before timing a race.")
         return
-    if not st.session_state.get("active_race_session_id") or not st.session_state.meet_config.checkpoints:
-        st.warning("Athlete buttons are disabled until an authoritative race session and checkpoint snapshot are loaded.")
+    if (
+        not st.session_state.get("active_race_session_id")
+        or not st.session_state.meet_config.checkpoints
+    ):
+        st.warning(
+            "Athlete buttons are disabled until an authoritative race session and checkpoint snapshot are loaded."
+        )
 
-    columns_per_row = 2 if len(st.session_state.athletes) <= 10 else 3
     projection = st.session_state.get("projected_race_state")
-    projected_athletes = list(ordered_timing_athletes(projection)) if projection else []
-    for index, athlete_state in enumerate(projected_athletes):
-        athlete = athlete_state.athlete
-        if index % columns_per_row == 0:
-            cols = st.columns(columns_per_row)
-        finished = athlete_state.finished
-        next_cp = athlete_state.next_checkpoint
-        disabled = athlete_timing_button_disabled(
-            shared_unavailable=shared_unavailable,
-            race_session_id=st.session_state.get("active_race_session_id"),
-            clock_status=clock.status,
-            timer_name=st.session_state.timer_name,
-            checkpoint_number=next_cp.number if next_cp else None,
-            finished=finished,
-            reopened=athlete.reopened_after_finish,
-        )
-        button_key = athlete_timing_button_key(
-            st.session_state.get("active_race_session_id") or "unconnected",
-            athlete.athlete_id,
-            next_cp.number if next_cp else None,
-        )
-        with cols[index % columns_per_row]:
-            st.button(
-                athlete_state.button_label,
-                key=button_key,
-                use_container_width=True,
-                disabled=disabled,
-                on_click=_record_tap,
-                args=(athlete.athlete_id,),
-            )
-            if finished and st.button("Reopen athlete", key=f"reopen_{athlete.athlete_id}", use_container_width=True):
-                reopen_athlete(st.session_state, athlete.athlete_id)
+    search_col, order_col = st.columns([2, 1])
+    search_value = search_col.text_input(
+        "Find athlete",
+        placeholder="Search name or bib",
+        key="live_athlete_search",
+    )
+    order_mode = order_col.selectbox(
+        "Button order",
+        ["Stable", "Expected Arrival", "Race Order"],
+        key="live_button_order",
+        help="Stable preserves race-roster positions. Expected Arrival groups athletes by their next checkpoint.",
+    )
+    all_projected = (
+        list(ordered_timing_athletes(projection, order_mode)) if projection else []
+    )
+    matching = [
+        item for item in all_projected if athlete_matches_search(item, search_value)
+    ]
+    active_athletes, finished_athletes = partition_finished_athletes(matching)
+    st.caption(f"{len(active_athletes)} active • {len(finished_athletes)} finished")
 
-    if projected_athletes and all(item.finished for item in projected_athletes):
+    def render_button_grid(athletes) -> None:
+        columns_per_row = 2 if len(athletes) <= 10 else 3
+        for index, athlete_state in enumerate(athletes):
+            athlete = athlete_state.athlete
+            if index % columns_per_row == 0:
+                cols = st.columns(columns_per_row)
+            next_cp = athlete_state.next_checkpoint
+            disabled = athlete_timing_button_disabled(
+                shared_unavailable=shared_unavailable,
+                race_session_id=st.session_state.get("active_race_session_id"),
+                clock_status=clock.status,
+                timer_name=st.session_state.timer_name,
+                checkpoint_number=next_cp.number if next_cp else None,
+                finished=athlete_state.finished,
+                reopened=athlete.reopened_after_finish,
+            )
+            button_key = athlete_timing_button_key(
+                st.session_state.get("active_race_session_id") or "unconnected",
+                athlete.athlete_id,
+                next_cp.number if next_cp else None,
+            )
+            with cols[index % columns_per_row]:
+                st.button(
+                    athlete_state.button_label,
+                    key=button_key,
+                    use_container_width=True,
+                    disabled=disabled,
+                    on_click=_record_tap,
+                    args=(athlete.athlete_id,),
+                    type="primary",
+                )
+
+    render_button_grid(active_athletes)
+    if not matching:
+        st.info("No race athletes match that name or bib.")
+    if finished_athletes:
+        with st.expander(f"Finished ({len(finished_athletes)})", expanded=False):
+            for item in finished_athletes:
+                latest = item.splits[-1] if item.splits else None
+                st.caption(
+                    f"**{item.athlete.name}** • #{item.athlete.bib_number or '—'} • {format_duration(latest.cumulative_time_seconds) if latest else 'Finished'}"
+                )
+
+    if all_projected and all(item.finished for item in all_projected):
         st.success("Race complete: all athletes have reached the finish.")
         if st.button("Go to Results", use_container_width=True):
             st.switch_page(st.session_state.page_registry["results"])
 
     st.subheader("Live Split Board")
-    filter_value = st.selectbox("Filter", ["All athletes", "Active", "Finished"], label_visibility="collapsed")
+    filter_value = st.selectbox(
+        "Board filter",
+        ["All athletes", "Active", "Finished"],
+        label_visibility="collapsed",
+    )
     # Both controls and results consume the exact same projection snapshot.
-    board = _live_board_frame(filter_value)
+    board = _live_board_frame(filter_value, search_value)
     if board.empty:
         st.caption("No athletes match this filter.")
     else:
         st.dataframe(board, hide_index=True, use_container_width=True)
 
-    if st.session_state.get("debug_mode") and projected_athletes:
+    if st.session_state.get("debug_mode") and all_projected:
         with st.expander("Per-athlete synchronization diagnostics"):
-            for item in projected_athletes:
+            for item in all_projected:
                 st.code(
                     "\n".join(
                         [
