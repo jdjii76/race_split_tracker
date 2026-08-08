@@ -1,17 +1,17 @@
--- Race Split Tracker development Supabase bootstrap.
+-- Race Split Tracker development Supabase bootstrap/reference snapshot.
+--
+-- NOT AUTHORITATIVE: the ordered files in supabase/migrations/ are the only
+-- production schema history and must be used for upgrades. This convenience
+-- snapshot must never be used to infer which migrations an existing database
+-- has applied.
 --
 -- Run this file only in a NEW, SEPARATE DEVELOPMENT Supabase project. It
--- reproduces the schema required by the protected prototype by composing the
--- checked-in migrations in their established order: 001, 003, 004, and 005.
+-- reproduces the schema required by the protected prototype from the canonical
+-- migration chain at the time this snapshot was refreshed.
 -- Do not run this bootstrap against the existing production project.
 --
--- Source manifest:
---   supabase/migrations/001_initial_schema.sql
---   supabase/migrations/003_timing_persistence.sql
---   supabase/migrations/004_race_rosters.sql
---   supabase/migrations/005_race_session_checkpoints.sql
--- Keep this manifest and the source-section markers below in migration order
--- when refreshing the bootstrap for a new development project.
+-- When refreshing this snapshot, apply the complete unique-version chain from
+-- supabase/migrations/ to an empty database and regenerate/reference that result.
 --
 -- SECURITY WARNING: The policies in this bootstrap intentionally grant the
 -- anon/publishable role broad prototype access. They are development-only and

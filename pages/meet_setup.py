@@ -10,63 +10,120 @@ from split_tracker.calculations import TRACK_DISTANCE_PRESETS, XC_DISTANCE_PRESE
 from split_tracker.formatting import format_distance, format_duration, format_pace, parse_time_to_seconds
 from split_tracker.models import Athlete, MeetConfig
 from split_tracker.repository import RepositoryError
-from split_tracker.state import cleanup_after_roster_clear, clear_setup, replace_setup, validate_setup
+from split_tracker.roster_selection import (
+    athlete_checkbox_key,
+    persisted_selection_changed,
+    selection_dirty_key,
+    selection_key,
+    set_race_selection,
+    synchronize_race_selection,
+    update_athlete_selection,
+)
+from split_tracker.state import clear_setup, replace_setup, validate_setup
 
 TRACK_PRESETS = [*TRACK_DISTANCE_PRESETS.keys(), "Custom"]
 XC_PRESETS = [*XC_DISTANCE_PRESETS.keys(), "Custom"]
 
 
-def _permanent_athlete_selector() -> None:
+def _checkbox_changed(race_id: str, athlete_id: str) -> None:
+    key = athlete_checkbox_key(race_id, athlete_id)
+    update_athlete_selection(st.session_state, race_id, athlete_id, bool(st.session_state.get(key)))
+
+
+def _roster_is_locked(repository, race_id: str) -> bool:
+    """Return whether timing history prevents ordinary roster removal."""
+    for session in repository.list_race_sessions_for_race(race_id):
+        if session.started_at is not None or repository.list_all_split_events(session.id):
+            return True
+    return False
+
+
+def _permanent_athlete_selector() -> list[Athlete]:
     race_id = st.session_state.get("selected_race_id")
     repository = st.session_state.get("repository")
     if not race_id or repository is None:
-        return
+        return list(st.session_state.athletes)
     st.subheader("Select Athletes")
-    st.caption("Selections affect only this race. They do not remove anyone from the permanent school roster.")
+    st.caption("Choose from the permanent team roster. This creates the Race Roster for this race only.")
     c1, c2, c3, c4 = st.columns(4)
     search = c1.text_input("Search school roster", key=f"permanent_search_{race_id}")
     include_nonactive = c2.checkbox("Include injured/inactive", key=f"include_nonactive_{race_id}")
     try:
-        roster = repository.list_athletes(search=search or None)
-        selected_ids = repository.list_race_athlete_ids(race_id)
+        roster = repository.list_athletes()
+        persisted_ids = repository.list_race_athlete_ids(race_id)
+        roster_locked = _roster_is_locked(repository, race_id)
     except RepositoryError as exc:
         st.error(f"Permanent roster could not be loaded: {exc}")
-        return
+        return list(st.session_state.athletes)
+    selected_ids = synchronize_race_selection(st.session_state, race_id, persisted_ids)
+    if persisted_selection_changed(st.session_state, race_id, persisted_ids):
+        st.warning("The saved race roster changed elsewhere while you have unsaved selections.")
+        if st.button("Reload Saved Race Roster", key=f"reload_saved_roster_{race_id}", use_container_width=True):
+            set_race_selection(st.session_state, race_id, persisted_ids, saved=True)
+            st.rerun()
     years = sorted({item.graduation_year for item in roster if item.graduation_year})
     year = c3.selectbox("Graduation year", ["All", *years], key=f"permanent_year_{race_id}")
     divisions = sorted({value for item in roster for value in (item.gender, item.team_division) if value})
     division = c4.selectbox("Gender / division", ["All", *divisions], key=f"permanent_division_{race_id}")
-    filtered = [item for item in roster if (include_nonactive or item.status == "active") and (year == "All" or item.graduation_year == year) and (division == "All" or division in {item.gender, item.team_division})]
-    selection_key = f"permanent_race_selection_{race_id}"
-    if selection_key not in st.session_state:
-        st.session_state[selection_key] = selected_ids
+    term = search.casefold().strip()
+    filtered = [item for item in roster if (not term or term in item.display_name.casefold() or term in item.athlete_number.casefold()) and (include_nonactive or item.status == "active" or item.id in selected_ids) and (year == "All" or item.graduation_year == year) and (division == "All" or division in {item.gender, item.team_division})]
+    if roster_locked:
+        st.info("Timing has started for this race. Saved athletes are locked to protect historical race snapshots; you may still add an athlete if needed.")
     controls = st.columns(2)
-    if controls[0].button("Select all filtered active athletes", key=f"select_filtered_{race_id}", use_container_width=True):
-        st.session_state[selection_key] = list(dict.fromkeys([*st.session_state[selection_key], *(item.id for item in filtered if item.status == "active")]))
+    if controls[0].button("Select All", key=f"select_filtered_{race_id}", use_container_width=True):
+        set_race_selection(st.session_state, race_id, [*selected_ids, *(item.id for item in filtered if item.status == "active")])
         st.rerun()
-    if controls[1].button("Clear race selection", key=f"clear_permanent_{race_id}", use_container_width=True):
-        st.session_state[selection_key] = []
+    if controls[1].button("Clear", key=f"clear_permanent_{race_id}", disabled=roster_locked, use_container_width=True):
+        set_race_selection(st.session_state, race_id, [])
         st.rerun()
+
     options = {item.id: item for item in roster}
-    # Keep already-selected nonmatching athletes visible so filtering never silently deselects them.
-    visible_ids = list(dict.fromkeys([*(item.id for item in filtered), *st.session_state[selection_key]]))
-    selected = st.multiselect(
-        "Permanent athletes selected for this race", visible_ids,
-        format_func=lambda athlete_id: f"{options[athlete_id].display_name} • {options[athlete_id].status}" if athlete_id in options else athlete_id,
-        key=selection_key,
-    )
-    st.write(f"**{len(selected)} selected**")
-    if st.button("Save Selected Athletes to Race", type="primary", key=f"save_permanent_{race_id}", use_container_width=True):
+    visible = list(dict.fromkeys([*(item.id for item in filtered), *(item_id for item_id in selected_ids if item_id in options)]))
+    if not visible:
+        st.info("No permanent athletes match these filters. Add athletes on the Athletes page or adjust the filters.")
+    columns = st.columns(2)
+    for index, athlete_id in enumerate(visible):
+        athlete = options[athlete_id]
+        checkbox = athlete_checkbox_key(race_id, athlete_id)
+        if checkbox not in st.session_state:
+            st.session_state[checkbox] = athlete_id in selected_ids
+        details = [athlete.display_name]
+        if athlete.athlete_number:
+            details.append(f"#{athlete.athlete_number}")
+        if athlete.graduation_year:
+            details.append(f"Class of {athlete.graduation_year}")
+        if athlete.gender or athlete.team_division:
+            details.append(" / ".join(value for value in (athlete.gender, athlete.team_division) if value))
+        if athlete.status != "active":
+            details.append(athlete.status.title())
+        columns[index % 2].checkbox(
+            " • ".join(details),
+            key=checkbox,
+            disabled=roster_locked and athlete_id in persisted_ids,
+            on_change=_checkbox_changed,
+            args=(race_id, athlete_id),
+        )
+
+    selected_ids = list(st.session_state.get(selection_key(race_id), selected_ids))
+    st.markdown(f"**{len(selected_ids)} athletes selected for this race**")
+    if st.button("Save Race Roster", type="primary", key=f"save_permanent_{race_id}", disabled=not st.session_state.get(selection_dirty_key(race_id), False), use_container_width=True):
         try:
-            st.session_state.athletes = repository.replace_race_athletes_from_roster(race_id, selected)
+            if roster_locked:
+                selected_ids = list(dict.fromkeys([*persisted_ids, *selected_ids]))
+            st.session_state.athletes = repository.replace_race_athletes_from_roster(race_id, selected_ids)
             st.session_state.race_rosters[race_id] = st.session_state.athletes
-            st.success("Race selection saved. Race-specific names and metadata are preserved as history snapshots.")
+            saved_ids = [athlete.athlete_id for athlete in st.session_state.athletes]
+            set_race_selection(st.session_state, race_id, saved_ids, saved=True)
+            st.session_state.race_roster_flash = f"{len(saved_ids)} athletes selected for this race."
             st.rerun()
         except RepositoryError as exc:
             st.error(str(exc))
             if exc.diagnostic:
                 with st.expander("Supabase diagnostic details"):
                     st.code(exc.diagnostic)
+    if st.session_state.get("race_roster_flash"):
+        st.success(st.session_state.pop("race_roster_flash"))
+    return list(st.session_state.athletes)
 
 
 def _athletes_to_frame(athletes: list[Athlete]) -> pd.DataFrame:
@@ -159,7 +216,7 @@ def _config_changed_unsafely(config: MeetConfig, athletes: list[Athlete]) -> boo
 
 
 def _checkpoint_controls(course_type: str, race_distance_meters: float) -> tuple[str, float, str, list]:
-    st.subheader("Checkpoint Configuration")
+    st.subheader("Configure Splits")
     mode = st.radio("Checkpoint mode", ["Standard laps", "Fixed interval", "Custom checkpoints"], horizontal=True)
     interval_meters = 400.0
     custom_text = ""
@@ -188,39 +245,105 @@ def _checkpoint_controls(course_type: str, race_distance_meters: float) -> tuple
     return mode, float(interval_meters), custom_text, checkpoints
 
 
-def _render_summary(config: MeetConfig, athletes: list[Athlete]) -> None:
-    st.subheader("Setup Summary")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Meet", config.meet_name or "Missing")
-    c2.metric("Race", config.race_name or "Missing")
-    c3.metric("Athletes", len(athletes))
-    st.write(f"**Race type:** {config.course_type}")
-    st.write(f"**Distance:** {config.race_distance_label} ({config.race_distance_meters:g} m)")
-    st.write(f"**Checkpoints ({len(config.checkpoints)}):** {', '.join(checkpoint.label for checkpoint in config.checkpoints)}")
+def _render_race_information() -> None:
+    st.subheader("Race Information")
+    repository = st.session_state.get("repository")
+    race_id = st.session_state.get("selected_race_id")
+    race = repository.get_race(race_id) if repository is not None and race_id else None
+    meet = repository.get_meet(race.meet_id) if repository is not None and race else None
+    if race is None:
+        st.warning("Open a saved race from Meets & Races to use the permanent team roster workflow.")
+        return
+    with st.container(border=True):
+        st.markdown(f"### {race.name}")
+        st.caption(meet.name if meet else st.session_state.meet_config.meet_name)
+        columns = st.columns(5)
+        columns[0].metric("Date", str(meet.meet_date) if meet and meet.meet_date else "Not set")
+        columns[1].metric("Category", race.race_category or "Not set")
+        columns[2].metric("Distance", format_distance(race.distance_meters))
+        columns[3].metric("Course", race.course_type or "Not set")
+        columns[4].metric("Status", race.status.title())
+
+
+def _advanced_roster_editor(profile, athletes: list[Athlete], race_id: str | None) -> tuple[list[Athlete], list[str]]:
+    with st.expander("Race-Specific Details / Advanced Manual Race Roster", expanded=False):
+        st.caption("Permanent Team Roster athletes keep immutable UUID identities. Use this optional area for race-only bibs, targets, groups, or a one-off manual athlete.")
+        manual_mode = st.checkbox(
+            "Enable manual race athletes and CSV import",
+            value=not bool(race_id),
+            key=f"manual_race_roster_mode_{race_id or 'local'}",
+        )
+        roster_frame = _athletes_to_frame(athletes)
+        if manual_mode:
+            uploaded = st.file_uploader("Import manual race roster CSV", type=["csv"], key=f"manual_roster_csv_{race_id or 'local'}")
+            if uploaded is not None:
+                roster_frame = pd.read_csv(uploaded).fillna("")
+                if "Athlete ID" not in roster_frame.columns:
+                    roster_frame["Athlete ID"] = ""
+            st.download_button(
+                "Download manual roster template",
+                data=_template_csv(),
+                file_name=branded_export_filename(profile, ["race", "manual", "roster", "template"], "csv"),
+                mime="text/csv",
+            )
+        else:
+            st.caption("Names and permanent identities are locked here. Edit only race-specific details.")
+        edited = st.data_editor(
+            roster_frame,
+            key=f"race_specific_roster_editor_{race_id or 'local'}_{'manual' if manual_mode else 'details'}",
+            num_rows="dynamic" if manual_mode else "fixed",
+            disabled=[] if manual_mode else ["Athlete Name"],
+            hide_index=True,
+            column_config={"Athlete ID": None},
+            use_container_width=True,
+        )
+        return _frame_to_athletes(edited, athletes)
+
+
+def _render_review(config: MeetConfig, athletes: list[Athlete]) -> None:
+    st.subheader("Review")
+    with st.container(border=True):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Race", config.race_name or "Missing")
+        c2.metric("Athletes", len(athletes))
+        c3.metric("Distance", config.race_distance_label)
+        st.write(f"**Checkpoints ({len(config.checkpoints)}):** {', '.join(checkpoint.label for checkpoint in config.checkpoints) or 'None configured'}")
 
 
 def render() -> None:
     """Render the race setup page."""
     profile = st.session_state.school_profile
-    render_school_header(profile, "Configure Race")
-    st.caption("Configure the race details, checkpoints, and roster before starting live timing.")
-    if st.session_state.get("selected_race_id"):
-        st.info("Loaded from a saved race. The roster is saved for this race only; checkpoints, splits, and results remain session-only.")
-        _permanent_athlete_selector()
+    render_school_header(profile, "Race Setup")
+    st.caption("Review the race, select its Race Roster from the permanent team, configure splits, and start timing.")
+    _render_race_information()
 
     saved_config: MeetConfig = st.session_state.meet_config
-    course_type = st.radio("Race type", ["Track", "Cross Country"], index=0 if saved_config.course_type == "Track" else 1, horizontal=True)
-    presets = TRACK_PRESETS if course_type == "Track" else XC_PRESETS
-    default_preset = saved_config.race_distance_label if saved_config.race_distance_label in presets else presets[0]
-    col1, col2 = st.columns(2)
-    with col1:
-        meet_name = st.text_input("Meet name", value=saved_config.meet_name)
-        race_preset = st.selectbox("Race distance preset", presets, index=presets.index(default_preset))
-    with col2:
-        race_name = st.text_input("Race name", value=saved_config.race_name)
-        custom_distance = st.number_input("Custom race distance (meters)", min_value=1.0, value=float(saved_config.race_distance_meters), step=100.0, disabled=race_preset != "Custom")
+    race_id = st.session_state.get("selected_race_id")
+    if race_id:
+        course_type = saved_config.course_type
+        race_distance_meters = saved_config.race_distance_meters
+        race_preset = next((label for label, meters in (TRACK_DISTANCE_PRESETS if course_type == "Track" else XC_DISTANCE_PRESETS).items() if abs(meters - race_distance_meters) < 0.01), "Custom")
+        meet_name = saved_config.meet_name
+        race_name = saved_config.race_name
+    else:
+        st.subheader("Local / Manual Race Information")
+        st.caption("This legacy mode is session-only. Create and open a saved race to select permanent KMHS athletes.")
+        course_type = st.radio("Race type", ["Track", "Cross Country"], index=0 if saved_config.course_type == "Track" else 1, horizontal=True)
+        presets = TRACK_PRESETS if course_type == "Track" else XC_PRESETS
+        default_preset = saved_config.race_distance_label if saved_config.race_distance_label in presets else presets[0]
+        col1, col2 = st.columns(2)
+        with col1:
+            meet_name = st.text_input("Meet name", value=saved_config.meet_name)
+            race_preset = st.selectbox("Race distance preset", presets, index=presets.index(default_preset))
+        with col2:
+            race_name = st.text_input("Race name", value=saved_config.race_name)
+            custom_distance = st.number_input("Custom race distance (meters)", min_value=1.0, value=float(saved_config.race_distance_meters), step=100.0, disabled=race_preset != "Custom")
+        race_distance_meters = race_distance_from_preset(course_type, race_preset, custom_distance)
 
-    race_distance_meters = race_distance_from_preset(course_type, race_preset, custom_distance)
+    if race_id:
+        _permanent_athlete_selector()
+    athletes, roster_errors = _advanced_roster_editor(profile, list(st.session_state.athletes), race_id)
+
     mode, interval_meters, custom_text, checkpoints = _checkpoint_controls(course_type, race_distance_meters)
     draft_config = MeetConfig(
         meet_name=meet_name.strip(),
@@ -235,23 +358,9 @@ def render() -> None:
         checkpoints=checkpoints,
     )
 
-    st.subheader("Athlete Roster")
-    uploaded = st.file_uploader("Import CSV roster", type=["csv"])
-    roster_frame = _athletes_to_frame(st.session_state.athletes)
-    if uploaded is not None:
-        roster_frame = pd.read_csv(uploaded).fillna("")
-        if "Athlete ID" not in roster_frame.columns:
-            roster_frame["Athlete ID"] = ""
-    st.download_button("Download roster template CSV", data=_template_csv(), file_name=branded_export_filename(profile, ["race", "roster", "template"], "csv"), mime="text/csv")
-    roster = st.data_editor(
-        roster_frame,
-        num_rows="dynamic",
-        hide_index=True,
-        column_config={"Athlete ID": None},
-        use_container_width=True,
-    )
-    athletes, roster_errors = _frame_to_athletes(roster, st.session_state.athletes)
     errors = [*roster_errors, *validate_setup(draft_config, athletes)]
+    if race_id and st.session_state.get(selection_dirty_key(race_id), False):
+        errors.append("Save Race Roster before starting timing.")
     errors = list(dict.fromkeys(errors))
     unsafe_change = _config_changed_unsafely(draft_config, athletes)
     if unsafe_change:
@@ -260,40 +369,27 @@ def render() -> None:
     else:
         confirm_unsafe = True
 
-    _render_summary(draft_config, athletes)
+    _render_review(draft_config, athletes)
     if errors:
         for error in errors:
             st.error(error)
 
-    col_save, col_start, col_clear = st.columns(3)
-    save_clicked = col_save.button("Save Setup", type="primary", use_container_width=True, disabled=bool(errors) or (unsafe_change and not confirm_unsafe))
-    start_clicked = col_start.button("Start Timing", use_container_width=True, disabled=bool(errors) or (unsafe_change and not confirm_unsafe))
-    confirm_clear = col_clear.checkbox("Confirm clear setup")
-    if col_clear.button("Clear Setup", use_container_width=True, disabled=not confirm_clear):
-        clear_setup(st.session_state)
-        st.rerun()
+    col_save, col_start = st.columns(2)
+    save_clicked = col_save.button("Save Race Setup", use_container_width=True, disabled=bool(errors) or (unsafe_change and not confirm_unsafe))
+    start_clicked = col_start.button("Start Race", type="primary", use_container_width=True, disabled=bool(errors) or (unsafe_change and not confirm_unsafe))
 
     if save_clicked or start_clicked:
         try:
             replace_setup(st.session_state, draft_config, athletes)
-            st.success("Setup saved.")
+            st.success("Race setup saved.")
             if start_clicked:
                 st.switch_page(st.session_state.page_registry["live_timing"])
         except RepositoryError as exc:
             st.error(f"Roster could not be saved for this race: {exc}")
 
-    race_id = st.session_state.get("selected_race_id")
-    repository = st.session_state.get("repository")
-    if race_id and repository is not None:
-        with st.expander("Destructive roster action"):
-            session_count = len(repository.list_race_sessions_for_race(race_id))
-            st.warning(f"Clear only this race roster. This leaves the race and {session_count} timing session(s) intact.")
-            typed = st.text_input("Type CLEAR ROSTER to remove this race roster", key=f"clear_roster_phrase_{race_id}")
-            if st.button("Clear selected race roster", key=f"clear_roster_{race_id}", disabled=typed != "CLEAR ROSTER", use_container_width=True):
-                try:
-                    deleted = repository.clear_race_roster(race_id)
-                    cleanup_after_roster_clear(st.session_state, race_id)
-                    st.success("Race roster cleared." if deleted else "This race roster was already empty.")
-                    st.rerun()
-                except RepositoryError as exc:
-                    st.error(f"Race roster could not be cleared: {exc}")
+    if not race_id:
+        with st.expander("Clear local setup", expanded=False):
+            confirm_clear = st.checkbox("Confirm clear setup")
+            if st.button("Clear Local Setup", use_container_width=True, disabled=not confirm_clear):
+                clear_setup(st.session_state)
+                st.rerun()

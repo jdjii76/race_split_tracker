@@ -302,7 +302,7 @@ def _templates() -> None:
 
 def render() -> None:
     """Render the dashboard."""
-    render_school_header(st.session_state.school_profile, "Race Setup")
+    render_school_header(st.session_state.school_profile, "Meets & Races")
     _storage_notice()
     if _repo() is None:
         st.stop()
