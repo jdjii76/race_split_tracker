@@ -16,14 +16,14 @@ def _fixtures():
     return session, athletes, checkpoints
 
 
-def _event(athlete: str, checkpoint: int, seconds: float, *, event_id: str, at: datetime, session="session"):
+def _event(athlete: str, checkpoint: int, seconds: float, *, event_id: str, at: datetime, session="session", event_order=99):
     return SplitEvent(
         id=event_id,
         race_session_id=session,
         athlete_id=athlete,
         checkpoint_number=checkpoint,
         elapsed_seconds=seconds,
-        event_order=99,
+        event_order=event_order,
         recorded_at=at,
         created_at=at,
     )
@@ -41,11 +41,11 @@ def test_projection_orders_filters_and_deduplicates_persisted_events():
     session, athletes, checkpoints = _fixtures()
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     events = [
-        _event("a", 20, 120, event_id="finish", at=now + timedelta(seconds=2)),
-        _event("a", 10, 61, event_id="duplicate", at=now + timedelta(seconds=1)),
-        _event("b", 10, 59, event_id="blair", at=now),
-        _event("a", 10, 60, event_id="first", at=now),
-        _event("a", 10, 58, event_id="foreign", at=now, session="other"),
+        _event("a", 20, 120, event_id="finish", at=now + timedelta(seconds=2), event_order=4),
+        _event("a", 10, 61, event_id="duplicate", at=now + timedelta(seconds=1), event_order=3),
+        _event("b", 10, 59, event_id="blair", at=now, event_order=2),
+        _event("a", 10, 60, event_id="first", at=now, event_order=1),
+        _event("a", 10, 58, event_id="foreign", at=now, session="other", event_order=1),
     ]
     state = project_race_state(session, athletes, checkpoints, events)
     alex, blair = state.athletes
@@ -60,10 +60,24 @@ def test_projection_normalizes_naive_and_aware_timestamps():
     session, athletes, checkpoints = _fixtures()
     aware = datetime(2026, 1, 1, tzinfo=timezone.utc)
     events = [
-        _event("a", 20, 120, event_id="second", at=aware + timedelta(seconds=1)),
-        _event("a", 10, 60, event_id="first", at=aware.replace(tzinfo=None)),
+        _event("a", 20, 120, event_id="second", at=aware + timedelta(seconds=1), event_order=0),
+        _event("a", 10, 60, event_id="first", at=aware.replace(tzinfo=None), event_order=0),
     ]
     assert project_race_state(session, athletes, checkpoints, events).athletes[0].finished
+
+
+def test_event_order_overrides_reversed_client_era_timestamps():
+    session, athletes, checkpoints = _fixtures()
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    events = [
+        _event("a", 20, 120, event_id="second", at=now, event_order=2),
+        _event("a", 10, 60, event_id="first", at=now + timedelta(hours=8), event_order=1),
+    ]
+
+    projected = project_race_state(session, athletes, checkpoints, events)
+
+    assert [event.id for event in projected.events] == ["first", "second"]
+    assert projected.athletes[0].finished
 
 
 def test_timing_order_is_untimed_first_then_first_split_fastest():

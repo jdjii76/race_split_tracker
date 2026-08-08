@@ -25,8 +25,9 @@ def test_atomic_session_migration_preserves_history_and_data_domains():
     assert "public.split_events" not in sql
 
 
-def test_atomic_session_migration_is_next_unique_version():
+def test_atomic_session_migration_keeps_its_unique_version():
     migrations = sorted(MIGRATION.parent.glob("*.sql"))
     versions = [path.name.split("_", 1)[0] for path in migrations]
     assert len(versions) == len(set(versions))
-    assert migrations[-1] == MIGRATION
+    assert MIGRATION in migrations
+    assert MIGRATION.name.startswith("011_")

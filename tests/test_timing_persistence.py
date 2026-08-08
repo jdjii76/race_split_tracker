@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.models import Athlete, MeetConfig, RaceClock
-from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, SplitEvent, _race_session_to_row, _split_event_to_row
+from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, SplitEvent, SupabaseRaceRepository, _race_session_to_row, _split_event_to_row
 from split_tracker.state import record_split, start_race
 from split_tracker.timing_persistence import (
     persist_completion,
@@ -43,6 +43,7 @@ def make_repo_and_session():
     meet = repo.create_meet(Meet(name="Creekside Invitational"))
     race = repo.create_race(Race(meet_id=meet.id, name="Boys JV", distance_meters=800.0, course_type="Track"))
     checkpoints = generate_checkpoints(race_distance_meters=800.0, mode="Fixed interval", interval_meters=400.0)
+    repo.replace_race_athletes(race.id, [Athlete(name="Alex", bib_number="7", athlete_id="a1")])
     session = SessionState(
         repository=repo,
         selected_race_id=race.id,
@@ -107,15 +108,14 @@ def test_split_event_creation_ordering_soft_delete_and_restore_active_events():
     later = repo.create_split_event(SplitEvent(race_session_id=race_session.id, athlete_id="a1", checkpoint_number=2, elapsed_seconds=150.0, event_order=2))
     earlier = repo.create_split_event(SplitEvent(race_session_id=race_session.id, athlete_id="a1", checkpoint_number=1, elapsed_seconds=75.0, event_order=1))
 
-    # Official timestamp, creation timestamp, then ID is the canonical order;
-    # event_order is an allocation sequence, not a cross-client clock.
-    assert repo.list_active_split_events(race_session.id) == [later, earlier]
+    # Database event_order is authoritative even when insertion timestamps differ.
+    assert repo.list_active_split_events(race_session.id) == [earlier, later]
     deleted = repo.soft_delete_split_event(later.id)
     assert deleted.is_deleted
     assert repo.list_active_split_events(race_session.id) == [earlier]
     restored = repo.restore_split_event(later.id)
     assert not restored.is_deleted
-    assert repo.list_active_split_events(race_session.id) == [restored, earlier]
+    assert repo.list_active_split_events(race_session.id) == [earlier, restored]
 
 
 def test_rebuild_runner_progress_from_persisted_events():
@@ -563,7 +563,7 @@ def test_direct_start_and_detected_start_use_equivalent_authoritative_state():
     assert waiting.get("initiated_start_session_id", "") == ""
 
 
-def test_authoritative_button_action_inserts_then_reloads_without_local_speculation():
+def test_authoritative_button_action_inserts_then_reloads_without_local_speculation(monkeypatch):
     from split_tracker.calculations import next_checkpoint
 
     repo, race, client = make_repo_and_session()
@@ -572,11 +572,16 @@ def test_authoritative_button_action_inserts_then_reloads_without_local_speculat
     repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
     client.active_race_session_id = shared.id
     client.timer_name = "Mile one"
+    server_at = datetime(2026, 1, 1, 12, 1, 10, tzinfo=timezone.utc)
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: server_at)
 
-    result = record_authoritative_split(client, "a1", now_utc=datetime(2026, 1, 1, 12, 1, 10, tzinfo=timezone.utc))
+    result = record_authoritative_split(
+        client, "a1", now_utc=datetime(2036, 1, 1, tzinfo=timezone.utc)
+    )
 
     assert result.status == "inserted"
     assert result.event.elapsed_seconds == 70
+    assert result.event.recorded_at == server_at
     assert result.event.recorded_by == "Mile one"
     assert [split.split_id for split in client.splits] == [result.event.id]
     assert next_checkpoint(client.splits, client.meet_config.checkpoints).number == 2
@@ -619,11 +624,15 @@ def test_concurrent_duplicate_loser_reloads_instead_of_advancing_twice():
             self.wrapped = wrapped
             self.inserted = False
 
-        def create_split_event(self, event):
+        def record_shared_split(self, race_session_id, athlete_id, checkpoint_number, recorded_by, request_id):
             if not self.inserted:
                 self.inserted = True
-                self.wrapped.create_split_event(replace(event, id="winner"))
-            return self.wrapped.create_split_event(event)
+                self.wrapped.record_shared_split(
+                    race_session_id, athlete_id, checkpoint_number, "winner", "winner"
+                )
+            return self.wrapped.record_shared_split(
+                race_session_id, athlete_id, checkpoint_number, recorded_by, request_id
+            )
 
         def __getattr__(self, name):
             return getattr(self.wrapped, name)
@@ -650,7 +659,7 @@ def test_failed_authoritative_insert_does_not_advance_progress():
         def __init__(self, wrapped):
             self.wrapped = wrapped
 
-        def create_split_event(self, _event):
+        def record_shared_split(self, *_args):
             raise RepositoryError("database unavailable")
 
         def __getattr__(self, name):
@@ -704,8 +713,158 @@ def test_fast_path_uses_one_write_and_preserves_three_click_times():
     results = [record_authoritative_split(client, athlete_id, now_utc=clicked)
                for athlete_id, clicked in zip(("a1", "a2", "a3"), clicks)]
 
-    assert counting.calls == ["create_split_event"] * 3
-    assert [result.event.recorded_at for result in results] == clicks
+    assert counting.calls == ["record_shared_split"] * 3
+    assert [result.event.event_order for result in results] == [1, 2, 3]
+    assert [result.event.recorded_at for result in results] != clicks
     assert len({result.event.id for result in results}) == 3
     assert len(client.projected_race_state.events) == 3
     assert client.last_split_action["timings_ms"]["post_insert_synchronization"] == 0.0
+
+
+def test_clock_skew_cannot_change_server_timing_or_progression(monkeypatch):
+    repo, race, client = make_repo_and_session()
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(
+        RaceSession(race_id=race.id, status="running", started_at=start)
+    )
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+    server_times = iter([
+        start + timedelta(seconds=60), start + timedelta(seconds=60),
+        start + timedelta(seconds=120), start + timedelta(seconds=120),
+    ])
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: next(server_times))
+
+    first = record_authoritative_split(
+        client, "a1", now_utc=datetime(2040, 1, 1, tzinfo=timezone.utc)
+    )
+    second = record_authoritative_split(
+        client, "a1", now_utc=datetime(2000, 1, 1, tzinfo=timezone.utc)
+    )
+
+    assert [first.event.elapsed_seconds, second.event.elapsed_seconds] == [60, 120]
+    assert [first.event.event_order, second.event.event_order] == [1, 2]
+    assert [event.id for event in client.projected_race_state.events] == [
+        first.event.id, second.event.id
+    ]
+    assert client.projected_race_state.athletes[0].finished
+
+
+def test_server_elapsed_time_includes_offset_after_resume(monkeypatch):
+    repo, race, client = make_repo_and_session()
+    resumed_at = datetime(2026, 1, 1, 12, 10, tzinfo=timezone.utc)
+    shared = repo.create_race_session(RaceSession(
+        race_id=race.id,
+        status="running",
+        started_at=resumed_at,
+        elapsed_offset_seconds=45.0,
+    ))
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+    server_at = resumed_at + timedelta(seconds=15)
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: server_at)
+
+    result = record_authoritative_split(client, "a1")
+
+    assert result.event.elapsed_seconds == 60.0
+
+
+def test_retry_with_same_request_id_returns_original_event(monkeypatch):
+    repo, race, client = make_repo_and_session()
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(
+        RaceSession(race_id=race.id, status="running", started_at=start)
+    )
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    server_at = start + timedelta(seconds=30)
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: server_at)
+
+    first = repo.record_shared_split(shared.id, "a1", 1, "Coach", "request-1")
+    retried = repo.record_shared_split(shared.id, "a1", 1, "Coach", "request-1")
+
+    assert retried == first
+    assert len(repo.list_active_split_events(shared.id)) == 1
+    assert first.checkpoint_number == 1
+
+
+def test_lost_response_retry_reuses_request_without_advancing_twice(monkeypatch):
+    import pytest
+    from split_tracker.repository import RepositoryError
+
+    repo, race, client = make_repo_and_session()
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shared = repo.create_race_session(
+        RaceSession(race_id=race.id, status="running", started_at=start)
+    )
+    repo.create_race_session_checkpoints(shared.id, client.meet_config.checkpoints)
+    client.active_race_session_id = shared.id
+    server_at = start + timedelta(seconds=30)
+    monkeypatch.setattr("split_tracker.repository.utc_now", lambda: server_at)
+
+    class LostFirstResponse:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.request_ids = []
+
+        def record_shared_split(self, *args):
+            self.request_ids.append(args[-1])
+            event = self.wrapped.record_shared_split(*args)
+            if len(self.request_ids) == 1:
+                raise RepositoryError("connection lost after commit")
+            return event
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+    unreliable = LostFirstResponse(repo)
+    client.repository = unreliable
+    with pytest.raises(RepositoryError, match="connection lost after commit"):
+        record_authoritative_split(client, "a1")
+    assert client.splits == []
+
+    retried = record_authoritative_split(client, "a1")
+
+    assert unreliable.request_ids[0] == unreliable.request_ids[1]
+    assert retried.event.checkpoint_number == 1
+    assert len(repo.list_active_split_events(shared.id)) == 1
+    assert client.projected_race_state.athletes[0].next_checkpoint.number == 2
+
+
+def test_supabase_split_rpc_payload_omits_authoritative_timing_fields():
+    class Result:
+        data = [{
+            "id": "request-1",
+            "race_session_id": "session-1",
+            "athlete_id": "athlete-1",
+            "checkpoint_number": 1,
+            "checkpoint_label": "Mile 1",
+            "elapsed_seconds": 60,
+            "event_order": 1,
+            "recorded_at": "2026-01-01T12:01:00+00:00",
+        }]
+
+    class Operation:
+        def execute(self):
+            return Result()
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def rpc(self, name, params):
+            self.calls.append((name, params))
+            return Operation()
+
+    client = Client()
+    event = SupabaseRaceRepository(client).record_shared_split(
+        "session-1", "athlete-1", 1, "Coach", "request-1"
+    )
+
+    name, params = client.calls[0]
+    assert name == "record_shared_split"
+    assert set(params["p_event"]) == {
+        "id", "race_session_id", "athlete_id", "checkpoint_number", "recorded_by"
+    }
+    assert "elapsed_seconds" not in params["p_event"]
+    assert "recorded_at" not in params["p_event"]
+    assert event.elapsed_seconds == 60

@@ -17,9 +17,12 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def split_event_sort_key(event: SplitEvent) -> tuple[datetime, datetime, str]:
-    """Return the canonical persisted-event ordering key."""
-    return (_utc(event.recorded_at), _utc(event.created_at), event.id)
+def split_event_sort_key(event: SplitEvent) -> tuple[int, int, datetime, datetime, str]:
+    """Prefer authoritative sequence, with timestamps only for legacy rows."""
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    if event.event_order > 0:
+        return (0, event.event_order, epoch, epoch, event.id)
+    return (1, 0, _utc(event.recorded_at), _utc(event.created_at), event.id)
 
 
 @dataclass(frozen=True)

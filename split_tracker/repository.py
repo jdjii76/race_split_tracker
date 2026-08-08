@@ -212,6 +212,7 @@ class RaceRepository(Protocol):
     def update_race_session(self, session: RaceSession) -> RaceSession: ...
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]: ...
     def create_split_event(self, event: SplitEvent) -> SplitEvent: ...
+    def record_shared_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, recorded_by: str, request_id: str) -> SplitEvent: ...
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
@@ -239,6 +240,7 @@ class InMemoryRaceRepository:
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
         self._race_session_start_lock = threading.Lock()
+        self._split_event_lock = threading.Lock()
 
     def get_school_profile(self) -> SchoolProfile | None:
         return self.school_profile
@@ -573,13 +575,68 @@ class InMemoryRaceRepository:
         self.split_events[saved.id] = saved
         return saved
 
+    def record_shared_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, recorded_by: str, request_id: str) -> SplitEvent:
+        """Model the server-authoritative split RPC for local/test storage."""
+        with self._split_event_lock:
+            existing = self.split_events.get(request_id)
+            if existing is not None:
+                if existing.race_session_id != race_session_id or existing.athlete_id != athlete_id:
+                    raise RepositoryError("Split request ID belongs to a different action.")
+                return existing
+            session = self.race_sessions.get(race_session_id)
+            if session is None:
+                raise RepositoryError("Race session not found.")
+            if session.status != "running" or session.started_at is None:
+                raise RepositoryError("Race session is not running.")
+            athlete = next(
+                (item for item in self.list_race_athletes(session.race_id) if item.athlete_id == athlete_id),
+                None,
+            )
+            if athlete is None:
+                raise RepositoryError("Invalid athlete for this race session.")
+            checkpoints = self.list_race_session_checkpoints(race_session_id)
+            completed = len([
+                event for event in self.split_events.values()
+                if event.race_session_id == race_session_id
+                and event.athlete_id == athlete_id
+                and not event.is_deleted
+            ])
+            if completed >= len(checkpoints):
+                raise RepositoryError("Athlete has no remaining checkpoint.")
+            checkpoint = checkpoints[completed]
+            if checkpoint.checkpoint_sequence != checkpoint_number:
+                raise RepositoryError("Unexpected checkpoint progression.")
+            recorded_at = utc_now()
+            elapsed = max(
+                0.0,
+                session.elapsed_offset_seconds
+                + (recorded_at - session.started_at).total_seconds(),
+            )
+            event_order = max(
+                [event.event_order for event in self.split_events.values() if event.race_session_id == race_session_id]
+                or [0]
+            ) + 1
+            return self.create_split_event(SplitEvent(
+                id=request_id,
+                race_session_id=race_session_id,
+                athlete_id=athlete_id,
+                athlete_name=athlete.name,
+                bib_number=athlete.bib_number,
+                checkpoint_number=checkpoint.checkpoint_sequence,
+                checkpoint_label=checkpoint.label,
+                elapsed_seconds=elapsed,
+                event_order=event_order,
+                recorded_by=recorded_by,
+                recorded_at=recorded_at,
+            ))
+
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         return [event for event in self.list_all_split_events(race_session_id) if not event.is_deleted]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         return sorted(
             [event for event in self.split_events.values() if event.race_session_id == race_session_id],
-            key=lambda event: (_aware_utc(event.recorded_at), _aware_utc(event.created_at), event.id),
+            key=_split_event_order_key,
         )
 
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent:
@@ -708,6 +765,14 @@ def _aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _split_event_order_key(event: SplitEvent) -> tuple[int, int, datetime, datetime, str]:
+    """Prefer authoritative sequence, falling back to legacy timestamps."""
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    if event.event_order > 0:
+        return (0, event.event_order, epoch, epoch, event.id)
+    return (1, 0, _aware_utc(event.recorded_at), _aware_utc(event.created_at), event.id)
 
 
 def _meet_to_row(meet: Meet) -> dict[str, Any]:
@@ -1452,18 +1517,43 @@ class SupabaseRaceRepository:
         row = rows[0] if isinstance(rows, list) and rows else rows
         return _split_event_from_row(row or event_row)
 
+    def record_shared_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, recorded_by: str, request_id: str) -> SplitEvent:
+        """Record one split without accepting client-authoritative timing fields."""
+        payload = {
+            "id": request_id,
+            "race_session_id": race_session_id,
+            "athlete_id": athlete_id,
+            "checkpoint_number": checkpoint_number,
+            "recorded_by": recorded_by or None,
+        }
+        try:
+            result = self.client.rpc("record_shared_split", {"p_event": payload}).execute()
+        except Exception as exc:
+            detail = str(exc).lower()
+            if "duplicate" in detail or "already" in detail or "23505" in detail:
+                raise RepositoryError("That athlete already has an active split at this checkpoint.") from exc
+            if any(term in detail for term in ("not running", "invalid athlete", "no remaining checkpoint", "checkpoint progression", "different action")):
+                raise RepositoryError(str(exc)) from exc
+            logger.exception("Repository operation failed: Could not record shared split.")
+            raise RepositoryError("Could not record shared split.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row:
+            raise RepositoryError("Could not record shared split.")
+        return _split_event_from_row(row)
+
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).eq("is_deleted", False).order("event_order", desc=False), "Could not list active split events.")
         return sorted(
             [_split_event_from_row(row) for row in getattr(result, "data", [])],
-            key=lambda event: (_aware_utc(event.recorded_at), _aware_utc(event.created_at), event.id),
+            key=_split_event_order_key,
         )
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).order("event_order", desc=False), "Could not list split events.")
         return sorted(
             [_split_event_from_row(row) for row in getattr(result, "data", [])],
-            key=lambda event: (_aware_utc(event.recorded_at), _aware_utc(event.created_at), event.id),
+            key=_split_event_order_key,
         )
 
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent:

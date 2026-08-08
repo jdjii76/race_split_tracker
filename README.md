@@ -364,6 +364,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 8. `supabase/migrations/009_permanent_athletes.sql`
 9. `supabase/migrations/010_fix_race_athlete_identity_nullability.sql`
 10. `supabase/migrations/011_atomic_active_race_session.sql`
+11. `supabase/migrations/012_server_authoritative_split_timing.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -391,6 +392,11 @@ exist. Migration `011` preserves terminal history while enforcing at most one
 `ready`, `running`, or `paused` session per race. Apply that complete file to an
 existing development project after migration `010`; do not edit the migration
 history table manually.
+
+Migration `012` replaces `record_shared_split(jsonb)` so PostgreSQL assigns the
+official split timestamp, elapsed time, and event order. Apply it after `011`
+and before deploying Python code that calls the reduced authoritative RPC
+payload.
 
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`
