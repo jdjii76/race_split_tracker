@@ -100,14 +100,14 @@ MEET_DASHBOARD_PAGE = st.Page(
 )
 MEET_SETUP_PAGE = st.Page(
     meet_management.render,
-    title="Race Setup",
+    title="Meets & Races",
     icon="📝",
     url_path="meet-setup",
 )
 ATHLETES_PAGE = st.Page(athletes.render, title="Athletes", icon="🏃", url_path="athletes")
 CONFIGURE_RACE_PAGE = st.Page(
     meet_setup.render,
-    title="Configure Race",
+    title="Race Setup",
     icon="👟",
     url_path="configure-race",
 )

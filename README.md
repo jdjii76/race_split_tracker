@@ -112,10 +112,11 @@ linked later through a reviewed administrative backfill.
 
 Use **Athletes** to create, filter, edit, injure, deactivate, graduate, or
 reactivate school athletes. Status changes and name edits retain the permanent
-UUID. Race Setup's **Select Athletes** section writes permanent IDs into the
-race-specific roster while retaining race-time names and metadata as historical
-snapshots. The existing editable race-only roster remains available for legacy
-or guest athletes because removing it would break established workflows.
+UUID. Race Setup's primary **Select Athletes** section uses visible, race-scoped
+checkboxes and writes permanent IDs into the race-specific roster while retaining
+race-time names and metadata as historical snapshots. The editable race-only
+roster remains available in the collapsed **Race-Specific Details / Advanced
+Manual Race Roster** section for legacy or guest athletes.
 
 The **Import Athlete Roster** expander on the Athletes page provides a permanent-
 roster CSV template, validation preview, duplicate review, and an explicit import
@@ -159,17 +160,17 @@ race-only athletes to store only `legacy_athlete_id`.
 
 ### Race Setup
 
-- Meet name and race name fields
-- Course type selector for Track or Cross Country
-- Track and cross country race-distance presets with custom meter distances
+- Read-only saved race information with meet, date, category, distance, course, and status
+- Primary permanent-team selection with search, filters, visible checkboxes, Select All, Clear, and Save Race Roster
+- Race-scoped selection state that reloads persistence unless the coach has explicit unsaved edits
+- Saved-athlete removal lock after timing starts, preserving historical race snapshots
+- Collapsed race-specific details/manual athlete editor with optional CSV import
+- Legacy local meet/race and manual-roster setup when no persisted race is selected
 - Internal distance storage in meters
 - Checkpoint modes for standard laps, fixed intervals, and custom checkpoints
 - Finish checkpoint inclusion even when intervals do not divide the race evenly
-- Editable athlete roster with add/delete rows and paste support through the data editor
-- CSV roster import and roster template download
 - Roster fields for athlete name, bib number, target finish time, optional target pace, and group/category
-- Setup summary before saving
-- Clear Setup confirmation and Start Timing navigation
+- Compact review followed by Save Race Setup and Start Race actions
 - Validation for required meet/race names, athlete names, duplicate bibs, target-time formats, and at least one athlete
 
 ### Live Timing
@@ -335,7 +336,11 @@ The app does **not** persist authentication data, user ownership, parent views, 
 
 ## Database Schema
 
-The initial schema is in `supabase/migrations/001_initial_schema.sql` and creates:
+The ordered files in `supabase/migrations/` are the **only authoritative
+production schema history**. Apply every file in numeric order; do not use the
+bootstrap/reference SQL files as substitutes for the migration chain.
+
+The initial migration, `supabase/migrations/001_initial_schema.sql`, creates:
 
 - `meets`
 - `races`
@@ -354,8 +359,51 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 2. `supabase/migrations/003_timing_persistence.sql`
 3. `supabase/migrations/004_race_rosters.sql`
 4. `supabase/migrations/005_race_session_checkpoints.sql`
+5. `supabase/migrations/006_shared_live_timing.sql`
+6. `supabase/migrations/007_fast_validated_split_rpc.sql`
+7. `supabase/migrations/008_school_branding.sql`
+8. `supabase/migrations/009_permanent_athletes.sql`
+9. `supabase/migrations/010_fix_race_athlete_identity_nullability.sql`
+10. `supabase/migrations/011_atomic_active_race_session.sql`
+11. `supabase/migrations/012_server_authoritative_split_timing.sql`
 
-There is currently no `002` migration file in the repository; keep the existing numbering gap and apply only the files present above. After running them, confirm these tables exist: `meets`, `races`, `meet_templates`, `template_races`, `race_sessions`, `split_events`, `race_athletes`, and `race_session_checkpoints`. Also confirm the `create_started_race_session_with_checkpoints` RPC function exists.
+There is no `002` migration file; retain that historical numbering gap. Every
+present migration version is unique. Migration `008_school_branding.sql` must
+precede `009_permanent_athletes.sql` because permanent athletes reference
+`school_profiles`. Migration `010` then reconciles permanent UUID and preserved
+legacy text identities without matching or updating rows by athlete name.
+
+An obsolete expanded file formerly named
+`008_permanent_athlete_roster.sql` duplicated both branding and permanent-roster
+work and shared version `008`. It is intentionally not part of the canonical
+chain. If that SQL was manually run in an existing development project, do not
+drop or recreate its objects and do not remove version `008` from Supabase's
+migration history. Continue with the canonical `009` and `010` migrations as
+needed: their guarded DDL preserves existing rows and identity values. If the
+Supabase migration-history table already records `008`, treat it as the branding
+step and verify the branding table before continuing rather than rerunning a
+destructive rollback.
+
+After running the chain, confirm these tables exist: `meets`, `races`,
+`meet_templates`, `template_races`, `race_sessions`, `split_events`,
+`race_athletes`, `race_session_checkpoints`, `school_profiles`, and `athletes`.
+Also confirm the `create_started_race_session_with_checkpoints`,
+`get_or_create_active_race_session`, and `record_shared_split` RPC functions
+exist. Migration `011` preserves terminal history while enforcing at most one
+`ready`, `running`, or `paused` session per race. Apply that complete file to an
+existing development project after migration `010`; do not edit the migration
+history table manually.
+
+Migration `012` replaces `record_shared_split(jsonb)` so PostgreSQL assigns the
+official split timestamp, elapsed time, and event order. Apply it after `011`
+and before deploying Python code that calls the reduced authoritative RPC
+payload.
+
+`supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
+an empty, isolated development project. `database/migrations/001_initial_schema.sql`
+is a retained legacy copy of the initial schema. Neither is an independently
+maintained migration history; production and upgrades must use
+`supabase/migrations/`.
 
 ## Meet Dashboard and Templates
 
@@ -581,6 +629,14 @@ python -m compileall .
 - Avoid adding database or file persistence during the first prototype unless requested.
 
 ## Live timing responsiveness
+
+Live Timing uses a race-day focus layout: the authoritative race clock and a
+compact synchronization indicator stay above a searchable, touch-friendly
+athlete grid. **Stable** button order preserves race-roster positions by
+default; optional Expected Arrival and Race Order views consume the same
+projected race state. Finished athletes move to a collapsed summary while
+remaining visible on the progress-ranked Live Race Board. End, undo, reset, and
+development diagnostics are secondary so they do not compete with split taps.
 
 Successful athlete taps use one concurrency-safe Supabase RPC and immediately
 replay its returned event into the browser's persisted-state projection. The
