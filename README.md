@@ -367,6 +367,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 10. `supabase/migrations/011_atomic_active_race_session.sql`
 11. `supabase/migrations/012_server_authoritative_split_timing.sql`
 12. `supabase/migrations/013_server_authoritative_race_lifecycle.sql`
+13. `supabase/migrations/014_safe_athlete_archive.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -405,6 +406,12 @@ and before deploying Python code that performs persisted Pause, Resume, End, or
 Cancel actions. The RPC locks the session row, validates the state transition,
 and derives lifecycle timestamps and elapsed offsets from PostgreSQL time.
 
+Migration `014` adds the `archived` permanent-athlete status and the atomic
+`delete_unused_athlete(uuid)` RPC. Apply the complete file after `013` in the
+Supabase SQL Editor before deploying the athlete-removal UI. The RPC refuses to
+delete a UUID referenced by `race_athletes`; the existing restrictive foreign
+key remains a database-level backstop against concurrent history creation.
+
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`
 is a retained legacy copy of the initial schema. Neither is an independently
@@ -419,6 +426,17 @@ The Templates section includes an idempotently seeded default XC meet template c
 
 When Supabase configuration is missing, the dashboard still works with temporary in-memory storage and displays a warning that meet data resets when the session ends.
 
+
+## Safe Permanent Athlete Removal
+
+The Athletes page shows active athletes by default and provides explicit Edit
+and removal actions. Athletes without a `race_athletes` UUID reference may be
+permanently deleted after confirmation. Athletes with any race history can only
+be archived, which retains the permanent UUID and every race snapshot and split
+while excluding the athlete from normal future-race selection. The Archived
+status filter exposes archived records and Restore returns the same row and UUID
+to active status. An archived athlete already saved on an existing race remains
+visible there and is never removed automatically.
 
 ## Race-Scoped Rosters
 
