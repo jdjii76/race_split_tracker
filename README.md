@@ -373,6 +373,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 12. `supabase/migrations/013_server_authoritative_race_lifecycle.sql`
 13. `supabase/migrations/014_safe_athlete_archive.sql`
 14. `supabase/migrations/015_live_timing_corrections.sql`
+15. `supabase/migrations/016_race_finalization_outcomes.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -420,6 +421,10 @@ key remains a database-level backstop against concurrent history creation.
 Migration `015` keeps corrected split rows for audit, adds correction metadata,
 and provides atomic `invalidate_split_event` and `record_manual_split` RPCs.
 Apply it after `014` before deploying the Live Timing mistake-recovery UI.
+
+Migration `016` adds race-session athlete outcomes and locked DNF, finalization,
+and reopen operations. Apply it after `015` before deploying the Finish Race
+workflow. It preserves existing sessions and split/correction history.
 
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`
@@ -489,6 +494,19 @@ Rapid retries of the same rendered athlete/checkpoint action reuse a request
 UUID, while the database's active athlete/checkpoint uniqueness rule rejects a
 competing duplicate. There is no broad debounce delay, so different athletes
 finishing close together remain unaffected.
+
+### Finish Race and Final Results
+
+Finish Race summarizes finishers, explicit DNF outcomes, and unresolved
+athletes. Every active roster athlete must either have an authoritative finish
+event or a session-scoped DNF outcome before the guarded finalization RPC can
+complete the session. Completed sessions lock ordinary timing and corrections.
+Reopen Race reuses the same session in a paused state, retaining splits,
+corrections, and DNF records; coaches may then reverse a DNF, correct history,
+resume timing, and finish again. Results rank only valid finishers by finish
+elapsed time and deterministic event order, then show DNF and unresolved rows
+without numerical places. The CSV retains session and athlete UUIDs, elapsed
+seconds, statuses, and per-checkpoint values.
 
 The `supabase/migrations/003_timing_persistence.sql` migration adds persistent live timing state for selected saved races. It creates:
 

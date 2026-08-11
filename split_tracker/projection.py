@@ -36,6 +36,7 @@ class ProjectedAthleteState:
     button_enabled: bool
     button_label: str
     splits: tuple[SplitRecord, ...]
+    outcome_status: str = ""
 
 
 @dataclass(frozen=True)
@@ -120,8 +121,8 @@ def partition_finished_athletes(
     athlete_states: tuple[ProjectedAthleteState, ...] | list[ProjectedAthleteState],
 ) -> tuple[tuple[ProjectedAthleteState, ...], tuple[ProjectedAthleteState, ...]]:
     """Separate active timing targets from de-emphasized finishers."""
-    active = tuple(state for state in athlete_states if not state.finished)
-    finished = tuple(state for state in athlete_states if state.finished)
+    active = tuple(state for state in athlete_states if not state.finished and state.outcome_status != "dnf")
+    finished = tuple(state for state in athlete_states if state.finished or state.outcome_status == "dnf")
     return active, finished
 
 
@@ -146,8 +147,8 @@ def partition_finished_athletes(
     athlete_states: tuple[ProjectedAthleteState, ...] | list[ProjectedAthleteState],
 ) -> tuple[tuple[ProjectedAthleteState, ...], tuple[ProjectedAthleteState, ...]]:
     """Separate active timing targets from de-emphasized finishers."""
-    active = tuple(state for state in athlete_states if not state.finished)
-    finished = tuple(state for state in athlete_states if state.finished)
+    active = tuple(state for state in athlete_states if not state.finished and state.outcome_status != "dnf")
+    finished = tuple(state for state in athlete_states if state.finished or state.outcome_status == "dnf")
     return active, finished
 
 
@@ -162,6 +163,7 @@ def apply_inserted_event_to_projection(
         [state.athlete for state in projection.athletes],
         checkpoints,
         [*projection.events, event],
+        {state.athlete.athlete_id for state in projection.athletes if state.outcome_status == "dnf"},
     )
 
 
@@ -170,6 +172,7 @@ def project_race_state(
     race_athletes: list[Athlete],
     checkpoints: list[Checkpoint],
     split_events: list[SplitEvent],
+    dnf_athlete_ids: set[str] | None = None,
 ) -> ProjectedRaceState:
     """Build all live controls and results from one persisted-data snapshot.
 
@@ -177,6 +180,7 @@ def project_race_state(
     later checkpoints are deferred, then accepted only if a manual replacement
     fills the missing prefix. This keeps correction replay deterministic.
     """
+    dnf_ids = dnf_athlete_ids or set()
     ordered = sorted(
         (
             event
@@ -237,7 +241,7 @@ def project_race_state(
         latest = history[-1] if history else None
         finished = next_cp is None and bool(checkpoints)
         status = (
-            "FINISHED" if finished else f"Next: {next_cp.label if next_cp else '—'}"
+            "DNF" if athlete.athlete_id in dnf_ids else ("FINISHED" if finished else f"Next: {next_cp.label if next_cp else '—'}")
         )
         last_line = ""
         if records:
@@ -251,9 +255,10 @@ def project_race_state(
                 latest_split_event=latest,
                 latest_elapsed_seconds=latest.elapsed_seconds if latest else None,
                 finished=finished,
-                button_enabled=race_session.status == "running" and next_cp is not None,
+                button_enabled=race_session.status == "running" and next_cp is not None and athlete.athlete_id not in dnf_ids,
                 button_label=f"{athlete.name}\nBib {athlete.bib_number or '—'} • {status}{last_line}",
                 splits=tuple(records),
+                outcome_status="dnf" if athlete.athlete_id in dnf_ids else "",
             )
         )
         results.extend(records)

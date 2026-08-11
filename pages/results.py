@@ -154,6 +154,7 @@ def render() -> None:
             return
         checkpoint_result = get_session_checkpoints(repository, session, checkpoints)
         events = repository.list_active_split_events(session.id)
+        outcomes = repository.list_race_athlete_outcomes(session.id)
     except RepositoryError as exc:
         st.error(f"Could not load split events: {exc}")
         return
@@ -161,12 +162,14 @@ def render() -> None:
     if checkpoint_result.source == "legacy_fallback":
         st.warning("This legacy race session has no persisted checkpoint snapshot, so results use the current generated race checkpoints as an isolated fallback.")
 
-    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events)
+    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events, outcomes=outcomes)
     if not rows:
         st.info("This session has no roster or split events to reconstruct.")
         return
 
     st.subheader("Reconstructed Results")
+    final_columns = [column for column in ("Place", "Athlete", "Final Time", "Split Times", "Status")]
+    st.dataframe(results_to_frame(rows)[final_columns], hide_index=True, use_container_width=True)
     scope = st.radio("Result scope", ["Overall", "Gender", "Team", "Group/category", "Status"], horizontal=True)
     gender = team = category = status = None
     if scope == "Gender":
@@ -179,12 +182,13 @@ def render() -> None:
         value = st.selectbox("Group/category filter", _filter_options(rows, "Category/Group"))
         category = None if value == "All" else value
     elif scope == "Status":
-        value = st.selectbox("Status filter", ["All", "Finished", "In Progress", "DNF", "DNS"])
+        value = st.selectbox("Status filter", ["All", "Finished", "DNF", "Unresolved", "In Progress", "DNS"])
         status = None if value == "All" else value
 
     filtered_rows = filter_results(rows, gender=gender, team=team, category=category, status=status)
     frame = results_to_frame(filtered_rows, formatted_for_export=True)
-    st.dataframe(frame, hide_index=True, use_container_width=True)
+    with st.expander("Detailed results and export", expanded=False):
+        st.dataframe(frame, hide_index=True, use_container_width=True)
     st.download_button(
         "Download selected session CSV",
         data=frame.to_csv(index=False).encode("utf-8"),

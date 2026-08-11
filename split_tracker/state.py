@@ -42,6 +42,7 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("pending_split_request_ids", {})
     session_state.setdefault("pending_manual_split_request_ids", {})
     session_state.setdefault("persisted_split_events", ())
+    session_state.setdefault("race_athlete_outcomes", ())
 
 
 def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
