@@ -70,8 +70,10 @@ STATUS_LABELS = {
 
 
 def _clock_metric() -> None:
+    clock = st.session_state.race_clock
     st.metric(
-        "Race Clock", format_duration(elapsed_seconds(st.session_state.race_clock))
+        f"{STATUS_LABELS[clock.status].upper()} • Race Clock",
+        format_duration(elapsed_seconds(clock)),
     )
 
 
@@ -512,9 +514,7 @@ def render() -> None:
         )
     )
     sync_label, sync_class = _sync_status()
-    top_clock, top_status = st.columns([2, 1])
-    with top_clock:
-        _clock_metric()
+    top_status = st.container()
     with top_status:
         st.markdown(f'<p class="{sync_class}">{sync_label}</p>', unsafe_allow_html=True)
         st.caption(
@@ -647,6 +647,9 @@ def render() -> None:
         )
 
     st.subheader("Record Athlete Split")
+    # Render the existing authoritative clock in the position coaches watch;
+    # this adds no state, queries, or polling.
+    _clock_metric()
     if not st.session_state.athletes:
         st.warning("Add athletes on the Race Setup page before timing a race.")
         return

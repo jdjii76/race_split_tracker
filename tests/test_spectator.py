@@ -5,10 +5,12 @@ from split_tracker.models import Athlete, Checkpoint
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, SplitEvent
 from split_tracker.spectator import (
     ReadOnlySpectatorRepository,
+    SpectatorAthleteRow,
     load_spectator_race,
     spectator_status,
     spectator_url,
 )
+from pages.spectator import _athlete_card_html
 
 
 def _fixture():
@@ -44,6 +46,42 @@ def test_public_ids_resolve_exact_race_and_session_without_browser_state():
     assert spectator_url(race_b.id, session_b.id).endswith(
         f"spectator_race={race_b.id}&spectator_session={session_b.id}"
     )
+
+
+def test_absolute_spectator_urls_normalize_and_encode_all_variants():
+    race_id = "race id/with symbols"
+    assert spectator_url(race_id, base_url="https://kmhs-race-timer.streamlit.app") == (
+        "https://kmhs-race-timer.streamlit.app/live-race?spectator_race=race+id%2Fwith+symbols"
+    )
+    exact = spectator_url(
+        "race-uuid", "session-uuid", base_url="https://kmhs-race-timer.streamlit.app/"
+    )
+    assert exact == (
+        "https://kmhs-race-timer.streamlit.app/live-race?"
+        "spectator_race=race-uuid&spectator_session=session-uuid"
+    )
+    assert "//live-race" not in exact and exact.count("?") == 1
+    assert spectator_url("race-uuid").startswith("http://localhost:8501/live-race?")
+
+
+def test_mobile_card_groups_name_authoritative_time_and_progress():
+    row = SpectatorAthleteRow(
+        name="Alex Smith", team="KMHS", latest_checkpoint="Mile 2",
+        cumulative_time="10:42.00", next_checkpoint="Finish", status="In Progress",
+    )
+    html = _athlete_card_html(1, row)
+    assert "Alex Smith" in html and "10:42.00" in html
+    assert "Mile 2 · Next: Finish · In Progress" in html
+    assert html.index("Alex Smith") < html.index("10:42.00") < html.index("Mile 2")
+
+
+def test_dnf_card_prioritizes_dnf_but_preserves_partial_time():
+    row = SpectatorAthleteRow(
+        name="David Green", team="", latest_checkpoint="Mile 2",
+        cumulative_time="11:12.00", next_checkpoint="—", status="DNF",
+    )
+    html = _athlete_card_html(4, row)
+    assert "DNF" in html and "Mile 2 · 11:12.00" in html
 
 
 def test_spectator_adapter_exposes_reads_but_no_mutation_capabilities():

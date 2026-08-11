@@ -55,3 +55,7 @@ def test_focus_mode_keeps_controls_secondary_and_removes_reopen_action():
     )
     assert 'st.session_state.get("debug_mode")' in source
     assert "Reopen athlete" not in source
+    render_source = source[source.index("def render()") :]
+    assert render_source.index('st.subheader("Record Athlete Split")') < render_source.index(
+        "_clock_metric()"
+    ) < render_source.index('placeholder="Search name or bib"')

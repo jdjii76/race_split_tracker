@@ -450,6 +450,20 @@ session outcomes. Migration `017` limits anonymous access to privacy-safe public
 views and public school branding. Anonymous users receive no protected-table
 writes and no mutation RPC execution.
 
+For a directly shareable parent link, configure the deployed Streamlit origin in
+Streamlit Cloud Secrets (no trailing slash is required):
+
+```toml
+PUBLIC_APP_URL = "https://kmhs-race-timer.streamlit.app"
+```
+
+`PUBLIC_APP_URL` may also be supplied as an environment variable. The URL
+builder removes trailing slashes and URL-encodes race identifiers. When it is
+not configured, local development falls back to `http://localhost:8501`; that
+fallback is for local testing and must not be sent to parents. Race Day shares
+a race-only URL so one link works before the session exists and continues to
+resolve the active/latest session through start, timing, finish, and reopen.
+
 ### Provision the first administrator
 
 1. Apply migrations through `017_secure_coach_and_spectator_access.sql`.

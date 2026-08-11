@@ -4,6 +4,7 @@ from __future__ import annotations
 import streamlit as st
 
 from split_tracker.branding import render_school_header
+from split_tracker.config import load_public_app_url
 from split_tracker.formatting import format_distance
 from split_tracker.navigation import RaceDashboardSummary, dashboard_navigation_ids, get_meet_race_summaries
 from split_tracker.spectator import spectator_url
@@ -52,11 +53,16 @@ def _race_card(meet, summary: RaceDashboardSummary, *, emphasized: bool = False)
         ):
             _open_race(meet, summary)
         with st.expander("Share Live View"):
+            public_url = spectator_url(
+                summary.race.id,
+                base_url=load_public_app_url(secrets=st.secrets),
+            )
+            st.caption("Parents can follow this race without signing in.")
             st.code(
-                spectator_url(summary.race.id, summary.session.id if summary.session else None),
+                public_url,
                 language=None,
             )
-            st.caption("Share this read-only link with spectators.")
+            st.caption("This race link remains valid before, during, and after timing.")
 
 
 def _section(meet, title: str, summaries: list[RaceDashboardSummary], *, emphasized: bool = False) -> None:

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlencode
 from typing import Protocol
 
+from split_tracker.config import DEFAULT_PUBLIC_APP_URL
 from split_tracker.formatting import format_duration
 from split_tracker.models import Athlete, Checkpoint
 from split_tracker.projection import ProjectedRaceState, ordered_race_board_athletes, project_race_state
@@ -134,11 +136,17 @@ class SpectatorRaceView:
     final_rows: tuple[dict[str, object], ...] = ()
 
 
-def spectator_url(race_id: str, session_id: str | None = None) -> str:
-    query = f"spectator_race={race_id}"
+def spectator_url(
+    race_id: str,
+    session_id: str | None = None,
+    *,
+    base_url: str = DEFAULT_PUBLIC_APP_URL,
+) -> str:
+    """Build one absolute, encoded spectator URL from a normalized app origin."""
+    query = {"spectator_race": race_id}
     if session_id:
-        query += f"&spectator_session={session_id}"
-    return f"/live-race?{query}"
+        query["spectator_session"] = session_id
+    return f"{base_url.rstrip('/')}/live-race?{urlencode(query)}"
 
 
 def spectator_status(session: RaceSession | None) -> str:
