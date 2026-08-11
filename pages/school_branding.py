@@ -2,34 +2,12 @@
 from __future__ import annotations
 from dataclasses import replace
 import streamlit as st
+from split_tracker.auth import AuthenticationError, require_admin
 from split_tracker.branding import DEFAULT_SCHOOL_PROFILE, SchoolProfile, render_school_header, validate_logo_upload, validate_profile
-from split_tracker.branding_service import AUTH_KEY, authorize_settings, save_profile, settings_editing_enabled
+from split_tracker.branding_service import save_profile
 from split_tracker.repository import RepositoryError
 
 STYLE_LABELS = {"Standard banner": "standard", "Logo left": "logo_left", "Compact": "compact", "Text only": "text_only"}
-
-
-def _admin_passcode() -> str | None:
-    try:
-        value = st.secrets.get("admin", {}).get("settings_passcode")
-        return str(value) if value else None
-    except Exception:
-        return None
-
-
-def _authorize() -> bool:
-    configured = _admin_passcode()
-    if not settings_editing_enabled(configured):
-        st.warning("School branding editing is disabled. Configure an administrator settings passcode in Streamlit secrets.")
-        return False
-    if st.session_state.get(AUTH_KEY):
-        return True
-    with st.form("school_settings_authorization"):
-        entered = st.text_input("Administrator passcode", type="password")
-        submitted = st.form_submit_button("Unlock Settings", type="primary")
-    if submitted and not authorize_settings(st.session_state, entered, configured):
-        st.error("The administrator passcode was not accepted.")
-    return bool(st.session_state.get(AUTH_KEY))
 
 
 def _uploaded_asset(repository, upload, kind: str) -> str:
@@ -74,10 +52,13 @@ def _draft_profile(current: SchoolProfile) -> tuple[SchoolProfile, object | None
 
 
 def render() -> None:
+    try:
+        require_admin(st.session_state.get("app_identity"))
+    except AuthenticationError as exc:
+        st.error(str(exc))
+        return
     profile = st.session_state.get("school_profile_stored", st.session_state.school_profile)
     render_school_header(profile, "School & Branding Settings")
-    if not _authorize():
-        return
     repository = st.session_state.repository
     if repository is None:
         st.error("Branding cannot be saved while persistent storage is unavailable. Race-day features remain available.")

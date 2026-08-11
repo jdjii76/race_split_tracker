@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from split_tracker.models import PermanentAthlete
 
-ATHLETE_STATUSES = {"active", "inactive", "injured", "graduated"}
+ATHLETE_STATUSES = {"active", "inactive", "injured", "graduated", "archived"}
 
 
 def grade_from_graduation_year(graduation_year: int | None, school_year_end: int) -> str:

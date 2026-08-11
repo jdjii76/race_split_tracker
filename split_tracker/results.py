@@ -11,7 +11,7 @@ import pandas as pd
 from split_tracker.calculations import athlete_finished
 from split_tracker.formatting import format_duration, format_pace
 from split_tracker.models import Athlete, Checkpoint, SplitRecord
-from split_tracker.repository import RaceRepository, RaceSession, SplitEvent
+from split_tracker.repository import RaceAthleteOutcome, RaceRepository, RaceSession, SplitEvent
 from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.timing_persistence import persisted_elapsed_seconds, rebuild_splits_from_events
 
@@ -77,6 +77,7 @@ def reconstruct_results(
     checkpoints: list[Checkpoint],
     race_distance_meters: float,
     events: list[SplitEvent],
+    outcomes: list[RaceAthleteOutcome] | None = None,
 ) -> list[dict[str, object]]:
     """Reconstruct result rows from roster, checkpoints, and active split events."""
     active_events = [event for event in events if not event.is_deleted]
@@ -84,6 +85,7 @@ def reconstruct_results(
     config = _config_stub(checkpoints, race_distance_meters)
     splits = rebuild_splits_from_events(events=active_events, athletes=roster, config=config)
     splits_by_athlete: dict[str, list[SplitRecord]] = {}
+    outcome_by_athlete = {item.athlete_id: item.status for item in (outcomes or [])}
     for split in splits:
         splits_by_athlete.setdefault(split.athlete_id, []).append(split)
 
@@ -92,25 +94,31 @@ def reconstruct_results(
         athlete_splits = sorted(splits_by_athlete.get(athlete.athlete_id, []), key=lambda split: split.checkpoint_number)
         finish_split = next((split for split in reversed(athlete_splits) if split.is_finish), None)
         latest_split = athlete_splits[-1] if athlete_splits else None
-        status = _athlete_status(session.status, athlete_splits, checkpoints)
+        status = _athlete_status(session.status, athlete_splits, checkpoints, outcome_by_athlete.get(athlete.athlete_id))
         row: dict[str, object] = {
             "Meet": meet_name,
             "Race": race_name,
             "Session ID": session.id,
             "Athlete": athlete.name,
             "Bib": athlete.bib_number,
+            "Athlete ID": athlete.athlete_id,
             "Gender": athlete.gender,
             "Grade": athlete.grade,
             "Team": athlete.team,
             "Category/Group": athlete.group,
             "Active": athlete.active,
             "Finish Time Seconds": finish_split.cumulative_time_seconds if finish_split else None,
+            "Elapsed Seconds": finish_split.cumulative_time_seconds if finish_split else None,
             "Finish Time": format_duration(finish_split.cumulative_time_seconds if finish_split else None),
+            "Final Time": format_duration(finish_split.cumulative_time_seconds if finish_split else None),
             "Average Pace": format_pace(finish_split.average_pace_seconds_per_mile if finish_split else None),
             "Overall Place": None,
             "Gender Place": None,
             "Category Place": None,
             "Status": status,
+            "Race Status": status,
+            "Place": None,
+            "_Finish Event Order": finish_split.sequence if finish_split else None,
         }
         for checkpoint in checkpoints:
             matching = next((split for split in athlete_splits if split.checkpoint_number == checkpoint.number), None)
@@ -123,6 +131,9 @@ def reconstruct_results(
         rows.append(row)
 
     _assign_places(rows, "Overall Place")
+    for row in rows:
+        row["Place"] = row["Overall Place"] if row["Status"] == "Finished" else "—"
+        row["Split Times"] = " / ".join(str(row[f"{checkpoint.label} Cumulative"]) for checkpoint in checkpoints)
     _assign_group_places(rows, "Gender", "Gender Place")
     _assign_group_places(rows, "Category/Group", "Category Place")
     return sorted(rows, key=_result_sort_key)
@@ -134,7 +145,7 @@ def results_to_frame(rows: list[dict[str, object]], *, formatted_for_export: boo
     if frame.empty:
         return frame
     if formatted_for_export and "Finish Time Seconds" in frame.columns:
-        frame = frame.drop(columns=["Finish Time Seconds"])
+        frame = frame.drop(columns=["Finish Time Seconds", "_Finish Event Order"], errors="ignore")
     return frame
 
 
@@ -159,16 +170,20 @@ def filter_results(
     return filtered
 
 
-def _athlete_status(session_status: str, athlete_splits: list[SplitRecord], checkpoints: list[Checkpoint]) -> str:
+def _athlete_status(session_status: str, athlete_splits: list[SplitRecord], checkpoints: list[Checkpoint], outcome_status: str | None = None) -> str:
     if athlete_finished(athlete_splits, checkpoints):
         return "Finished"
+    if outcome_status == "dnf":
+        return "DNF"
+    if session_status == "completed":
+        return "Unresolved"
     if athlete_splits:
-        return "DNF" if session_status in {"completed", "cancelled"} else "In Progress"
+        return "DNF" if session_status == "cancelled" else "In Progress"
     return "DNS"
 
 
 def _assign_places(rows: list[dict[str, object]], place_key: str) -> None:
-    finishers = sorted([row for row in rows if row.get("Status") == "Finished"], key=lambda row: (row["Finish Time Seconds"], row["Athlete"]))
+    finishers = sorted([row for row in rows if row.get("Status") == "Finished"], key=lambda row: (row["Finish Time Seconds"], row.get("_Finish Event Order") or 0, row["Athlete ID"]))
     last_time = None
     last_place = 0
     for index, row in enumerate(finishers, start=1):
@@ -187,7 +202,7 @@ def _assign_group_places(rows: list[dict[str, object]], group_key: str, place_ke
 
 
 def _result_sort_key(row: dict[str, object]) -> tuple[int, float, str]:
-    status_rank = 0 if row.get("Status") == "Finished" else 1
+    status_rank = {"Finished": 0, "DNF": 1, "Unresolved": 2, "In Progress": 2, "DNS": 3}.get(str(row.get("Status")), 4)
     finish_time = row.get("Finish Time Seconds")
     return (status_rank, float(finish_time) if finish_time is not None else float("inf"), str(row.get("Athlete") or ""))
 
