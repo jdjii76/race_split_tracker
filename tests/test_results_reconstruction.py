@@ -87,11 +87,11 @@ def test_incomplete_dnf_dns_and_deleted_events_excluded():
     rows = reconstruct_results(meet_name=meet.name, race_name=boys.name, session=session, athletes=athletes, checkpoints=checkpoints, race_distance_meters=boys.distance_meters, events=repo.list_all_split_events(session.id))
     by_name = {row["Athlete"]: row for row in rows}
 
-    assert by_name["Alex"]["Status"] == "DNF"
+    assert by_name["Alex"]["Status"] == "Unresolved"
     assert by_name["Alex"]["Finish Time"] == "—"
     assert by_name["Blake"]["Status"] == "Finished"
-    assert by_name["Casey"]["Status"] == "DNS"
-    assert by_name["Drew"]["Status"] == "DNS"
+    assert by_name["Casey"]["Status"] == "Unresolved"
+    assert by_name["Drew"]["Status"] == "Unresolved"
 
 
 def test_in_progress_status_for_active_session_partial_splits():

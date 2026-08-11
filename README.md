@@ -1,11 +1,15 @@
 # Race Split Tracker
 
-The app opens on **Current Meet** whenever a valid active meet is available. The
-dashboard shows every race, its roster count and authoritative session status,
-with direct Start Timing, Resume Timing, or View Results actions. Use the compact
-sidebar control to change meets; the selection is also stored in the page query
-parameters so it can be restored after a browser refresh. Meet, race, roster, and
-checkpoint administration remains under **Race Setup**.
+The app opens on **Race Day** whenever a valid active meet is available. The
+touch-friendly dashboard groups persisted races into Running Now, Up Next, and
+Completed, with direct Open Timing, Open Race, and View Results actions. It
+refreshes from Supabase every five seconds and uses batched session and roster
+count reads, so concurrent races remain isolated by race and session UUID. Race
+names beginning with `TEST` receive a display-only test indicator. Use the
+compact sidebar control to change meets; the selection is also stored in the
+page query parameters so it can be restored after a browser refresh. Meet, race,
+roster, and checkpoint administration remains under **Meets & Races** and
+**Race Setup**.
 
 Race Split Tracker is a Streamlit web application for coaches to record lap, mile, and checkpoint splits for multiple athletes during track and cross country races.
 
@@ -367,6 +371,9 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 10. `supabase/migrations/011_atomic_active_race_session.sql`
 11. `supabase/migrations/012_server_authoritative_split_timing.sql`
 12. `supabase/migrations/013_server_authoritative_race_lifecycle.sql`
+13. `supabase/migrations/014_safe_athlete_archive.sql`
+14. `supabase/migrations/015_live_timing_corrections.sql`
+15. `supabase/migrations/016_race_finalization_outcomes.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -405,20 +412,51 @@ and before deploying Python code that performs persisted Pause, Resume, End, or
 Cancel actions. The RPC locks the session row, validates the state transition,
 and derives lifecycle timestamps and elapsed offsets from PostgreSQL time.
 
+Migration `014` adds the `archived` permanent-athlete status and the atomic
+`delete_unused_athlete(uuid)` RPC. Apply the complete file after `013` in the
+Supabase SQL Editor before deploying the athlete-removal UI. The RPC refuses to
+delete a UUID referenced by `race_athletes`; the existing restrictive foreign
+key remains a database-level backstop against concurrent history creation.
+
+Migration `015` keeps corrected split rows for audit, adds correction metadata,
+and provides atomic `invalidate_split_event` and `record_manual_split` RPCs.
+Apply it after `014` before deploying the Live Timing mistake-recovery UI.
+
+Migration `016` adds race-session athlete outcomes and locked DNF, finalization,
+and reopen operations. Apply it after `015` before deploying the Finish Race
+workflow. It preserves existing sessions and split/correction history.
+
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`
 is a retained legacy copy of the initial schema. Neither is an independently
 maintained migration history; production and upgrades must use
 `supabase/migrations/`.
 
-## Meet Dashboard and Templates
+## Race Day Dashboard, Meet Management, and Templates
 
-The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the Race Setup workflow.
+Race Day is the primary landing page. It reads persisted race sessions and race
+roster counts in batches, highlights every simultaneously running race, and
+routes directly to existing Live Timing, Race Setup, or Results pages using the
+selected race/session UUIDs. Meets & Races lets coaches create, list, open, edit,
+archive, and safely delete draft meets. Opening a meet there shows its race list,
+where coaches can add, edit, duplicate, archive, delete draft races, reorder races
+by display order, and open a saved race in the Race Setup workflow.
 
 The Templates section includes an idempotently seeded default XC meet template containing Boys JV, Girls JV, Boys Varsity, and Girls Varsity races. Each default XC race is 5000 meters. Coaches can create and edit custom templates, archive templates, and create a new meet from a template without generating timing data or results.
 
 When Supabase configuration is missing, the dashboard still works with temporary in-memory storage and displays a warning that meet data resets when the session ends.
 
+
+## Safe Permanent Athlete Removal
+
+The Athletes page shows active athletes by default and provides explicit Edit
+and removal actions. Athletes without a `race_athletes` UUID reference may be
+permanently deleted after confirmation. Athletes with any race history can only
+be archived, which retains the permanent UUID and every race snapshot and split
+while excluding the athlete from normal future-race selection. The Archived
+status filter exposes archived records and Restore returns the same row and UUID
+to active status. An archived athlete already saved on an existing race remains
+visible there and is never removed automatically.
 
 ## Race-Scoped Rosters
 
@@ -440,6 +478,35 @@ The `supabase/migrations/004_race_rosters.sql` migration adds `race_athletes`, w
 When switching saved races, the app saves the prior race roster to the race-scoped cache/repository, loads the new race's roster by `race_id`, and clears transient timing state for the previous race. Live Timing uses only the roster loaded for the selected race.
 
 ## Persistent Live Timing
+
+### Mistake Recovery
+
+Live Timing keeps normal athlete buttons unchanged and places recovery tools in
+a separate Timing Controls section. Undo Last Split and Correct Split atomically
+invalidate an exact split-event UUID scoped to the active race-session UUID;
+the original row remains stored. Add Missed Split accepts an explicit elapsed
+race-clock time only for the athlete's next missing checkpoint and records it as
+a manual correction. Every correction reloads persisted events and rebuilds the
+same authoritative race projection used by normal timing. Recent Activity is
+derived from persisted split and correction rows for the current session.
+
+Rapid retries of the same rendered athlete/checkpoint action reuse a request
+UUID, while the database's active athlete/checkpoint uniqueness rule rejects a
+competing duplicate. There is no broad debounce delay, so different athletes
+finishing close together remain unaffected.
+
+### Finish Race and Final Results
+
+Finish Race summarizes finishers, explicit DNF outcomes, and unresolved
+athletes. Every active roster athlete must either have an authoritative finish
+event or a session-scoped DNF outcome before the guarded finalization RPC can
+complete the session. Completed sessions lock ordinary timing and corrections.
+Reopen Race reuses the same session in a paused state, retaining splits,
+corrections, and DNF records; coaches may then reverse a DNF, correct history,
+resume timing, and finish again. Results rank only valid finishers by finish
+elapsed time and deterministic event order, then show DNF and unresolved rows
+without numerical places. The CSV retains session and athlete UUIDs, elapsed
+seconds, statuses, and per-checkpoint values.
 
 The `supabase/migrations/003_timing_persistence.sql` migration adds persistent live timing state for selected saved races. It creates:
 

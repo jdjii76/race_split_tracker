@@ -51,7 +51,7 @@ def test_focus_mode_keeps_controls_secondary_and_removes_reopen_action():
     assert 'st.expander("Race Controls", expanded=False)' in source
     assert 'placeholder="Search name or bib"' in source
     assert (
-        'st.expander(f"Finished ({len(finished_athletes)})", expanded=False)' in source
+        'st.expander(f"Finished / DNF ({len(finished_athletes)})", expanded=False)' in source
     )
     assert 'st.session_state.get("debug_mode")' in source
     assert "Reopen athlete" not in source

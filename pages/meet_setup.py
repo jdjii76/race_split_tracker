@@ -51,7 +51,9 @@ def _permanent_athlete_selector() -> list[Athlete]:
     search = c1.text_input("Search school roster", key=f"permanent_search_{race_id}")
     include_nonactive = c2.checkbox("Include injured/inactive", key=f"include_nonactive_{race_id}")
     try:
-        roster = repository.list_athletes()
+        # Include archived records only so an athlete already saved to this race
+        # remains visible; filtering below never offers them as a new selection.
+        roster = repository.list_athletes(include_archived=True)
         persisted_ids = repository.list_race_athlete_ids(race_id)
         roster_locked = _roster_is_locked(repository, race_id)
     except RepositoryError as exc:
@@ -69,7 +71,7 @@ def _permanent_athlete_selector() -> list[Athlete]:
     divisions = sorted({value for item in roster for value in (item.gender, item.team_division) if value})
     division = c4.selectbox("Gender / division", ["All", *divisions], key=f"permanent_division_{race_id}")
     term = search.casefold().strip()
-    filtered = [item for item in roster if (not term or term in item.display_name.casefold() or term in item.athlete_number.casefold()) and (include_nonactive or item.status == "active" or item.id in selected_ids) and (year == "All" or item.graduation_year == year) and (division == "All" or division in {item.gender, item.team_division})]
+    filtered = [item for item in roster if (not term or term in item.display_name.casefold() or term in item.athlete_number.casefold()) and (item.id in selected_ids or item.status != "archived" and (include_nonactive or item.status == "active")) and (year == "All" or item.graduation_year == year) and (division == "All" or division in {item.gender, item.team_division})]
     if roster_locked:
         st.info("Timing has started for this race. Saved athletes are locked to protect historical race snapshots; you may still add an athlete if needed.")
     controls = st.columns(2)

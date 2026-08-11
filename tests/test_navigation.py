@@ -48,6 +48,7 @@ def test_race_setup_user_facing_labels_are_consistent():
     management_source = (ROOT / "pages/meet_management.py").read_text(encoding="utf-8")
     live_source = (ROOT / "pages/live_timing.py").read_text(encoding="utf-8")
 
+    assert 'title="Race Day"' in app_source
     assert 'title="Meets & Races"' in app_source
     assert 'title="Race Setup"' in app_source
     assert 'render_school_header(profile, "Race Setup")' in setup_source
