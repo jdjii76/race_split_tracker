@@ -372,6 +372,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 11. `supabase/migrations/012_server_authoritative_split_timing.sql`
 12. `supabase/migrations/013_server_authoritative_race_lifecycle.sql`
 13. `supabase/migrations/014_safe_athlete_archive.sql`
+14. `supabase/migrations/015_live_timing_corrections.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -415,6 +416,10 @@ Migration `014` adds the `archived` permanent-athlete status and the atomic
 Supabase SQL Editor before deploying the athlete-removal UI. The RPC refuses to
 delete a UUID referenced by `race_athletes`; the existing restrictive foreign
 key remains a database-level backstop against concurrent history creation.
+
+Migration `015` keeps corrected split rows for audit, adds correction metadata,
+and provides atomic `invalidate_split_event` and `record_manual_split` RPCs.
+Apply it after `014` before deploying the Live Timing mistake-recovery UI.
 
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`
@@ -468,6 +473,22 @@ The `supabase/migrations/004_race_rosters.sql` migration adds `race_athletes`, w
 When switching saved races, the app saves the prior race roster to the race-scoped cache/repository, loads the new race's roster by `race_id`, and clears transient timing state for the previous race. Live Timing uses only the roster loaded for the selected race.
 
 ## Persistent Live Timing
+
+### Mistake Recovery
+
+Live Timing keeps normal athlete buttons unchanged and places recovery tools in
+a separate Timing Controls section. Undo Last Split and Correct Split atomically
+invalidate an exact split-event UUID scoped to the active race-session UUID;
+the original row remains stored. Add Missed Split accepts an explicit elapsed
+race-clock time only for the athlete's next missing checkpoint and records it as
+a manual correction. Every correction reloads persisted events and rebuilds the
+same authoritative race projection used by normal timing. Recent Activity is
+derived from persisted split and correction rows for the current session.
+
+Rapid retries of the same rendered athlete/checkpoint action reuse a request
+UUID, while the database's active athlete/checkpoint uniqueness rule rejects a
+competing duplicate. There is no broad debounce delay, so different athletes
+finishing close together remain unaffected.
 
 The `supabase/migrations/003_timing_persistence.sql` migration adds persistent live timing state for selected saved races. It creates:
 
