@@ -98,9 +98,7 @@ def test_spectator_page_is_display_only_and_polls_at_five_seconds():
     assert "st.fragment(run_every=5)" in source
 
 
-def test_existing_anon_security_is_broad_but_spectator_adds_no_grants():
-    corrections = open("supabase/migrations/015_live_timing_corrections.sql", encoding="utf-8").read().lower()
-    outcomes = open("supabase/migrations/016_race_finalization_outcomes.sql", encoding="utf-8").read().lower()
-    assert "to anon, authenticated" in corrections
-    assert "finalize_race_session(uuid) to anon" in outcomes
-    assert not __import__("pathlib").Path("supabase/migrations/017_spectator_read_access.sql").exists()
+def test_spectator_uses_public_views_after_security_hardening():
+    source = open("split_tracker/spectator.py", encoding="utf-8").read()
+    for view in ("spectator_races", "spectator_sessions", "spectator_roster", "spectator_split_events"):
+        assert view in source

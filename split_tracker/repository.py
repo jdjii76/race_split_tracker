@@ -172,6 +172,12 @@ def _safe_repository_diagnostic(exc: Exception) -> str:
     return "\n".join(parts)
 
 
+def _raise_authorization_error(exc: Exception) -> None:
+    detail = str(exc).lower()
+    if any(term in detail for term in ("not authorized", "permission denied", "jwt expired", "row-level security", "42501")):
+        raise RepositoryError("Your coach session has expired or lacks permission. Sign in again.") from exc
+
+
 class RaceRepository(Protocol):
     """Persistence contract for meet, race, and template management."""
 
@@ -1372,6 +1378,10 @@ class SupabaseRaceRepository:
         try:
             return operation.execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
+            detail = str(exc).lower()
+            if any(term in detail for term in ("not authorized", "permission denied", "jwt expired", "row-level security")):
+                raise RepositoryError("Your coach session has expired or lacks permission. Sign in again.") from exc
             logger.exception("Repository operation failed: %s", message)
             raise RepositoryError(message, diagnostic=_safe_repository_diagnostic(exc)) from exc
 
@@ -1402,6 +1412,24 @@ class SupabaseRaceRepository:
                 logger.exception("Repository operation failed: %s", message)
                 raise RepositoryError(message) from exc
             self._execute(operation, message)
+
+    def validate_public_schema(self) -> None:
+        """Validate only anonymous-safe objects needed before coach sign-in."""
+        for view_name in (
+            "spectator_meets", "spectator_races", "spectator_sessions",
+            "spectator_roster", "spectator_checkpoints",
+            "spectator_split_events", "spectator_outcomes",
+        ):
+            try:
+                operation = self.client.table(view_name).select("*").limit(1)
+            except Exception as exc:
+                raise RepositoryError(
+                    f"Supabase public schema check failed for {view_name}. Apply migration 017."
+                ) from exc
+            self._execute(
+                operation,
+                f"Supabase public schema check failed for {view_name}. Apply migration 017.",
+            )
 
     def get_school_profile(self) -> SchoolProfile | None:
         row = self._single(self.client.table("school_profiles").select("*").eq("profile_key", "default"), "Could not load school branding.")
@@ -1798,6 +1826,7 @@ class SupabaseRaceRepository:
                 {"p_session_id": race_session_id, "p_action": action},
             ).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if any(term in detail for term in ("invalid race session transition", "unknown race session action", "race session not found")):
                 raise RepositoryError(str(exc)) from exc
@@ -1813,6 +1842,7 @@ class SupabaseRaceRepository:
         try:
             result = self.client.rpc("finalize_race_session", {"p_session_id": race_session_id}).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if any(term in detail for term in ("resolve every", "cannot be finished", "not found")):
                 raise RepositoryError(str(exc)) from exc
@@ -1827,6 +1857,7 @@ class SupabaseRaceRepository:
         try:
             result = self.client.rpc("reopen_race_session", {"p_session_id": race_session_id}).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if any(term in detail for term in ("only a completed", "not found")):
                 raise RepositoryError(str(exc)) from exc
@@ -1851,6 +1882,7 @@ class SupabaseRaceRepository:
                 "p_recorded_by": recorded_by or None,
             }).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             raise RepositoryError(str(exc)) from exc
         rows = getattr(result, "data", [])
         row = rows[0] if isinstance(rows, list) and rows else rows
@@ -1863,6 +1895,7 @@ class SupabaseRaceRepository:
                 "p_session_id": race_session_id, "p_athlete_id": athlete_id,
             }).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             raise RepositoryError(str(exc)) from exc
         data = getattr(result, "data", False)
         return bool(data[0] if isinstance(data, list) and data else data)
@@ -1899,6 +1932,7 @@ class SupabaseRaceRepository:
         try:
             result = self.client.rpc("record_shared_split", {"p_event": event_row}).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if "duplicate" in detail or "already" in detail or "23505" in detail:
                 raise RepositoryError("That athlete already has an active split at this checkpoint.") from exc
@@ -1922,6 +1956,7 @@ class SupabaseRaceRepository:
         try:
             result = self.client.rpc("record_shared_split", {"p_event": payload}).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if "duplicate" in detail or "already" in detail or "23505" in detail:
                 raise RepositoryError("That athlete already has an active split at this checkpoint.") from exc
@@ -1967,6 +2002,7 @@ class SupabaseRaceRepository:
                 "p_require_latest": require_latest,
             }).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if any(term in detail for term in ("already corrected", "no longer matches", "not found", "newer split")):
                 raise RepositoryError(str(exc)) from exc
@@ -1989,6 +2025,7 @@ class SupabaseRaceRepository:
         try:
             result = self.client.rpc("record_manual_split", {"p_event": payload}).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if any(term in detail for term in ("next missing", "surrounding", "not running", "not paused", "invalid athlete", "request id")):
                 raise RepositoryError(str(exc)) from exc
@@ -2082,8 +2119,9 @@ def create_repository(
         return RepositoryFactoryResult(repository=None, storage_label="Supabase unavailable", is_temporary=False, message="Supabase is configured but no client was created.", error=connection.message)
     repository = SupabaseRaceRepository(connection.client)
     try:
-        repository.validate_schema()
-        repository.seed_default_xc_template()
+        repository.validate_public_schema()
     except RepositoryError as exc:
         return RepositoryFactoryResult(repository=None, storage_label="Supabase unavailable", is_temporary=False, message="Supabase is configured but initialization failed.", error=str(exc))
+    # Anonymous startup never probes or seeds protected coach tables. All
+    # mutations run only after Supabase Auth establishes an authorized JWT.
     return RepositoryFactoryResult(repository=repository, storage_label="Supabase", is_temporary=False, message="Meet data is stored in Supabase.")

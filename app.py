@@ -5,7 +5,8 @@ from __future__ import annotations
 import streamlit as st
 from dataclasses import replace
 
-from pages import athletes, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding, spectator
+from pages import athletes, coach_login, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding, spectator
+from split_tracker.auth import current_identity, sign_out
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
 from split_tracker.navigation import resolve_active_meet_id
@@ -39,7 +40,11 @@ apply_school_theme(school_profile)
 
 repository_result = st.session_state.repository_result
 spectator_mode = bool(st.query_params.get("spectator_race") or st.query_params.get("spectator_session"))
-if not spectator_mode and st.session_state.repository is not None:
+auth_client = getattr(st.session_state.repository, "client", None)
+identity = current_identity(auth_client) if auth_client is not None and not spectator_mode else None
+st.session_state.app_identity = identity
+authenticated = bool(identity and identity.is_coach)
+if not spectator_mode and authenticated and st.session_state.repository is not None:
     try:
         requested_meet_id = st.query_params.get("meet") or st.session_state.active_meet_id
         st.session_state.active_meet_id = resolve_active_meet_id(
@@ -51,9 +56,14 @@ if not spectator_mode and st.session_state.repository is not None:
             del st.query_params["meet"]
     except Exception:
         pass
-if not spectator_mode:
+if not spectator_mode and authenticated:
     with st.sidebar:
         render_school_sidebar_brand(school_profile)
+        st.caption(f"Signed in as {identity.email} • {identity.role.title()}")
+        if st.button("Sign Out", use_container_width=True):
+            sign_out(auth_client)
+            st.session_state.app_identity = None
+            st.rerun()
         for warning in school_profile_warnings:
             st.caption(f"Branding configuration: {warning}")
         if branding_load_warning:
@@ -136,6 +146,12 @@ SPECTATOR_PAGE = st.Page(
     icon="🏁",
     url_path="live-race",
 )
+COACH_LOGIN_PAGE = st.Page(
+    coach_login.render,
+    title="Coach Sign In",
+    icon="🔐",
+    url_path="coach-sign-in",
+)
 
 st.session_state.page_registry = {
     "meet_dashboard": MEET_DASHBOARD_PAGE,
@@ -148,11 +164,22 @@ st.session_state.page_registry = {
     "spectator": SPECTATOR_PAGE,
 }
 
+race_day_pages = [MEET_DASHBOARD_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE]
+settings_pages = []
+if identity and identity.is_admin:
+    race_day_pages.insert(1, ATHLETES_PAGE)
+    settings_pages.append(SCHOOL_BRANDING_PAGE)
 pages = {
-    "Race Day": [MEET_DASHBOARD_PAGE, ATHLETES_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE],
+    "Race Day": race_day_pages,
     "Setup": [MEET_SETUP_PAGE, CONFIGURE_RACE_PAGE],
-    "Settings": [SCHOOL_BRANDING_PAGE],
 }
+if settings_pages:
+    pages["Settings"] = settings_pages
 
-navigation = st.navigation([SPECTATOR_PAGE], position="hidden") if spectator_mode else st.navigation(pages)
+if spectator_mode:
+    navigation = st.navigation([SPECTATOR_PAGE], position="hidden")
+elif not authenticated:
+    navigation = st.navigation([COACH_LOGIN_PAGE], position="hidden")
+else:
+    navigation = st.navigation(pages)
 navigation.run()

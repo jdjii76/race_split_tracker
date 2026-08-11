@@ -374,6 +374,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 13. `supabase/migrations/014_safe_athlete_archive.sql`
 14. `supabase/migrations/015_live_timing_corrections.sql`
 15. `supabase/migrations/016_race_finalization_outcomes.sql`
+16. `supabase/migrations/017_secure_coach_and_spectator_access.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -426,6 +427,12 @@ Migration `016` adds race-session athlete outcomes and locked DNF, finalization,
 and reopen operations. Apply it after `015` before deploying the Finish Race
 workflow. It preserves existing sessions and split/correction history.
 
+Migration `017` replaces prototype anonymous-write policies with explicit
+`coach`/`admin` roles in `app_users`, protects mutation RPCs with both grants and
+`auth.uid()` role checks, and exposes privacy-limited spectator views. Apply it
+after `016` before sharing spectator links publicly. It changes authorization
+only and does not rewrite race history.
+
 ## Read-only Spectator Live View
 
 Race Day cards now expose a **Share Live View** link using stable race and, when
@@ -439,13 +446,24 @@ metadata, athlete notes, and contact or administrative data are not rendered.
 
 Active and paused spectator views refresh every five seconds and query only the
 target race, resolved session, roster, checkpoint snapshot, active events, and
-session outcomes. No migration `017` is required because the current development
-policies already allow anonymous reads. **Security warning:** those development
-policies are broader than a production spectator model: the `anon` role can also
-write several tables and execute split, correction, DNF, finalization, reopen,
-and other mutation RPCs. This feature adds no grants and never calls those APIs,
-but production deployment still requires authentication/RLS hardening before a
-shared URL should be considered a security boundary.
+session outcomes. Migration `017` limits anonymous access to privacy-safe public
+views and public school branding. Anonymous users receive no protected-table
+writes and no mutation RPC execution.
+
+### Provision the first administrator
+
+1. Apply migrations through `017_secure_coach_and_spectator_access.sql`.
+2. In **Supabase Dashboard → Authentication → Users**, create the administrator
+   with email/password and copy the generated user UUID.
+3. In Supabase SQL Editor (which uses the trusted administrative context), run:
+   `insert into public.app_users (user_id, role) values ('<USER_UUID>', 'admin');`
+4. Sign in through the app's **Coach Sign In** page. Create subsequent users in
+   Supabase Auth and assign `coach` or `admin` in `app_users`.
+
+Coaches can configure and time races but permanent-athlete creation/editing,
+archive/restore/delete, and branding remain admin-only. The former local
+branding settings passcode is no longer used as an authorization gate;
+Supabase Auth plus the persisted `admin` role is authoritative.
 
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`

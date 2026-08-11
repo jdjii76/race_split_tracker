@@ -8,7 +8,7 @@ import streamlit as st
 
 from split_tracker.branding import render_school_header
 from split_tracker.formatting import format_distance
-from split_tracker.spectator import ReadOnlySpectatorRepository, load_spectator_race
+from split_tracker.spectator import load_spectator_race, spectator_repository
 
 
 def render() -> None:
@@ -23,7 +23,7 @@ def render() -> None:
     session_id = st.query_params.get("spectator_session")
     try:
         view = load_spectator_race(
-            ReadOnlySpectatorRepository(repository), race_id=race_id, session_id=session_id
+            spectator_repository(repository), race_id=race_id, session_id=session_id
         )
     except Exception:
         view = None

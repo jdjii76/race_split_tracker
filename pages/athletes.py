@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 import pandas as pd
 import streamlit as st
+from split_tracker.auth import AuthenticationError, require_admin
 from split_tracker.athletes import grade_from_graduation_year
 from split_tracker.athlete_import import csv_template_bytes, import_athlete_rows, parse_athlete_csv
 from split_tracker.branding import render_school_header
@@ -136,6 +137,11 @@ def _save_new() -> None:
 
 
 def render() -> None:
+    try:
+        require_admin(st.session_state.get("app_identity"))
+    except AuthenticationError as exc:
+        st.error(str(exc))
+        return
     profile = st.session_state.school_profile
     title = f"{profile.short_name} Athlete Roster" if profile.short_name else "Athlete Roster"
     render_school_header(profile, title)
