@@ -93,7 +93,7 @@ with st.sidebar:
 
 MEET_DASHBOARD_PAGE = st.Page(
     meet_dashboard.render,
-    title="Current Meet",
+    title="Race Day",
     icon="🏟️",
     url_path="meet-dashboard",
     default=True,

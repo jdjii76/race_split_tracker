@@ -86,3 +86,58 @@ def test_deactivated_permanent_athlete_retains_historical_race_snapshot():
     restored = repo.list_race_athletes(race.id, include_inactive=True)[0]
     assert restored.athlete_id == athlete.id
     assert restored.name == snapshot.name == "Alex Smith"
+
+
+def test_delete_unused_athlete_removes_only_that_uuid():
+    repo, _ = setup_repository()
+    duplicate = repo.create_athlete(PermanentAthlete(first_name="Jordan", last_name="Lee"))
+    keeper = repo.create_athlete(PermanentAthlete(first_name="Jordan", last_name="Lee"))
+
+    assert repo.athlete_has_race_history(duplicate.id) is False
+    assert repo.delete_unused_athlete(duplicate.id) is True
+    assert repo.get_athlete(duplicate.id) is None
+    assert repo.get_athlete(keeper.id) == keeper
+
+
+def test_delete_athlete_with_history_is_rejected_without_changing_history():
+    repo, race = setup_repository()
+    athlete = repo.create_athlete(PermanentAthlete(first_name="Jordan", last_name="Smith"))
+    snapshot = repo.replace_race_athletes_from_roster(race.id, [athlete.id])[0]
+
+    assert repo.athlete_has_race_history(athlete.id) is True
+    with pytest.raises(RepositoryError, match="race history"):
+        repo.delete_unused_athlete(athlete.id)
+
+    assert repo.get_athlete(athlete.id) == athlete
+    assert repo.list_race_athletes(race.id, include_inactive=True) == [snapshot]
+
+
+def test_archive_restore_preserves_uuid_history_and_default_visibility():
+    repo, race = setup_repository()
+    athlete = repo.create_athlete(PermanentAthlete(first_name="Jordan", last_name="Smith"))
+    snapshot = repo.replace_race_athletes_from_roster(race.id, [athlete.id])[0]
+
+    archived = repo.archive_athlete(athlete.id)
+    assert archived.id == athlete.id
+    assert repo.get_athlete(athlete.id) == archived
+    assert repo.list_athletes() == []
+    assert repo.list_athletes(include_archived=True) == [archived]
+    assert repo.list_race_athletes(race.id, include_inactive=True) == [snapshot]
+
+    restored = repo.restore_athlete(athlete.id)
+    assert restored.id == athlete.id and restored.status == "active"
+    assert repo.list_athletes() == [restored]
+    assert repo.list_race_athletes(race.id, include_inactive=True) == [snapshot]
+
+
+def test_archived_athlete_stays_on_existing_race_but_cannot_join_another():
+    repo, existing_race = setup_repository()
+    athlete = repo.create_athlete(PermanentAthlete(first_name="Jordan", last_name="Smith"))
+    repo.replace_race_athletes_from_roster(existing_race.id, [athlete.id])
+    repo.archive_athlete(athlete.id)
+    another_race = repo.create_race(Race(meet_id=existing_race.meet_id, name="JV", distance_meters=5000))
+
+    assert repo.list_race_athlete_ids(existing_race.id) == [athlete.id]
+    with pytest.raises(RepositoryError, match="Archived athletes"):
+        repo.replace_race_athletes_from_roster(another_race.id, [athlete.id])
+    assert repo.list_race_athlete_ids(another_race.id) == []

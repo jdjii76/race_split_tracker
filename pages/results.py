@@ -117,7 +117,12 @@ def render() -> None:
         st.info("No timing sessions exist for this race yet.")
         return
 
-    summary = st.selectbox("Race session", summaries, format_func=session_label)
+    selected_session_id = st.session_state.get("selected_results_session_id")
+    selected_index = next(
+        (index for index, item in enumerate(summaries) if item.session_id == selected_session_id),
+        0,
+    )
+    summary = st.selectbox("Race session", summaries, index=selected_index, format_func=session_label)
     st.session_state.selected_results_session_id = summary.session_id
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Status", summary.status)
