@@ -100,6 +100,7 @@ def synchronize_shared_timing(session_state, *, now_perf: float | None = None, n
     session_state.persisted_race_status = race_session.status
     session_state.persisted_started_at = race_session.started_at
     session_state.loaded_split_event_count = len(events)
+    session_state.persisted_split_events = tuple(all_events)
     session_state.latest_event_id = ""
     session_state.latest_event_at = None
     session_state.latest_shared_action = ""
@@ -425,6 +426,58 @@ def persist_undo_split(session_state, split: SplitRecord) -> SplitEvent | None:
     repository: RaceRepository | None = session_state.repository
     if repository is None or not session_state.get("active_race_session_id"):
         return None
-    event = repository.soft_delete_split_event(split.split_id)
-    refresh_splits_from_repository(session_state)
+    race_session_id = session_state.get("active_race_session_id")
+    event = repository.invalidate_split_event(
+        split.split_id,
+        race_session_id,
+        split.athlete_id,
+        split.checkpoint_number,
+        session_state.get("timer_name", ""),
+        require_latest=True,
+    )
+    synchronize_shared_timing(session_state)
     return event
+
+
+def persist_event_correction(session_state, event: SplitEvent, *, require_latest: bool = False) -> SplitEvent:
+    """Invalidate one exact persisted event, then replay authoritative history."""
+    repository: RaceRepository | None = session_state.repository
+    race_session_id = session_state.get("active_race_session_id")
+    if repository is None or not race_session_id:
+        raise RepositoryError("No shared race session is connected.")
+    session = repository.get_race_session(race_session_id)
+    if session is None or session.race_id != session_state.get("selected_race_id"):
+        raise RepositoryError("The selected race and race session no longer match.")
+    corrected = repository.invalidate_split_event(
+        event.id, race_session_id, event.athlete_id, event.checkpoint_number,
+        session_state.get("timer_name", ""), require_latest=require_latest,
+    )
+    synchronize_shared_timing(session_state)
+    return corrected
+
+
+def persist_manual_correction(
+    session_state, athlete_id: str, checkpoint_number: int, elapsed_seconds: float
+) -> SplitEvent:
+    """Persist a validated manual next-missing split and replay all event history."""
+    repository: RaceRepository | None = session_state.repository
+    race_session_id = session_state.get("active_race_session_id")
+    if repository is None or not race_session_id:
+        raise RepositoryError("No shared race session is connected.")
+    session = repository.get_race_session(race_session_id)
+    if session is None or session.race_id != session_state.get("selected_race_id"):
+        raise RepositoryError("The selected race and race session no longer match.")
+    requests = session_state.setdefault("pending_manual_split_request_ids", {})
+    key = f"{race_session_id}:{athlete_id}:{checkpoint_number}:{elapsed_seconds:.3f}"
+    request_id = requests.setdefault(key, str(uuid4()))
+    try:
+        saved = repository.record_manual_split(
+            race_session_id, athlete_id, checkpoint_number, elapsed_seconds,
+            session_state.get("timer_name", ""), request_id,
+        )
+    except Exception:
+        raise
+    else:
+        requests.pop(key, None)
+    synchronize_shared_timing(session_state)
+    return saved

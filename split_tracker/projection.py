@@ -173,9 +173,9 @@ def project_race_state(
 ) -> ProjectedRaceState:
     """Build all live controls and results from one persisted-data snapshot.
 
-    Invalid-session events, duplicate checkpoint events, and events that skip the
-    athlete's next checkpoint are ignored. This makes replay deterministic even
-    for legacy rows created before the database uniqueness constraint existed.
+    Invalid-session and duplicate checkpoint events are ignored. Out-of-order
+    later checkpoints are deferred, then accepted only if a manual replacement
+    fills the missing prefix. This keeps correction replay deterministic.
     """
     ordered = sorted(
         (
@@ -190,15 +190,27 @@ def project_race_state(
     accepted_by_athlete: dict[str, list[SplitEvent]] = {
         athlete.athlete_id: [] for athlete in race_athletes
     }
-    for event in ordered:
-        history = accepted_by_athlete.get(event.athlete_id)
-        if history is None or len(history) >= len(checkpoints):
-            continue
-        expected = checkpoints[len(history)]
-        if event.checkpoint_number != expected.number:
-            continue
-        history.append(event)
-        accepted.append(event)
+    pending = list(ordered)
+    while pending:
+        deferred: list[SplitEvent] = []
+        progress = False
+        for event in pending:
+            history = accepted_by_athlete.get(event.athlete_id)
+            if history is None or len(history) >= len(checkpoints):
+                continue
+            expected = checkpoints[len(history)]
+            if event.checkpoint_number != expected.number:
+                deferred.append(event)
+                continue
+            history.append(event)
+            accepted.append(event)
+            progress = True
+        if not progress:
+            break
+        pending = deferred
+    # Keep global activity/undo identity chronological even when a manual
+    # replacement unlocked a previously deferred later checkpoint.
+    accepted.sort(key=split_event_sort_key)
 
     race_distance = checkpoints[-1].distance_meters if checkpoints else 0.0
     config = MeetConfig(race_distance_meters=race_distance, checkpoints=checkpoints)
