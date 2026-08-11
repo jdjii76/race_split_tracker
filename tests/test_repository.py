@@ -194,7 +194,7 @@ def test_repository_factory_uses_supabase_when_configuration_and_client_are_avai
     assert not result.is_temporary
     assert result.storage_label == "Supabase"
     checked_tables = [call[1] for call in client.calls if call[0] == "select"]
-    assert checked_tables == ["meets", "races", "race_athletes", "race_sessions", "split_events", "race_session_checkpoints", "athletes"]
+    assert checked_tables == ["meets", "races", "race_athletes", "race_sessions", "split_events", "race_session_checkpoints", "race_session_athlete_outcomes", "athletes"]
 
 
 def test_repository_factory_reports_missing_migration_health_check_failure(monkeypatch):

@@ -22,7 +22,7 @@ def test_streamlit_pages_have_unique_url_paths_and_meet_setup_default():
     url_paths = [ast.literal_eval(_keyword_value(call, "url_path")) for call in page_calls]
     defaults = [_keyword_value(call, "default") for call in page_calls]
 
-    assert url_paths == ["meet-dashboard", "meet-setup", "athletes", "configure-race", "live-timing", "results", "school-branding"]
+    assert url_paths == ["meet-dashboard", "meet-setup", "athletes", "configure-race", "live-timing", "results", "school-branding", "live-race"]
     assert len(url_paths) == len(set(url_paths))
     assert isinstance(defaults[0], ast.Constant) and defaults[0].value is True
     assert all(default is None for default in defaults[1:])
@@ -48,6 +48,7 @@ def test_race_setup_user_facing_labels_are_consistent():
     management_source = (ROOT / "pages/meet_management.py").read_text(encoding="utf-8")
     live_source = (ROOT / "pages/live_timing.py").read_text(encoding="utf-8")
 
+    assert 'title="Race Day"' in app_source
     assert 'title="Meets & Races"' in app_source
     assert 'title="Race Setup"' in app_source
     assert 'render_school_header(profile, "Race Setup")' in setup_source
