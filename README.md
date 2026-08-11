@@ -1,11 +1,15 @@
 # Race Split Tracker
 
-The app opens on **Current Meet** whenever a valid active meet is available. The
-dashboard shows every race, its roster count and authoritative session status,
-with direct Start Timing, Resume Timing, or View Results actions. Use the compact
-sidebar control to change meets; the selection is also stored in the page query
-parameters so it can be restored after a browser refresh. Meet, race, roster, and
-checkpoint administration remains under **Race Setup**.
+The app opens on **Race Day** whenever a valid active meet is available. The
+touch-friendly dashboard groups persisted races into Running Now, Up Next, and
+Completed, with direct Open Timing, Open Race, and View Results actions. It
+refreshes from Supabase every five seconds and uses batched session and roster
+count reads, so concurrent races remain isolated by race and session UUID. Race
+names beginning with `TEST` receive a display-only test indicator. Use the
+compact sidebar control to change meets; the selection is also stored in the
+page query parameters so it can be restored after a browser refresh. Meet, race,
+roster, and checkpoint administration remains under **Meets & Races** and
+**Race Setup**.
 
 Race Split Tracker is a Streamlit web application for coaches to record lap, mile, and checkpoint splits for multiple athletes during track and cross country races.
 
@@ -418,9 +422,15 @@ is a retained legacy copy of the initial schema. Neither is an independently
 maintained migration history; production and upgrades must use
 `supabase/migrations/`.
 
-## Meet Dashboard and Templates
+## Race Day Dashboard, Meet Management, and Templates
 
-The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the Race Setup workflow.
+Race Day is the primary landing page. It reads persisted race sessions and race
+roster counts in batches, highlights every simultaneously running race, and
+routes directly to existing Live Timing, Race Setup, or Results pages using the
+selected race/session UUIDs. Meets & Races lets coaches create, list, open, edit,
+archive, and safely delete draft meets. Opening a meet there shows its race list,
+where coaches can add, edit, duplicate, archive, delete draft races, reorder races
+by display order, and open a saved race in the Race Setup workflow.
 
 The Templates section includes an idempotently seeded default XC meet template containing Boys JV, Girls JV, Boys Varsity, and Girls Varsity races. Each default XC race is 5000 meters. Coaches can create and edit custom templates, archive templates, and create a new meet from a template without generating timing data or results.
 

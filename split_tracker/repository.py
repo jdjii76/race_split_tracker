@@ -216,6 +216,8 @@ class RaceRepository(Protocol):
     def transition_race_session(self, race_session_id: str, action: str) -> RaceSession: ...
     def update_race_session(self, session: RaceSession) -> RaceSession: ...
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]: ...
+    def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]: ...
+    def count_race_athletes_for_races(self, race_ids: list[str]) -> dict[str, int]: ...
     def create_split_event(self, event: SplitEvent) -> SplitEvent: ...
     def record_shared_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, recorded_by: str, request_id: str) -> SplitEvent: ...
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
@@ -618,6 +620,22 @@ class InMemoryRaceRepository:
 
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         return sorted([session for session in self.race_sessions.values() if session.race_id == race_id], key=lambda session: (session.created_at, session.id))
+
+    def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]:
+        """Return sessions for several races in one repository operation."""
+        wanted = set(race_ids)
+        return sorted(
+            [session for session in self.race_sessions.values() if session.race_id in wanted],
+            key=lambda session: (session.created_at, session.id),
+        )
+
+    def count_race_athletes_for_races(self, race_ids: list[str]) -> dict[str, int]:
+        """Return active snapshot counts keyed by stable race UUID."""
+        counts = {race_id: 0 for race_id in race_ids}
+        for (race_id, _), athlete in self.race_athletes.items():
+            if race_id in counts and athlete.active:
+                counts[race_id] += 1
+        return counts
 
     def create_split_event(self, event: SplitEvent) -> SplitEvent:
         session = self.race_sessions.get(event.race_session_id)
@@ -1609,6 +1627,29 @@ class SupabaseRaceRepository:
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).order("created_at", desc=False), "Could not list race sessions.")
         return [_race_session_from_row(row) for row in getattr(result, "data", [])]
+
+    def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]:
+        if not race_ids:
+            return []
+        result = self._execute(
+            self.client.table("race_sessions").select("*").in_("race_id", race_ids).order("created_at", desc=False),
+            "Could not list race sessions for the race-day dashboard.",
+        )
+        return [_race_session_from_row(row) for row in getattr(result, "data", [])]
+
+    def count_race_athletes_for_races(self, race_ids: list[str]) -> dict[str, int]:
+        counts = {race_id: 0 for race_id in race_ids}
+        if not race_ids:
+            return counts
+        result = self._execute(
+            self.client.table("race_athletes").select("race_id").in_("race_id", race_ids).eq("active", True),
+            "Could not count race athletes for the race-day dashboard.",
+        )
+        for row in getattr(result, "data", []):
+            race_id = str(row["race_id"])
+            if race_id in counts:
+                counts[race_id] += 1
+        return counts
 
     def create_split_event(self, event: SplitEvent) -> SplitEvent:
         event_row = _split_event_to_row(event)
