@@ -194,7 +194,7 @@ def test_repository_factory_uses_supabase_when_configuration_and_client_are_avai
     assert not result.is_temporary
     assert result.storage_label == "Supabase"
     checked_tables = [call[1] for call in client.calls if call[0] == "select"]
-    assert checked_tables == ["meets", "races", "race_athletes", "race_sessions", "split_events", "race_session_checkpoints", "athletes"]
+    assert checked_tables == ["spectator_meets", "spectator_races", "spectator_sessions", "spectator_roster", "spectator_checkpoints", "spectator_split_events", "spectator_outcomes"]
 
 
 def test_repository_factory_reports_missing_migration_health_check_failure(monkeypatch):
@@ -216,7 +216,7 @@ def test_repository_factory_reports_missing_migration_health_check_failure(monke
     assert result.repository is None
     assert result.storage_label == "Supabase unavailable"
     assert result.error is not None
-    assert "Apply the required migrations" in result.error
+    assert "Apply migration 017" in result.error
 
 
 def test_supabase_repository_error_exposes_sanitized_code_and_message():

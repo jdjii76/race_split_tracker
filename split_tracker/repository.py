@@ -113,6 +113,18 @@ class SplitEvent:
     recorded_at: datetime = field(default_factory=utc_now)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    correction_type: str = ""
+    corrected_at: datetime | None = None
+    corrected_by: str = ""
+
+
+@dataclass(frozen=True)
+class RaceAthleteOutcome:
+    race_session_id: str
+    athlete_id: str
+    status: str = "dnf"
+    recorded_by: str = ""
+    recorded_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(frozen=True)
@@ -160,6 +172,12 @@ def _safe_repository_diagnostic(exc: Exception) -> str:
     return "\n".join(parts)
 
 
+def _raise_authorization_error(exc: Exception) -> None:
+    detail = str(exc).lower()
+    if any(term in detail for term in ("not authorized", "permission denied", "jwt expired", "row-level security", "42501")):
+        raise RepositoryError("Your coach session has expired or lacks permission. Sign in again.") from exc
+
+
 class RaceRepository(Protocol):
     """Persistence contract for meet, race, and template management."""
 
@@ -182,11 +200,15 @@ class RaceRepository(Protocol):
     def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]: ...
     def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool: ...
     def clear_race_roster(self, race_id: str) -> bool: ...
-    def list_athletes(self, *, status: str | None = None, graduation_year: int | None = None, gender: str | None = None, team_division: str | None = None, search: str | None = None) -> list[PermanentAthlete]: ...
+    def list_athletes(self, *, status: str | None = None, graduation_year: int | None = None, gender: str | None = None, team_division: str | None = None, search: str | None = None, include_archived: bool = False) -> list[PermanentAthlete]: ...
     def get_athlete(self, athlete_id: str) -> PermanentAthlete | None: ...
     def create_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete: ...
     def update_athlete(self, athlete: PermanentAthlete) -> PermanentAthlete: ...
     def set_athlete_status(self, athlete_id: str, status: str) -> PermanentAthlete: ...
+    def athlete_has_race_history(self, athlete_id: str) -> bool: ...
+    def archive_athlete(self, athlete_id: str) -> PermanentAthlete: ...
+    def restore_athlete(self, athlete_id: str) -> PermanentAthlete: ...
+    def delete_unused_athlete(self, athlete_id: str) -> bool: ...
     def list_race_athlete_ids(self, race_id: str) -> list[str]: ...
     def replace_race_athletes_from_roster(self, race_id: str, athlete_ids: list[str]) -> list[Athlete]: ...
     def create_template(self, template: MeetTemplate, races: list[TemplateRace] | None = None) -> MeetTemplate: ...
@@ -210,13 +232,23 @@ class RaceRepository(Protocol):
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None: ...
     def transition_race_session(self, race_session_id: str, action: str) -> RaceSession: ...
+    def finalize_race_session(self, race_session_id: str) -> RaceSession: ...
+    def reopen_race_session(self, race_session_id: str) -> RaceSession: ...
+    def list_race_athlete_outcomes(self, race_session_id: str) -> list[RaceAthleteOutcome]: ...
+    def set_race_athlete_dnf(self, race_session_id: str, athlete_id: str, recorded_by: str) -> RaceAthleteOutcome: ...
+    def clear_race_athlete_dnf(self, race_session_id: str, athlete_id: str) -> bool: ...
     def update_race_session(self, session: RaceSession) -> RaceSession: ...
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]: ...
+    def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]: ...
+    def count_race_athletes_for_races(self, race_ids: list[str]) -> dict[str, int]: ...
     def create_split_event(self, event: SplitEvent) -> SplitEvent: ...
     def record_shared_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, recorded_by: str, request_id: str) -> SplitEvent: ...
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
+    def invalidate_split_event(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, *, require_latest: bool = False) -> SplitEvent: ...
+    def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent: ...
+    def list_recent_split_events(self, race_session_id: str, *, limit: int = 10) -> list[SplitEvent]: ...
     def restore_split_event(self, split_event_id: str) -> SplitEvent: ...
     def delete_race_session(self, race_session_id: str) -> bool: ...
     def delete_all_timing_data(self) -> bool: ...
@@ -237,6 +269,7 @@ class InMemoryRaceRepository:
         self.race_sessions: dict[str, RaceSession] = {}
         self.split_events: dict[str, SplitEvent] = {}
         self.race_session_checkpoints: dict[tuple[str, int], RaceSessionCheckpoint] = {}
+        self.race_athlete_outcomes: dict[tuple[str, str], RaceAthleteOutcome] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
@@ -260,8 +293,9 @@ class InMemoryRaceRepository:
     def get_branding_asset_url(self, object_path: str) -> str | None:
         return None
 
-    def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None) -> list[PermanentAthlete]:
+    def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None, include_archived=False) -> list[PermanentAthlete]:
         athletes = list(self.athletes.values())
+        if not include_archived and status != "archived": athletes = [item for item in athletes if item.status != "archived"]
         if status: athletes = [item for item in athletes if item.status == status]
         if graduation_year is not None: athletes = [item for item in athletes if item.graduation_year == graduation_year]
         if gender: athletes = [item for item in athletes if item.gender == gender]
@@ -291,6 +325,26 @@ class InMemoryRaceRepository:
         if athlete is None: raise RepositoryError("Athlete not found.")
         return self.update_athlete(replace(athlete, status=status))
 
+    def athlete_has_race_history(self, athlete_id: str) -> bool:
+        """Check permanent UUID references without inspecting mutable names."""
+        return any(stored_id == athlete_id for _, stored_id in self.race_athletes)
+
+    def archive_athlete(self, athlete_id: str) -> PermanentAthlete:
+        return self.set_athlete_status(athlete_id, "archived")
+
+    def restore_athlete(self, athlete_id: str) -> PermanentAthlete:
+        athlete = self.get_athlete(athlete_id)
+        if athlete is None: raise RepositoryError("Athlete not found.")
+        if athlete.status != "archived": raise RepositoryError("Only archived athletes can be restored.")
+        return self.set_athlete_status(athlete_id, "active")
+
+    def delete_unused_athlete(self, athlete_id: str) -> bool:
+        if athlete_id not in self.athletes: raise RepositoryError("Athlete not found.")
+        if self.athlete_has_race_history(athlete_id):
+            raise RepositoryError("Athlete has race history and cannot be permanently deleted. Archive the athlete instead.")
+        del self.athletes[athlete_id]
+        return True
+
     def list_race_athlete_ids(self, race_id: str) -> list[str]:
         return [item.athlete_id for item in self.list_race_athletes(race_id, include_inactive=True) if item.athlete_id in self.athletes]
 
@@ -304,6 +358,8 @@ class InMemoryRaceRepository:
         for index, athlete_id in enumerate(athlete_ids):
             permanent = self.get_athlete(athlete_id)
             if permanent is None: raise RepositoryError("Selected permanent athlete was not found.")
+            if permanent.status == "archived" and athlete_id not in existing:
+                raise RepositoryError("Archived athletes cannot be added to a new race roster. Restore the athlete first.")
             snapshot = existing.get(athlete_id) or Athlete(name=permanent.display_name, athlete_id=permanent.id, gender=permanent.gender, team=permanent.team_division)
             self.race_athletes[(race_id, athlete_id)] = replace(snapshot, display_order=index)
         return self.list_race_athletes(race_id, include_inactive=True)
@@ -589,8 +645,80 @@ class InMemoryRaceRepository:
             self.race_sessions[saved.id] = saved
             return saved
 
+    def finalize_race_session(self, race_session_id: str) -> RaceSession:
+        """Complete only when every active roster athlete finished or is DNF."""
+        with self._race_session_lock:
+            session = self.get_race_session(race_session_id)
+            if session is None: raise RepositoryError("Race session not found.")
+            if session.status == "completed": return session
+            if session.status not in {"running", "paused"}: raise RepositoryError("Race session cannot be finished from its current state.")
+            finish_numbers = {item.checkpoint_sequence for item in self.list_race_session_checkpoints(race_session_id) if item.is_finish}
+            finished_ids = {
+                event.athlete_id for event in self.list_active_split_events(race_session_id)
+                if event.checkpoint_number in finish_numbers
+            }
+            dnf_ids = {item.athlete_id for item in self.list_race_athlete_outcomes(race_session_id) if item.status == "dnf"}
+            roster_ids = {item.athlete_id for item in self.list_race_athletes(session.race_id)}
+            if roster_ids - finished_ids - dnf_ids:
+                raise RepositoryError("Resolve every unfinished athlete before finishing the race.")
+            return self.transition_race_session(race_session_id, "complete")
+
+    def reopen_race_session(self, race_session_id: str) -> RaceSession:
+        """Reopen the same completed session in a safe paused state."""
+        with self._race_session_lock:
+            session = self.get_race_session(race_session_id)
+            if session is None: raise RepositoryError("Race session not found.")
+            if session.status in {"running", "paused"}: return session
+            if session.status != "completed": raise RepositoryError("Only a completed race session can be reopened.")
+            saved = replace(session, status="paused", ended_at=None, paused_at=utc_now(), updated_at=utc_now())
+            self.race_sessions[saved.id] = saved
+            return saved
+
+    def list_race_athlete_outcomes(self, race_session_id: str) -> list[RaceAthleteOutcome]:
+        return sorted(
+            [item for (session_id, _), item in self.race_athlete_outcomes.items() if session_id == race_session_id],
+            key=lambda item: (item.recorded_at, item.athlete_id),
+        )
+
+    def set_race_athlete_dnf(self, race_session_id: str, athlete_id: str, recorded_by: str) -> RaceAthleteOutcome:
+        with self._race_session_lock:
+            session = self.get_race_session(race_session_id)
+            if session is None: raise RepositoryError("Race session not found.")
+            if session.status not in {"running", "paused"}: raise RepositoryError("Reopen the race before changing athlete outcomes.")
+            if athlete_id not in {item.athlete_id for item in self.list_race_athletes(session.race_id)}:
+                raise RepositoryError("Athlete does not belong to this race session.")
+            finish_numbers = {item.checkpoint_sequence for item in self.list_race_session_checkpoints(race_session_id) if item.is_finish}
+            if any(event.athlete_id == athlete_id and event.checkpoint_number in finish_numbers for event in self.list_active_split_events(race_session_id)):
+                raise RepositoryError("A finished athlete cannot be marked DNF.")
+            outcome = RaceAthleteOutcome(race_session_id, athlete_id, recorded_by=recorded_by.strip())
+            self.race_athlete_outcomes[(race_session_id, athlete_id)] = outcome
+            return outcome
+
+    def clear_race_athlete_dnf(self, race_session_id: str, athlete_id: str) -> bool:
+        with self._race_session_lock:
+            session = self.get_race_session(race_session_id)
+            if session is None: raise RepositoryError("Race session not found.")
+            if session.status not in {"running", "paused"}: raise RepositoryError("Reopen the race before changing athlete outcomes.")
+            return self.race_athlete_outcomes.pop((race_session_id, athlete_id), None) is not None
+
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         return sorted([session for session in self.race_sessions.values() if session.race_id == race_id], key=lambda session: (session.created_at, session.id))
+
+    def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]:
+        """Return sessions for several races in one repository operation."""
+        wanted = set(race_ids)
+        return sorted(
+            [session for session in self.race_sessions.values() if session.race_id in wanted],
+            key=lambda session: (session.created_at, session.id),
+        )
+
+    def count_race_athletes_for_races(self, race_ids: list[str]) -> dict[str, int]:
+        """Return active snapshot counts keyed by stable race UUID."""
+        counts = {race_id: 0 for race_id in race_ids}
+        for (race_id, _), athlete in self.race_athletes.items():
+            if race_id in counts and athlete.active:
+                counts[race_id] += 1
+        return counts
 
     def create_split_event(self, event: SplitEvent) -> SplitEvent:
         session = self.race_sessions.get(event.race_session_id)
@@ -621,6 +749,8 @@ class InMemoryRaceRepository:
                 raise RepositoryError("Race session not found.")
             if session.status != "running" or session.started_at is None:
                 raise RepositoryError("Race session is not running.")
+            if (race_session_id, athlete_id) in self.race_athlete_outcomes:
+                raise RepositoryError("Reverse DNF before recording another split.")
             athlete = next(
                 (item for item in self.list_race_athletes(session.race_id) if item.athlete_id == athlete_id),
                 None,
@@ -678,6 +808,91 @@ class InMemoryRaceRepository:
         self.split_events[saved.id] = saved
         return saved
 
+    def invalidate_split_event(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, *, require_latest: bool = False) -> SplitEvent:
+        """Atomically validate and invalidate one exact session event."""
+        with self._race_session_lock:
+            return self._invalidate_split_event_locked(split_event_id, race_session_id, athlete_id, checkpoint_number, corrected_by, require_latest)
+
+    def _invalidate_split_event_locked(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, require_latest: bool) -> SplitEvent:
+        session = self.get_race_session(race_session_id)
+        if session is None: raise RepositoryError("Race session not found.")
+        if session.status == "completed": raise RepositoryError("Reopen the race before changing split history.")
+        event = self._require_split_event(split_event_id)
+        if event.race_session_id != race_session_id or event.athlete_id != athlete_id or event.checkpoint_number != checkpoint_number:
+            raise RepositoryError("Split correction no longer matches the selected race-session event.")
+        if event.is_deleted:
+            raise RepositoryError("That split was already corrected by another user.")
+        if require_latest and any(
+            item.race_session_id == race_session_id and not item.is_deleted and item.event_order > event.event_order
+            for item in self.split_events.values()
+        ):
+            raise RepositoryError("A newer split was recorded. Refresh before choosing Undo Last Split.")
+        saved = replace(
+            event,
+            is_deleted=True,
+            correction_type="invalidated",
+            corrected_at=utc_now(),
+            corrected_by=corrected_by.strip(),
+            updated_at=utc_now(),
+        )
+        self.split_events[saved.id] = saved
+        return saved
+
+    def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent:
+        """Insert the athlete's exact next missing checkpoint with entered elapsed time."""
+        with self._race_session_lock:
+            return self._record_manual_split_locked(race_session_id, athlete_id, checkpoint_number, elapsed_seconds, recorded_by, request_id)
+
+    def _record_manual_split_locked(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent:
+        session = self.get_race_session(race_session_id)
+        if session is None: raise RepositoryError("Race session not found.")
+        if session.status not in {"running", "paused"}: raise RepositoryError("Missed splits can only be added to a running or paused race.")
+        if (race_session_id, athlete_id) in self.race_athlete_outcomes: raise RepositoryError("Reverse DNF before recording another split.")
+        athlete = next((item for item in self.list_race_athletes(session.race_id) if item.athlete_id == athlete_id), None)
+        if athlete is None: raise RepositoryError("Invalid athlete for this race session.")
+        checkpoints = self.list_race_session_checkpoints(race_session_id)
+        active = [event for event in self.list_active_split_events(race_session_id) if event.athlete_id == athlete_id]
+        if request_id in self.split_events:
+            existing = self.split_events[request_id]
+            if existing.race_session_id == race_session_id and existing.athlete_id == athlete_id and existing.checkpoint_number == checkpoint_number:
+                return existing
+            raise RepositoryError("Split request ID belongs to a different action.")
+        by_checkpoint = {event.checkpoint_number: event for event in active}
+        expected = next((checkpoint for checkpoint in checkpoints if checkpoint.checkpoint_sequence not in by_checkpoint), None)
+        if expected is None or expected.checkpoint_sequence != checkpoint_number:
+            raise RepositoryError("Manual split must be the athlete's next missing checkpoint.")
+        previous = [event.elapsed_seconds for event in active if event.checkpoint_number < checkpoint_number]
+        later = [event.elapsed_seconds for event in active if event.checkpoint_number > checkpoint_number]
+        if elapsed_seconds < 0 or (previous and elapsed_seconds <= max(previous)) or (later and elapsed_seconds >= min(later)):
+            raise RepositoryError("Manual elapsed time must fall between the athlete's surrounding splits.")
+        current_elapsed = session.elapsed_offset_seconds
+        if session.status == "running" and session.started_at is not None:
+            current_elapsed += max(0.0, (utc_now() - session.started_at).total_seconds())
+        if elapsed_seconds > current_elapsed:
+            raise RepositoryError("Manual elapsed time cannot be later than the authoritative race clock.")
+        corrected_at = utc_now()
+        saved = SplitEvent(
+            id=request_id,
+            race_session_id=race_session_id,
+            athlete_id=athlete_id,
+            athlete_name=athlete.name,
+            bib_number=athlete.bib_number,
+            checkpoint_number=expected.checkpoint_sequence,
+            checkpoint_label=expected.label,
+            elapsed_seconds=elapsed_seconds,
+            event_order=max([event.event_order for event in self.list_all_split_events(race_session_id)] or [0]) + 1,
+            recorded_by=recorded_by.strip(),
+            correction_type="manual",
+            corrected_at=corrected_at,
+            corrected_by=recorded_by.strip(),
+        )
+        self.split_events[saved.id] = saved
+        return saved
+
+    def list_recent_split_events(self, race_session_id: str, *, limit: int = 10) -> list[SplitEvent]:
+        events = self.list_all_split_events(race_session_id)
+        return sorted(events, key=lambda event: (event.corrected_at or event.recorded_at, event.event_order, event.id), reverse=True)[:max(0, limit)]
+
     def restore_split_event(self, split_event_id: str) -> SplitEvent:
         event = self._require_split_event(split_event_id)
         saved = replace(event, is_deleted=False, updated_at=utc_now())
@@ -722,14 +937,17 @@ class InMemoryRaceRepository:
             self.split_events.pop(event_id)
         for key in [key for key in self.race_session_checkpoints if key[0] == race_session_id]:
             self.race_session_checkpoints.pop(key)
+        for key in [key for key in self.race_athlete_outcomes if key[0] == race_session_id]:
+            self.race_athlete_outcomes.pop(key)
         self.race_sessions.pop(race_session_id)
         return True
 
     def delete_all_timing_data(self) -> bool:
-        had_data = bool(self.race_sessions or self.split_events or self.race_session_checkpoints)
+        had_data = bool(self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes)
         self.split_events.clear()
         self.race_session_checkpoints.clear()
         self.race_sessions.clear()
+        self.race_athlete_outcomes.clear()
         return had_data
 
     def delete_all_race_rosters(self) -> bool:
@@ -738,9 +956,10 @@ class InMemoryRaceRepository:
         return had_data
 
     def delete_all_application_test_data(self) -> bool:
-        had_data = bool(self.meets or self.races or self.athletes or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints)
+        had_data = bool(self.meets or self.races or self.athletes or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes)
         self.split_events.clear()
         self.race_session_checkpoints.clear()
+        self.race_athlete_outcomes.clear()
         self.race_sessions.clear()
         self.race_athletes.clear()
         self.races.clear()
@@ -966,6 +1185,9 @@ def _split_event_to_row(event: SplitEvent) -> dict[str, Any]:
         "is_deleted": event.is_deleted,
         "created_at": event.created_at.isoformat(),
         "updated_at": event.updated_at.isoformat(),
+        "correction_type": event.correction_type or None,
+        "corrected_at": event.corrected_at.isoformat() if event.corrected_at else None,
+        "corrected_by": event.corrected_by or None,
     }
 
 
@@ -985,6 +1207,19 @@ def _split_event_from_row(row: dict[str, Any]) -> SplitEvent:
         is_deleted=bool(row.get("is_deleted")),
         created_at=_parse_datetime(row.get("created_at")) or utc_now(),
         updated_at=_parse_datetime(row.get("updated_at")) or utc_now(),
+        correction_type=row.get("correction_type") or "",
+        corrected_at=_parse_datetime(row.get("corrected_at")),
+        corrected_by=row.get("corrected_by") or "",
+    )
+
+
+def _race_athlete_outcome_from_row(row: dict[str, Any]) -> RaceAthleteOutcome:
+    return RaceAthleteOutcome(
+        race_session_id=str(row["race_session_id"]),
+        athlete_id=str(row["athlete_id"]),
+        status=row.get("status") or "dnf",
+        recorded_by=row.get("recorded_by") or "",
+        recorded_at=_parse_datetime(row.get("recorded_at")) or utc_now(),
     )
 
 
@@ -1143,6 +1378,10 @@ class SupabaseRaceRepository:
         try:
             return operation.execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
+            detail = str(exc).lower()
+            if any(term in detail for term in ("not authorized", "permission denied", "jwt expired", "row-level security")):
+                raise RepositoryError("Your coach session has expired or lacks permission. Sign in again.") from exc
             logger.exception("Repository operation failed: %s", message)
             raise RepositoryError(message, diagnostic=_safe_repository_diagnostic(exc)) from exc
 
@@ -1162,6 +1401,7 @@ class SupabaseRaceRepository:
             ("race_sessions", "id"),
             ("split_events", "id"),
             ("race_session_checkpoints", "id"),
+            ("race_session_athlete_outcomes", "race_session_id"),
             ("athletes", "id"),
         )
         for table_name, columns in checks:
@@ -1172,6 +1412,24 @@ class SupabaseRaceRepository:
                 logger.exception("Repository operation failed: %s", message)
                 raise RepositoryError(message) from exc
             self._execute(operation, message)
+
+    def validate_public_schema(self) -> None:
+        """Validate only anonymous-safe objects needed before coach sign-in."""
+        for view_name in (
+            "spectator_meets", "spectator_races", "spectator_sessions",
+            "spectator_roster", "spectator_checkpoints",
+            "spectator_split_events", "spectator_outcomes",
+        ):
+            try:
+                operation = self.client.table(view_name).select("*").limit(1)
+            except Exception as exc:
+                raise RepositoryError(
+                    f"Supabase public schema check failed for {view_name}. Apply migration 017."
+                ) from exc
+            self._execute(
+                operation,
+                f"Supabase public schema check failed for {view_name}. Apply migration 017.",
+            )
 
     def get_school_profile(self) -> SchoolProfile | None:
         row = self._single(self.client.table("school_profiles").select("*").eq("profile_key", "default"), "Could not load school branding.")
@@ -1201,10 +1459,12 @@ class SupabaseRaceRepository:
             logger.warning("Branding asset URL unavailable")
             return None
 
-    def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None) -> list[PermanentAthlete]:
+    def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None, include_archived=False) -> list[PermanentAthlete]:
         query = self.client.table("athletes").select("*")
         for column, value in (("status", status), ("graduation_year", graduation_year), ("gender", gender), ("team_division", team_division)):
             if value is not None and value != "": query = query.eq(column, value)
+        if not include_archived and status is None:
+            query = query.neq("status", "archived")
         result = self._execute(query.order("last_name", desc=False).order("first_name", desc=False), "Could not list permanent athletes.")
         athletes = [_permanent_athlete_from_row(row) for row in getattr(result, "data", [])]
         if search:
@@ -1241,6 +1501,32 @@ class SupabaseRaceRepository:
         if athlete is None: raise RepositoryError("Athlete not found.")
         return self.update_athlete(replace(athlete, status=status))
 
+    def athlete_has_race_history(self, athlete_id: str) -> bool:
+        result = self._execute(
+            self.client.table("race_athletes").select("id").eq("athlete_id", athlete_id).limit(1),
+            "Could not check athlete race history.",
+        )
+        return bool(getattr(result, "data", []))
+
+    def archive_athlete(self, athlete_id: str) -> PermanentAthlete:
+        return self.set_athlete_status(athlete_id, "archived")
+
+    def restore_athlete(self, athlete_id: str) -> PermanentAthlete:
+        athlete = self.get_athlete(athlete_id)
+        if athlete is None: raise RepositoryError("Athlete not found.")
+        if athlete.status != "archived": raise RepositoryError("Only archived athletes can be restored.")
+        return self.set_athlete_status(athlete_id, "active")
+
+    def delete_unused_athlete(self, athlete_id: str) -> bool:
+        result = self._execute(
+            self.client.rpc("delete_unused_athlete", {"p_athlete_id": athlete_id}),
+            "Athlete could not be permanently deleted. It may have race history; archive it instead.",
+        )
+        data = getattr(result, "data", False)
+        deleted = bool(data[0] if isinstance(data, list) and data else data)
+        if not deleted: raise RepositoryError("Athlete not found.")
+        return True
+
     def list_race_athlete_ids(self, race_id: str) -> list[str]:
         result = self._execute(self.client.table("race_athletes").select("athlete_id").eq("race_id", race_id).not_.is_("athlete_id", "null"), "Could not list selected permanent athletes.")
         return [str(row["athlete_id"]) for row in getattr(result, "data", []) if row.get("athlete_id")]
@@ -1262,6 +1548,8 @@ class SupabaseRaceRepository:
         for index, athlete_id in enumerate(athlete_ids):
             permanent = self.get_athlete(athlete_id)
             if permanent is None: raise RepositoryError("Selected permanent athlete was not found.")
+            if permanent.status == "archived" and athlete_id not in existing_rows:
+                raise RepositoryError("Archived athletes cannot be added to a new race roster. Restore the athlete first.")
             if athlete_id in existing_rows:
                 self._execute(self.client.table("race_athletes").update({"display_order": index}).eq("race_id", race_id).eq("athlete_id", athlete_id), "Could not reorder race athlete.")
             else:
@@ -1538,6 +1826,7 @@ class SupabaseRaceRepository:
                 {"p_session_id": race_session_id, "p_action": action},
             ).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if any(term in detail for term in ("invalid race session transition", "unknown race session action", "race session not found")):
                 raise RepositoryError(str(exc)) from exc
@@ -1549,15 +1838,101 @@ class SupabaseRaceRepository:
             raise RepositoryError("Could not transition race session.")
         return _race_session_from_row(row)
 
+    def finalize_race_session(self, race_session_id: str) -> RaceSession:
+        try:
+            result = self.client.rpc("finalize_race_session", {"p_session_id": race_session_id}).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            detail = str(exc).lower()
+            if any(term in detail for term in ("resolve every", "cannot be finished", "not found")):
+                raise RepositoryError(str(exc)) from exc
+            logger.exception("Repository operation failed: Could not finish race session.")
+            raise RepositoryError("Could not finish the race.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row: raise RepositoryError("Could not finish the race.")
+        return _race_session_from_row(row)
+
+    def reopen_race_session(self, race_session_id: str) -> RaceSession:
+        try:
+            result = self.client.rpc("reopen_race_session", {"p_session_id": race_session_id}).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            detail = str(exc).lower()
+            if any(term in detail for term in ("only a completed", "not found")):
+                raise RepositoryError(str(exc)) from exc
+            logger.exception("Repository operation failed: Could not reopen race session.")
+            raise RepositoryError("Could not reopen the race.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row: raise RepositoryError("Could not reopen the race.")
+        return _race_session_from_row(row)
+
+    def list_race_athlete_outcomes(self, race_session_id: str) -> list[RaceAthleteOutcome]:
+        result = self._execute(
+            self.client.table("race_session_athlete_outcomes").select("*").eq("race_session_id", race_session_id).order("recorded_at", desc=False),
+            "Could not load race athlete outcomes.",
+        )
+        return [_race_athlete_outcome_from_row(row) for row in getattr(result, "data", [])]
+
+    def set_race_athlete_dnf(self, race_session_id: str, athlete_id: str, recorded_by: str) -> RaceAthleteOutcome:
+        try:
+            result = self.client.rpc("set_race_athlete_dnf", {
+                "p_session_id": race_session_id, "p_athlete_id": athlete_id,
+                "p_recorded_by": recorded_by or None,
+            }).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError(str(exc)) from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row: raise RepositoryError("Could not mark athlete DNF.")
+        return _race_athlete_outcome_from_row(row)
+
+    def clear_race_athlete_dnf(self, race_session_id: str, athlete_id: str) -> bool:
+        try:
+            result = self.client.rpc("clear_race_athlete_dnf", {
+                "p_session_id": race_session_id, "p_athlete_id": athlete_id,
+            }).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError(str(exc)) from exc
+        data = getattr(result, "data", False)
+        return bool(data[0] if isinstance(data, list) and data else data)
+
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).order("created_at", desc=False), "Could not list race sessions.")
         return [_race_session_from_row(row) for row in getattr(result, "data", [])]
+
+    def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]:
+        if not race_ids:
+            return []
+        result = self._execute(
+            self.client.table("race_sessions").select("*").in_("race_id", race_ids).order("created_at", desc=False),
+            "Could not list race sessions for the race-day dashboard.",
+        )
+        return [_race_session_from_row(row) for row in getattr(result, "data", [])]
+
+    def count_race_athletes_for_races(self, race_ids: list[str]) -> dict[str, int]:
+        counts = {race_id: 0 for race_id in race_ids}
+        if not race_ids:
+            return counts
+        result = self._execute(
+            self.client.table("race_athletes").select("race_id").in_("race_id", race_ids).eq("active", True),
+            "Could not count race athletes for the race-day dashboard.",
+        )
+        for row in getattr(result, "data", []):
+            race_id = str(row["race_id"])
+            if race_id in counts:
+                counts[race_id] += 1
+        return counts
 
     def create_split_event(self, event: SplitEvent) -> SplitEvent:
         event_row = _split_event_to_row(event)
         try:
             result = self.client.rpc("record_shared_split", {"p_event": event_row}).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if "duplicate" in detail or "already" in detail or "23505" in detail:
                 raise RepositoryError("That athlete already has an active split at this checkpoint.") from exc
@@ -1581,6 +1956,7 @@ class SupabaseRaceRepository:
         try:
             result = self.client.rpc("record_shared_split", {"p_event": payload}).execute()
         except Exception as exc:
+            _raise_authorization_error(exc)
             detail = str(exc).lower()
             if "duplicate" in detail or "already" in detail or "23505" in detail:
                 raise RepositoryError("That athlete already has an active split at this checkpoint.") from exc
@@ -1614,6 +1990,59 @@ class SupabaseRaceRepository:
         if row is None:
             raise RepositoryError("Split event not found.")
         return _split_event_from_row(row)
+
+    def invalidate_split_event(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, *, require_latest: bool = False) -> SplitEvent:
+        try:
+            result = self.client.rpc("invalidate_split_event", {
+                "p_event_id": split_event_id,
+                "p_session_id": race_session_id,
+                "p_athlete_id": athlete_id,
+                "p_checkpoint_number": checkpoint_number,
+                "p_corrected_by": corrected_by or None,
+                "p_require_latest": require_latest,
+            }).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            detail = str(exc).lower()
+            if any(term in detail for term in ("already corrected", "no longer matches", "not found", "newer split")):
+                raise RepositoryError(str(exc)) from exc
+            logger.exception("Repository operation failed: Could not invalidate split event.")
+            raise RepositoryError("Could not correct the selected split.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row: raise RepositoryError("The selected split was not corrected.")
+        return _split_event_from_row(row)
+
+    def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent:
+        payload = {
+            "id": request_id,
+            "race_session_id": race_session_id,
+            "athlete_id": athlete_id,
+            "checkpoint_number": checkpoint_number,
+            "elapsed_seconds": elapsed_seconds,
+            "recorded_by": recorded_by or None,
+        }
+        try:
+            result = self.client.rpc("record_manual_split", {"p_event": payload}).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            detail = str(exc).lower()
+            if any(term in detail for term in ("next missing", "surrounding", "not running", "not paused", "invalid athlete", "request id")):
+                raise RepositoryError(str(exc)) from exc
+            logger.exception("Repository operation failed: Could not record manual split.")
+            raise RepositoryError("Could not add the missed split.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row: raise RepositoryError("Could not add the missed split.")
+        return _split_event_from_row(row)
+
+    def list_recent_split_events(self, race_session_id: str, *, limit: int = 10) -> list[SplitEvent]:
+        result = self._execute(
+            self.client.table("split_events").select("*").eq("race_session_id", race_session_id),
+            "Could not load recent timing activity.",
+        )
+        events = [_split_event_from_row(row) for row in getattr(result, "data", [])]
+        return sorted(events, key=lambda event: (event.corrected_at or event.recorded_at, event.event_order, event.id), reverse=True)[:max(0, limit)]
 
     def restore_split_event(self, split_event_id: str) -> SplitEvent:
         updated_at = utc_now().isoformat()
@@ -1690,8 +2119,9 @@ def create_repository(
         return RepositoryFactoryResult(repository=None, storage_label="Supabase unavailable", is_temporary=False, message="Supabase is configured but no client was created.", error=connection.message)
     repository = SupabaseRaceRepository(connection.client)
     try:
-        repository.validate_schema()
-        repository.seed_default_xc_template()
+        repository.validate_public_schema()
     except RepositoryError as exc:
         return RepositoryFactoryResult(repository=None, storage_label="Supabase unavailable", is_temporary=False, message="Supabase is configured but initialization failed.", error=str(exc))
+    # Anonymous startup never probes or seeds protected coach tables. All
+    # mutations run only after Supabase Auth establishes an authorized JWT.
     return RepositoryFactoryResult(repository=repository, storage_label="Supabase", is_temporary=False, message="Meet data is stored in Supabase.")
