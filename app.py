@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 from dataclasses import replace
 
-from pages import athletes, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding
+from pages import athletes, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding, spectator
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
 from split_tracker.navigation import resolve_active_meet_id
@@ -38,7 +38,8 @@ st.session_state.school_profile = school_profile
 apply_school_theme(school_profile)
 
 repository_result = st.session_state.repository_result
-if st.session_state.repository is not None:
+spectator_mode = bool(st.query_params.get("spectator_race") or st.query_params.get("spectator_session"))
+if not spectator_mode and st.session_state.repository is not None:
     try:
         requested_meet_id = st.query_params.get("meet") or st.session_state.active_meet_id
         st.session_state.active_meet_id = resolve_active_meet_id(
@@ -50,47 +51,47 @@ if st.session_state.repository is not None:
             del st.query_params["meet"]
     except Exception:
         pass
-with st.sidebar:
-    render_school_sidebar_brand(school_profile)
-    for warning in school_profile_warnings:
-        st.caption(f"Branding configuration: {warning}")
-    if branding_load_warning:
-        st.caption(branding_load_warning)
-    if st.session_state.get("branding_flash"):
-        st.success(st.session_state.pop("branding_flash"))
-    if repository_result is not None:
-        st.caption(f"Storage: {repository_result.storage_label}")
-        if repository_result.error:
-            st.error("Supabase persistence is unavailable. Check credentials, network access, and migrations.")
-        elif repository_result.is_temporary:
-            st.warning("Timing-session data is temporary without Supabase configuration.")
-        else:
-            st.success("Supabase persistence is active.")
-    if st.session_state.repository is not None:
-        st.divider()
-        st.caption("Current Meet")
-        try:
-            meets = st.session_state.repository.list_meets()
-        except Exception as exc:
-            meets = []
-            st.error(f"Could not load meets: {exc}")
-        active = next((meet for meet in meets if meet.id == st.session_state.active_meet_id), None)
-        st.write(f"**{active.name if active else 'None selected'}**")
-        if st.button("Change Meet", use_container_width=True):
-            st.session_state.show_meet_switcher = not st.session_state.get("show_meet_switcher", False)
-        if st.session_state.get("show_meet_switcher") and meets:
-            ids = [meet.id for meet in meets]
-            selected = st.selectbox(
-                "Choose meet", ids, index=ids.index(active.id) if active else 0,
-                format_func=lambda meet_id: next(meet.name for meet in meets if meet.id == meet_id),
-            )
-            if selected != st.session_state.active_meet_id:
-                st.session_state.active_meet_id = selected
-                st.session_state.selected_meet_id = selected
-                st.query_params["meet"] = selected
-                st.session_state.show_meet_switcher = False
-                st.rerun()
-
+if not spectator_mode:
+    with st.sidebar:
+        render_school_sidebar_brand(school_profile)
+        for warning in school_profile_warnings:
+            st.caption(f"Branding configuration: {warning}")
+        if branding_load_warning:
+            st.caption(branding_load_warning)
+        if st.session_state.get("branding_flash"):
+            st.success(st.session_state.pop("branding_flash"))
+        if repository_result is not None:
+            st.caption(f"Storage: {repository_result.storage_label}")
+            if repository_result.error:
+                st.error("Supabase persistence is unavailable. Check credentials, network access, and migrations.")
+            elif repository_result.is_temporary:
+                st.warning("Timing-session data is temporary without Supabase configuration.")
+            else:
+                st.success("Supabase persistence is active.")
+        if st.session_state.repository is not None:
+            st.divider()
+            st.caption("Current Meet")
+            try:
+                meets = st.session_state.repository.list_meets()
+            except Exception as exc:
+                meets = []
+                st.error(f"Could not load meets: {exc}")
+            active = next((meet for meet in meets if meet.id == st.session_state.active_meet_id), None)
+            st.write(f"**{active.name if active else 'None selected'}**")
+            if st.button("Change Meet", use_container_width=True):
+                st.session_state.show_meet_switcher = not st.session_state.get("show_meet_switcher", False)
+            if st.session_state.get("show_meet_switcher") and meets:
+                ids = [meet.id for meet in meets]
+                selected = st.selectbox(
+                    "Choose meet", ids, index=ids.index(active.id) if active else 0,
+                    format_func=lambda meet_id: next(meet.name for meet in meets if meet.id == meet_id),
+                )
+                if selected != st.session_state.active_meet_id:
+                    st.session_state.active_meet_id = selected
+                    st.session_state.selected_meet_id = selected
+                    st.query_params["meet"] = selected
+                    st.session_state.show_meet_switcher = False
+                    st.rerun()
 MEET_DASHBOARD_PAGE = st.Page(
     meet_dashboard.render,
     title="Race Day",
@@ -129,6 +130,12 @@ SCHOOL_BRANDING_PAGE = st.Page(
     icon="🎨",
     url_path="school-branding",
 )
+SPECTATOR_PAGE = st.Page(
+    spectator.render,
+    title="Live Race",
+    icon="🏁",
+    url_path="live-race",
+)
 
 st.session_state.page_registry = {
     "meet_dashboard": MEET_DASHBOARD_PAGE,
@@ -138,6 +145,7 @@ st.session_state.page_registry = {
     "results": RESULTS_PAGE,
     "school_branding": SCHOOL_BRANDING_PAGE,
     "athletes": ATHLETES_PAGE,
+    "spectator": SPECTATOR_PAGE,
 }
 
 pages = {
@@ -146,5 +154,5 @@ pages = {
     "Settings": [SCHOOL_BRANDING_PAGE],
 }
 
-navigation = st.navigation(pages)
+navigation = st.navigation([SPECTATOR_PAGE], position="hidden") if spectator_mode else st.navigation(pages)
 navigation.run()

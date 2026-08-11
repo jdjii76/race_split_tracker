@@ -426,6 +426,27 @@ Migration `016` adds race-session athlete outcomes and locked DNF, finalization,
 and reopen operations. Apply it after `015` before deploying the Finish Race
 workflow. It preserves existing sessions and split/correction history.
 
+## Read-only Spectator Live View
+
+Race Day cards now expose a **Share Live View** link using stable race and, when
+available, race-session UUID query parameters. A fresh browser opens the
+dedicated `/live-race` route with hidden coach navigation. That route uses a
+capability-limited read adapter and the same persisted checkpoint/event
+projection and final-results ranking as coach pages. It displays only race and
+meet names, race distance/status, athlete display names/team, public split
+times, progress, finish status, and final place; internal IDs, correction
+metadata, athlete notes, and contact or administrative data are not rendered.
+
+Active and paused spectator views refresh every five seconds and query only the
+target race, resolved session, roster, checkpoint snapshot, active events, and
+session outcomes. No migration `017` is required because the current development
+policies already allow anonymous reads. **Security warning:** those development
+policies are broader than a production spectator model: the `anon` role can also
+write several tables and execute split, correction, DNF, finalization, reopen,
+and other mutation RPCs. This feature adds no grants and never calls those APIs,
+but production deployment still requires authentication/RLS hardening before a
+shared URL should be considered a security boundary.
+
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`
 is a retained legacy copy of the initial schema. Neither is an independently

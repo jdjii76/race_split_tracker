@@ -6,6 +6,7 @@ import streamlit as st
 from split_tracker.branding import render_school_header
 from split_tracker.formatting import format_distance
 from split_tracker.navigation import RaceDashboardSummary, dashboard_navigation_ids, get_meet_race_summaries
+from split_tracker.spectator import spectator_url
 from split_tracker.state import load_race_into_setup
 
 
@@ -50,6 +51,12 @@ def _race_card(meet, summary: RaceDashboardSummary, *, emphasized: bool = False)
             use_container_width=True,
         ):
             _open_race(meet, summary)
+        with st.expander("Share Live View"):
+            st.code(
+                spectator_url(summary.race.id, summary.session.id if summary.session else None),
+                language=None,
+            )
+            st.caption("Share this read-only link with spectators.")
 
 
 def _section(meet, title: str, summaries: list[RaceDashboardSummary], *, emphasized: bool = False) -> None:

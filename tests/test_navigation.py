@@ -22,7 +22,7 @@ def test_streamlit_pages_have_unique_url_paths_and_meet_setup_default():
     url_paths = [ast.literal_eval(_keyword_value(call, "url_path")) for call in page_calls]
     defaults = [_keyword_value(call, "default") for call in page_calls]
 
-    assert url_paths == ["meet-dashboard", "meet-setup", "athletes", "configure-race", "live-timing", "results", "school-branding"]
+    assert url_paths == ["meet-dashboard", "meet-setup", "athletes", "configure-race", "live-timing", "results", "school-branding", "live-race"]
     assert len(url_paths) == len(set(url_paths))
     assert isinstance(defaults[0], ast.Constant) and defaults[0].value is True
     assert all(default is None for default in defaults[1:])
