@@ -128,6 +128,20 @@ class RaceAthleteOutcome:
 
 
 @dataclass(frozen=True)
+class SchoolSponsor:
+    school_profile_id: str
+    name: str
+    logo_path: str
+    id: str = field(default_factory=lambda: str(uuid4()))
+    website_url: str = ""
+    display_order: int = 0
+    is_active: bool = True
+    logo_url: str = ""
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
 class RaceSessionCheckpoint:
     race_session_id: str
     checkpoint_sequence: int
@@ -220,10 +234,17 @@ class RaceRepository(Protocol):
     def archive_template(self, template_id: str) -> MeetTemplate: ...
     def seed_default_xc_template(self) -> MeetTemplate: ...
     def get_school_profile(self) -> SchoolProfile | None: ...
+    def get_school_profile_id(self) -> str: ...
     def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile: ...
     def restore_default_school_profile(self) -> SchoolProfile: ...
     def upload_branding_asset(self, object_path: str, content: bytes, content_type: str) -> str: ...
     def get_branding_asset_url(self, object_path: str) -> str | None: ...
+    def list_sponsors(self, school_profile_id: str | None = None) -> list[SchoolSponsor]: ...
+    def list_active_sponsors(self, school_profile_id: str | None = None) -> list[SchoolSponsor]: ...
+    def get_sponsor(self, sponsor_id: str) -> SchoolSponsor | None: ...
+    def create_sponsor(self, sponsor: SchoolSponsor) -> SchoolSponsor: ...
+    def update_sponsor(self, sponsor: SchoolSponsor) -> SchoolSponsor: ...
+    def delete_sponsor(self, sponsor_id: str) -> bool: ...
 
     def create_race_session(self, session: RaceSession) -> RaceSession: ...
     def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
@@ -273,12 +294,16 @@ class InMemoryRaceRepository:
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
+        self.sponsors: dict[str, SchoolSponsor] = {}
         self._race_session_start_lock = threading.Lock()
         # Mirrors PostgreSQL's race_sessions row lock for lifecycle/split races.
         self._race_session_lock = threading.RLock()
 
     def get_school_profile(self) -> SchoolProfile | None:
         return self.school_profile
+
+    def get_school_profile_id(self) -> str:
+        return "default"
 
     def save_school_profile(self, profile: SchoolProfile) -> SchoolProfile:
         self.school_profile = profile
@@ -292,6 +317,32 @@ class InMemoryRaceRepository:
 
     def get_branding_asset_url(self, object_path: str) -> str | None:
         return None
+
+    def list_sponsors(self, school_profile_id=None) -> list[SchoolSponsor]:
+        rows = list(self.sponsors.values())
+        if school_profile_id is not None:
+            rows = [item for item in rows if item.school_profile_id == school_profile_id]
+        return sorted(rows, key=lambda item: (item.display_order, item.name.casefold(), item.id))
+
+    def list_active_sponsors(self, school_profile_id=None) -> list[SchoolSponsor]:
+        return [item for item in self.list_sponsors(school_profile_id) if item.is_active]
+
+    def get_sponsor(self, sponsor_id: str) -> SchoolSponsor | None:
+        return self.sponsors.get(sponsor_id)
+
+    def create_sponsor(self, sponsor: SchoolSponsor) -> SchoolSponsor:
+        if not sponsor.name.strip() or not sponsor.logo_path.strip() or sponsor.display_order < 0:
+            raise RepositoryError("Sponsor name, logo, and non-negative display order are required.")
+        saved = replace(sponsor, name=sponsor.name.strip(), updated_at=utc_now())
+        self.sponsors[saved.id] = saved
+        return saved
+
+    def update_sponsor(self, sponsor: SchoolSponsor) -> SchoolSponsor:
+        if sponsor.id not in self.sponsors: raise RepositoryError("Sponsor not found.")
+        return self.create_sponsor(replace(sponsor, created_at=self.sponsors[sponsor.id].created_at))
+
+    def delete_sponsor(self, sponsor_id: str) -> bool:
+        return self.sponsors.pop(sponsor_id, None) is not None
 
     def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None, include_archived=False) -> list[PermanentAthlete]:
         athletes = list(self.athletes.values())
@@ -1368,6 +1419,27 @@ def _school_profile_from_row(row: dict[str, Any]) -> SchoolProfile:
     })
 
 
+def _sponsor_to_row(sponsor: SchoolSponsor) -> dict[str, Any]:
+    return {
+        "id": sponsor.id, "school_profile_id": sponsor.school_profile_id,
+        "name": sponsor.name.strip(), "logo_path": sponsor.logo_path,
+        "website_url": sponsor.website_url.strip() or None,
+        "display_order": sponsor.display_order, "is_active": sponsor.is_active,
+        "created_at": sponsor.created_at.isoformat(), "updated_at": sponsor.updated_at.isoformat(),
+    }
+
+
+def _sponsor_from_row(row: dict[str, Any], logo_url: str = "") -> SchoolSponsor:
+    return SchoolSponsor(
+        id=str(row["id"]), school_profile_id=str(row["school_profile_id"]),
+        name=str(row["name"]), logo_path=str(row["logo_path"]),
+        website_url=row.get("website_url") or "", display_order=int(row.get("display_order") or 0),
+        is_active=bool(row.get("is_active", True)), logo_url=logo_url,
+        created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+        updated_at=_parse_datetime(row.get("updated_at")) or utc_now(),
+    )
+
+
 class SupabaseRaceRepository:
     """Supabase-backed repository using the official Python client."""
 
@@ -1419,16 +1491,17 @@ class SupabaseRaceRepository:
             "spectator_meets", "spectator_races", "spectator_sessions",
             "spectator_roster", "spectator_checkpoints",
             "spectator_split_events", "spectator_outcomes",
+            "spectator_sponsors",
         ):
             try:
                 operation = self.client.table(view_name).select("*").limit(1)
             except Exception as exc:
                 raise RepositoryError(
-                    f"Supabase public schema check failed for {view_name}. Apply migration 017."
+                    f"Supabase public schema check failed for {view_name}. Apply migrations through 018."
                 ) from exc
             self._execute(
                 operation,
-                f"Supabase public schema check failed for {view_name}. Apply migration 017.",
+                f"Supabase public schema check failed for {view_name}. Apply migrations through 018.",
             )
 
     def get_school_profile(self) -> SchoolProfile | None:
@@ -1458,6 +1531,46 @@ class SupabaseRaceRepository:
         except Exception:
             logger.warning("Branding asset URL unavailable")
             return None
+
+    def _default_school_profile_id(self) -> str:
+        row = self._single(self.client.table("school_profiles").select("id").eq("profile_key", "default"), "Could not resolve the school profile.")
+        if not row: raise RepositoryError("School profile not found.")
+        return str(row["id"])
+
+    def get_school_profile_id(self) -> str:
+        return self._default_school_profile_id()
+
+    def list_sponsors(self, school_profile_id=None) -> list[SchoolSponsor]:
+        profile_id = school_profile_id or self._default_school_profile_id()
+        result = self._execute(
+            self.client.table("school_sponsors").select("*").eq("school_profile_id", profile_id).order("display_order").order("name"),
+            "Could not list school sponsors.",
+        )
+        return [
+            _sponsor_from_row(row, self.get_branding_asset_url(str(row.get("logo_path") or "")) or "")
+            for row in getattr(result, "data", [])
+        ]
+
+    def list_active_sponsors(self, school_profile_id=None) -> list[SchoolSponsor]:
+        return [item for item in self.list_sponsors(school_profile_id) if item.is_active]
+
+    def get_sponsor(self, sponsor_id: str) -> SchoolSponsor | None:
+        row = self._single(self.client.table("school_sponsors").select("*").eq("id", sponsor_id), "Could not load sponsor.")
+        return _sponsor_from_row(row, self.get_branding_asset_url(str(row.get("logo_path") or "")) or "") if row else None
+
+    def create_sponsor(self, sponsor: SchoolSponsor) -> SchoolSponsor:
+        row = self._single(self.client.table("school_sponsors").insert(_sponsor_to_row(sponsor)), "Could not create sponsor.")
+        return _sponsor_from_row(row or _sponsor_to_row(sponsor), self.get_branding_asset_url(sponsor.logo_path) or "")
+
+    def update_sponsor(self, sponsor: SchoolSponsor) -> SchoolSponsor:
+        saved = replace(sponsor, updated_at=utc_now())
+        row = self._single(self.client.table("school_sponsors").update(_sponsor_to_row(saved)).eq("id", saved.id), "Could not update sponsor.")
+        if not row: raise RepositoryError("Sponsor not found.")
+        return _sponsor_from_row(row, self.get_branding_asset_url(saved.logo_path) or "")
+
+    def delete_sponsor(self, sponsor_id: str) -> bool:
+        result = self._execute(self.client.table("school_sponsors").delete().eq("id", sponsor_id), "Could not delete sponsor.")
+        return bool(getattr(result, "data", []))
 
     def list_athletes(self, *, status=None, graduation_year=None, gender=None, team_division=None, search=None, include_archived=False) -> list[PermanentAthlete]:
         query = self.client.table("athletes").select("*")

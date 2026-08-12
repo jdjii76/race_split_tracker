@@ -74,3 +74,11 @@ def test_profile_repository_stores_paths_not_image_bytes():
     saved = repo.save_school_profile(SchoolProfile(logo_path="schools/default/logo.png"))
     assert saved.logo_path == "schools/default/logo.png"
     assert isinstance(saved.logo_path, str)
+
+
+def test_admin_branding_page_contains_sponsor_crud_and_supported_upload_types():
+    source = open("pages/school_branding.py", encoding="utf-8").read()
+    assert 'st.header("Sponsor Management")' in source
+    assert 'type=["png", "jpg", "jpeg", "webp"]' in source
+    for operation in ("create_sponsor", "update_sponsor", "delete_sponsor", "list_sponsors"):
+        assert f"repository.{operation}" in source

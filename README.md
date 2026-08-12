@@ -375,6 +375,7 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 14. `supabase/migrations/015_live_timing_corrections.sql`
 15. `supabase/migrations/016_race_finalization_outcomes.sql`
 16. `supabase/migrations/017_secure_coach_and_spectator_access.sql`
+17. `supabase/migrations/018_school_sponsors.sql`
 
 There is no `002` migration file; retain that historical numbering gap. Every
 present migration version is unique. Migration `008_school_branding.sql` must
@@ -433,6 +434,12 @@ Migration `017` replaces prototype anonymous-write policies with explicit
 after `016` before sharing spectator links publicly. It changes authorization
 only and does not rewrite race history.
 
+Migration `018` adds the school-scoped sponsor table, the active-only public
+spectator sponsor view, and policies for the existing public `branding` Storage
+bucket. Apply it after `017`. Sponsor metadata writes and logo uploads require
+the `admin` role; anonymous clients can read only active public sponsor metadata
+and public branding objects.
+
 ## Read-only Spectator Live View
 
 Race Day cards now expose a **Share Live View** link using stable race and, when
@@ -478,6 +485,23 @@ Coaches can configure and time races but permanent-athlete creation/editing,
 archive/restore/delete, and branding remain admin-only. The former local
 branding settings passcode is no longer used as an authorization gate;
 Supabase Auth plus the persisted `admin` role is authoritative.
+
+### Adding Sponsors
+
+1. Apply `supabase/migrations/018_school_sponsors.sql` after migration `017`.
+2. Sign in as an administrator and open **School & Branding**.
+3. Expand **Add Sponsor**, enter the sponsor name, optionally enter an `http://`
+   or `https://` website, set its display order and active state, and upload a
+   PNG, JPEG, or WebP logo.
+4. Save the sponsor. Use its edit panel to replace the logo, change details,
+   activate/deactivate, reorder, or permanently delete it.
+
+Logos reuse the public `branding` bucket at
+`sponsors/{school_profile_id}/{sponsor_id}/logo.{extension}`; image bytes are
+never stored in PostgreSQL. Active sponsors automatically appear below the
+Parent Live Race content. With multiple sponsors, a self-contained browser
+component rotates them every six seconds; it performs no Streamlit rerun, sleep,
+poll, Supabase query, or race-state write for each transition.
 
 `supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
 an empty, isolated development project. `database/migrations/001_initial_schema.sql`

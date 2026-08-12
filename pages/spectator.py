@@ -3,13 +3,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+import logging
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from split_tracker.branding import render_school_header
 from split_tracker.formatting import format_distance
 from split_tracker.spectator import load_spectator_race, spectator_repository
+from split_tracker.sponsors import sponsor_carousel_html
+
+logger = logging.getLogger(__name__)
 
 
 def _athlete_card_html(index: int, athlete) -> str:
@@ -41,9 +46,19 @@ def _athlete_card_html(index: int, athlete) -> str:
     )
 
 
-def render() -> None:
-    profile = st.session_state.school_profile
-    repository = st.session_state.get("repository")
+def _render_sponsors(public_repository) -> None:
+    """Sponsor failure is isolated from the higher-priority race display."""
+    try:
+        sponsors = public_repository.list_active_sponsors()
+        carousel = sponsor_carousel_html(sponsors)
+    except Exception:
+        logger.warning("Sponsor content could not be loaded; continuing with race display.", exc_info=True)
+        return
+    if carousel:
+        components.html(carousel, height=190, scrolling=False)
+
+
+def _render_race(public_repository, profile, race_id, session_id) -> None:
     st.markdown("""
         <style>
         [data-testid='stSidebar']{display:none;}
@@ -57,16 +72,8 @@ def render() -> None:
         @media(max-width:430px){.spectator-athlete-card{padding:.72rem .8rem}.spectator-athlete-name{font-size:1.05rem}.spectator-athlete-time{font-size:1.4rem}}
         </style>
         """, unsafe_allow_html=True)
-    if repository is None:
-        render_school_header(profile, "Live Race")
-        st.info("Live race data is temporarily unavailable.")
-        return
-    race_id = st.query_params.get("spectator_race")
-    session_id = st.query_params.get("spectator_session")
     try:
-        view = load_spectator_race(
-            spectator_repository(repository), race_id=race_id, session_id=session_id
-        )
+        view = load_spectator_race(public_repository, race_id=race_id, session_id=session_id)
     except Exception:
         view = None
     if view is None:
@@ -101,4 +108,20 @@ def render() -> None:
 
 
 if hasattr(st, "fragment"):
-    render = st.fragment(run_every=5)(render)
+    _render_race = st.fragment(run_every=5)(_render_race)
+
+
+def render() -> None:
+    """Keep the browser carousel outside the five-second race fragment."""
+    profile = st.session_state.school_profile
+    repository = st.session_state.get("repository")
+    if repository is None:
+        render_school_header(profile, "Live Race")
+        st.info("Live race data is temporarily unavailable.")
+        return
+    public_repository = spectator_repository(repository)
+    _render_race(
+        public_repository, profile, st.query_params.get("spectator_race"),
+        st.query_params.get("spectator_session"),
+    )
+    _render_sponsors(public_repository)

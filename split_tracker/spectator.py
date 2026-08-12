@@ -9,7 +9,7 @@ from split_tracker.config import DEFAULT_PUBLIC_APP_URL
 from split_tracker.formatting import format_duration
 from split_tracker.models import Athlete, Checkpoint
 from split_tracker.projection import ProjectedRaceState, ordered_race_board_athletes, project_race_state
-from split_tracker.repository import Meet, Race, RaceAthleteOutcome, RaceSession, RaceSessionCheckpoint, SplitEvent
+from split_tracker.repository import Meet, Race, RaceAthleteOutcome, RaceSession, RaceSessionCheckpoint, SchoolSponsor, SplitEvent
 from split_tracker.results import reconstruct_results
 
 
@@ -56,6 +56,9 @@ class ReadOnlySpectatorRepository:
     def list_race_athlete_outcomes(self, race_session_id: str):
         return self.__repository.list_race_athlete_outcomes(race_session_id)
 
+    def list_active_sponsors(self, school_profile_id: str | None = None):
+        return self.__repository.list_active_sponsors(school_profile_id)
+
 
 class PublicSupabaseSpectatorRepository:
     """Read public privacy views through an anonymous or authenticated client."""
@@ -100,6 +103,24 @@ class PublicSupabaseSpectatorRepository:
     def list_race_athlete_outcomes(self, race_session_id: str):
         rows = self._rows(self.__client.table("spectator_outcomes").select("*").eq("race_session_id", race_session_id))
         return [RaceAthleteOutcome(race_session_id=race_session_id, athlete_id=str(row["athlete_id"]), status=row.get("status") or "dnf") for row in rows]
+
+    def list_active_sponsors(self, school_profile_id: str | None = None):
+        query = self.__client.table("spectator_sponsors").select("*").order("display_order").order("name")
+        query = query.eq("school_profile_id", school_profile_id) if school_profile_id else query.eq("profile_key", "default")
+        rows = self._rows(query)
+        sponsors = []
+        for row in rows:
+            path = str(row.get("logo_path") or "")
+            try:
+                logo_url = self.__client.storage.from_("branding").get_public_url(path) if path else ""
+            except Exception:
+                logo_url = ""
+            sponsors.append(SchoolSponsor(
+                id=str(row["id"]), school_profile_id=str(row["school_profile_id"]),
+                name=str(row["name"]), logo_path=path, website_url=row.get("website_url") or "",
+                display_order=int(row.get("display_order") or 0), is_active=True, logo_url=logo_url or "",
+            ))
+        return sponsors
 
 
 def spectator_repository(repository: object) -> SpectatorReadRepository:
