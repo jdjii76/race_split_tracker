@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 import pandas as pd
 import streamlit as st
+from split_tracker.auth import AuthenticationError, require_admin
 from split_tracker.athletes import grade_from_graduation_year
 from split_tracker.athlete_import import csv_template_bytes, import_athlete_rows, parse_athlete_csv
 from split_tracker.branding import render_school_header
@@ -11,6 +12,44 @@ from split_tracker.models import PermanentAthlete
 from split_tracker.repository import RepositoryError
 
 STATUSES = ["active", "inactive", "injured", "graduated"]
+
+
+def _run_roster_action(repository, athlete, action: str) -> None:
+    try:
+        if action == "archive":
+            repository.archive_athlete(athlete.id)
+            message = f"Archived {athlete.display_name}. Race history was preserved."
+        elif action == "restore":
+            repository.restore_athlete(athlete.id)
+            message = f"Restored {athlete.display_name} to the active roster."
+        else:
+            repository.delete_unused_athlete(athlete.id)
+            message = f"Deleted {athlete.display_name} permanently."
+        st.session_state.pop("athlete_pending_action", None)
+        st.session_state.athlete_roster_flash = message
+        st.rerun()
+    except RepositoryError as exc:
+        st.error(str(exc))
+
+
+def _confirmation(repository, athlete, action: str) -> None:
+    if action == "archive":
+        st.warning(f"**Archive {athlete.display_name}?**")
+        st.write(
+            f"{athlete.preferred_name or athlete.first_name} will no longer appear in the normal active roster or new-race selection. "
+            "Existing race results and history will remain unchanged."
+        )
+        label = "Archive Athlete"
+    else:
+        st.warning(f"**Delete {athlete.display_name} permanently?**")
+        st.write("This athlete has no race history. This action cannot be undone.")
+        label = "Delete Permanently"
+    cancel, confirm = st.columns(2)
+    if cancel.button("Cancel", key=f"cancel_{action}_{athlete.id}", use_container_width=True):
+        st.session_state.pop("athlete_pending_action", None)
+        st.rerun()
+    if confirm.button(label, key=f"confirm_{action}_{athlete.id}", use_container_width=True):
+        _run_roster_action(repository, athlete, action)
 
 
 def _import_roster(repository) -> None:
@@ -98,6 +137,11 @@ def _save_new() -> None:
 
 
 def render() -> None:
+    try:
+        require_admin(st.session_state.get("app_identity"))
+    except AuthenticationError as exc:
+        st.error(str(exc))
+        return
     profile = st.session_state.school_profile
     title = f"{profile.short_name} Athlete Roster" if profile.short_name else "Athlete Roster"
     render_school_header(profile, title)
@@ -114,10 +158,10 @@ def render() -> None:
     _save_new()
     st.subheader("School Roster")
     c1, c2, c3, c4 = st.columns(4)
-    status_filter = c1.selectbox("Status", ["active", "All", "inactive", "injured", "graduated"], format_func=str.title)
+    status_filter = c1.selectbox("Status", ["active", "archived", "All", "inactive", "injured", "graduated"], format_func=str.title)
     search = c2.text_input("Search name or number")
     try:
-        all_athletes = repository.list_athletes(search=search or None)
+        all_athletes = repository.list_athletes(search=search or None, include_archived=True)
     except RepositoryError as exc:
         st.error(str(exc)); return
     years = sorted({item.graduation_year for item in all_athletes if item.graduation_year})
@@ -133,24 +177,54 @@ def render() -> None:
     } for item in filtered])
     if frame.empty: st.info("No athletes match these filters.")
     else: st.dataframe(frame, hide_index=True, use_container_width=True)
-    st.caption("Status changes do not remove athletes from historical races or alter race-time name snapshots.")
+    st.caption("Archive preserves athlete UUIDs, race rosters, split events, results, and race-time name snapshots.")
     for athlete in filtered:
-        with st.expander(f"Edit {athlete.display_name} • {athlete.status}"):
-            with st.form(f"edit_permanent_athlete_{athlete.id}"):
-                c1, c2, c3 = st.columns(3)
-                first = c1.text_input("First name", athlete.first_name)
-                last = c2.text_input("Last name", athlete.last_name)
-                preferred = c3.text_input("Preferred name", athlete.preferred_name)
-                graduation = c1.number_input("Graduation year", 2000, 2100, athlete.graduation_year, step=1)
-                gender = c2.text_input("Gender", athlete.gender)
-                division = c3.text_input("Team division", athlete.team_division)
-                number = c1.text_input("Athlete number", athlete.athlete_number)
-                status = c2.selectbox("Roster status", STATUSES, index=STATUSES.index(athlete.status))
-                notes = st.text_area("Notes", athlete.notes)
-                submitted = st.form_submit_button("Save Athlete", type="primary")
-            if submitted:
-                try:
-                    saved = repository.update_athlete(replace(athlete, first_name=first, last_name=last, preferred_name=preferred, graduation_year=int(graduation) if graduation else None, gender=gender, team_division=division, athlete_number=number, status=status, notes=notes))
-                    st.session_state.athlete_roster_flash = f"Updated {saved.display_name}; stable athlete ID preserved."
-                    st.rerun()
-                except (RepositoryError, ValueError) as exc: st.error(str(exc))
+        details = [athlete.display_name]
+        if athlete.athlete_number:
+            details.append(f"#{athlete.athlete_number}")
+        if athlete.graduation_year:
+            details.append(str(athlete.graduation_year))
+        details.append(athlete.status.title())
+        with st.container(border=True):
+            st.markdown(f"**{' • '.join(details)}**")
+            if athlete.status == "archived":
+                if st.button("Restore", key=f"restore_{athlete.id}"):
+                    _run_roster_action(repository, athlete, "restore")
+                continue
+            try:
+                has_history = repository.athlete_has_race_history(athlete.id)
+            except RepositoryError as exc:
+                st.error(f"Actions unavailable because race history could not be checked: {exc}")
+                has_history = None
+            actions = st.columns(2)
+            action = "archive" if has_history else "delete"
+            label = "Archive" if has_history else "Delete"
+            if has_history is not None and actions[1].button(label, key=f"request_{action}_{athlete.id}"):
+                st.session_state.athlete_pending_action = (action, athlete.id)
+                st.rerun()
+            if st.session_state.get("athlete_pending_action") == (action, athlete.id):
+                _confirmation(repository, athlete, action)
+            with st.expander("Edit"):
+                _edit_athlete(repository, athlete)
+
+
+def _edit_athlete(repository, athlete) -> None:
+    with st.form(f"edit_permanent_athlete_{athlete.id}"):
+        c1, c2, c3 = st.columns(3)
+        first = c1.text_input("First name", athlete.first_name)
+        last = c2.text_input("Last name", athlete.last_name)
+        preferred = c3.text_input("Preferred name", athlete.preferred_name)
+        graduation = c1.number_input("Graduation year", 2000, 2100, athlete.graduation_year, step=1)
+        gender = c2.text_input("Gender", athlete.gender)
+        division = c3.text_input("Team division", athlete.team_division)
+        number = c1.text_input("Athlete number", athlete.athlete_number)
+        status = c2.selectbox("Roster status", STATUSES, index=STATUSES.index(athlete.status))
+        notes = st.text_area("Notes", athlete.notes)
+        submitted = st.form_submit_button("Save Athlete", type="primary")
+    if submitted:
+        try:
+            saved = repository.update_athlete(replace(athlete, first_name=first, last_name=last, preferred_name=preferred, graduation_year=int(graduation) if graduation else None, gender=gender, team_division=division, athlete_number=number, status=status, notes=notes))
+            st.session_state.athlete_roster_flash = f"Updated {saved.display_name}; stable athlete ID preserved."
+            st.rerun()
+        except (RepositoryError, ValueError) as exc:
+            st.error(str(exc))

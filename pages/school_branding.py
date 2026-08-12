@@ -1,35 +1,94 @@
 """Administrator-only School & Branding settings."""
 from __future__ import annotations
 from dataclasses import replace
+from uuid import uuid4
 import streamlit as st
+from split_tracker.auth import AuthenticationError, require_admin
 from split_tracker.branding import DEFAULT_SCHOOL_PROFILE, SchoolProfile, render_school_header, validate_logo_upload, validate_profile
-from split_tracker.branding_service import AUTH_KEY, authorize_settings, save_profile, settings_editing_enabled
-from split_tracker.repository import RepositoryError
+from split_tracker.branding_service import save_profile
+from split_tracker.repository import RepositoryError, SchoolSponsor
+from split_tracker.sponsors import safe_sponsor_website, validate_sponsor_logo
 
 STYLE_LABELS = {"Standard banner": "standard", "Logo left": "logo_left", "Compact": "compact", "Text only": "text_only"}
 
 
-def _admin_passcode() -> str | None:
+def _sponsor_logo_path(repository, sponsor_id: str, upload) -> str:
+    suffix, error = validate_sponsor_logo(upload.name, upload.type, upload.size)
+    if error:
+        raise ValueError(error)
+    school_id = repository.get_school_profile_id()
+    path = f"sponsors/{school_id}/{sponsor_id}/logo{suffix}"
+    return repository.upload_branding_asset(path, upload.getvalue(), upload.type)
+
+
+def _valid_website(value: str) -> str:
+    if value.strip() and safe_sponsor_website(value) is None:
+        raise ValueError("Sponsor website must use http:// or https://.")
+    return safe_sponsor_website(value) or ""
+
+
+def _render_sponsor_management(repository) -> None:
+    st.divider()
+    st.header("Sponsor Management")
+    st.caption("Active school sponsors automatically appear on the public Parent Live Race page.")
+    with st.expander("Add Sponsor"):
+        with st.form("add_sponsor"):
+            name = st.text_input("Sponsor name")
+            website = st.text_input("Website (optional)")
+            order = st.number_input("Display order", min_value=0, step=1)
+            active = st.checkbox("Active", value=True)
+            logo = st.file_uploader("Sponsor logo", type=["png", "jpg", "jpeg", "webp"])
+            submitted = st.form_submit_button("Add Sponsor", type="primary")
+        if submitted:
+            try:
+                if not name.strip() or logo is None:
+                    raise ValueError("Sponsor name and logo are required.")
+                sponsor_id = str(uuid4())
+                saved = repository.create_sponsor(SchoolSponsor(
+                    id=sponsor_id, school_profile_id=repository.get_school_profile_id(),
+                    name=name.strip(), logo_path=_sponsor_logo_path(repository, sponsor_id, logo),
+                    website_url=_valid_website(website), display_order=int(order), is_active=active,
+                ))
+                st.success(f"Added {saved.name}.")
+                st.rerun()
+            except (RepositoryError, ValueError) as exc:
+                st.error(str(exc))
     try:
-        value = st.secrets.get("admin", {}).get("settings_passcode")
-        return str(value) if value else None
-    except Exception:
-        return None
-
-
-def _authorize() -> bool:
-    configured = _admin_passcode()
-    if not settings_editing_enabled(configured):
-        st.warning("School branding editing is disabled. Configure an administrator settings passcode in Streamlit secrets.")
-        return False
-    if st.session_state.get(AUTH_KEY):
-        return True
-    with st.form("school_settings_authorization"):
-        entered = st.text_input("Administrator passcode", type="password")
-        submitted = st.form_submit_button("Unlock Settings", type="primary")
-    if submitted and not authorize_settings(st.session_state, entered, configured):
-        st.error("The administrator passcode was not accepted.")
-    return bool(st.session_state.get(AUTH_KEY))
+        sponsors = repository.list_sponsors()
+    except RepositoryError as exc:
+        st.warning(f"Sponsors could not be loaded: {exc}")
+        return
+    if not sponsors:
+        st.info("No sponsors have been added.")
+        return
+    for sponsor in sponsors:
+        with st.expander(f"{sponsor.name} · {'Active' if sponsor.is_active else 'Inactive'}"):
+            if sponsor.logo_url:
+                st.image(sponsor.logo_url, width=220)
+            with st.form(f"edit_sponsor:{sponsor.id}"):
+                name = st.text_input("Sponsor name", sponsor.name)
+                website = st.text_input("Website (optional)", sponsor.website_url)
+                order = st.number_input("Display order", min_value=0, step=1, value=sponsor.display_order)
+                active = st.checkbox("Active", sponsor.is_active)
+                replacement = st.file_uploader("Replace logo", type=["png", "jpg", "jpeg", "webp"])
+                save = st.form_submit_button("Save Sponsor")
+            if save:
+                try:
+                    logo_path = _sponsor_logo_path(repository, sponsor.id, replacement) if replacement else sponsor.logo_path
+                    repository.update_sponsor(replace(
+                        sponsor, name=name.strip(), website_url=_valid_website(website),
+                        logo_path=logo_path, display_order=int(order), is_active=active,
+                    ))
+                    st.rerun()
+                except (RepositoryError, ValueError) as exc:
+                    st.error(str(exc))
+            confirm = st.checkbox("Confirm permanent deletion", key=f"confirm_sponsor_delete:{sponsor.id}")
+            if st.button("Delete Sponsor", key=f"delete_sponsor:{sponsor.id}", disabled=not confirm):
+                try:
+                    repository.delete_sponsor(sponsor.id)
+                    st.rerun()
+                except RepositoryError as exc:
+                    st.error(str(exc))
 
 
 def _uploaded_asset(repository, upload, kind: str) -> str:
@@ -74,10 +133,13 @@ def _draft_profile(current: SchoolProfile) -> tuple[SchoolProfile, object | None
 
 
 def render() -> None:
+    try:
+        require_admin(st.session_state.get("app_identity"))
+    except AuthenticationError as exc:
+        st.error(str(exc))
+        return
     profile = st.session_state.get("school_profile_stored", st.session_state.school_profile)
     render_school_header(profile, "School & Branding Settings")
-    if not _authorize():
-        return
     repository = st.session_state.repository
     if repository is None:
         st.error("Branding cannot be saved while persistent storage is unavailable. Race-day features remain available.")
@@ -133,3 +195,4 @@ def render() -> None:
             st.rerun()
         except RepositoryError as exc:
             st.error(str(exc))
+    _render_sponsor_management(repository)
