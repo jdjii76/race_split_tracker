@@ -84,7 +84,7 @@ def test_reopen_preserves_splits_corrections_and_dnf_and_allows_reversal():
     reopened = repo.reopen_race_session(session.id)
 
     assert reopened.id == session.id and reopened.status == "paused"
-    assert len(repo.list_all_split_events(session.id)) == 3
+    assert len(repo.list_all_split_events(session.id)) == 4  # original + append-only void + active splits
     assert repo.list_race_athlete_outcomes(session.id)[0].athlete_id == "b"
     repo.invalidate_split_event(manual.id, session.id, "a", 1, "Coach")
     assert repo.clear_race_athlete_dnf(session.id, "b") is True

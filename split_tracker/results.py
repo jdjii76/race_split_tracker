@@ -80,7 +80,8 @@ def reconstruct_results(
     outcomes: list[RaceAthleteOutcome] | None = None,
 ) -> list[dict[str, object]]:
     """Reconstruct result rows from roster, checkpoints, and active split events."""
-    active_events = [event for event in events if not event.is_deleted]
+    inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
+    active_events = [event for event in events if not event.is_deleted and event.event_type != "split_voided" and event.id not in inactive]
     roster = _athletes_with_event_fallbacks(athletes, active_events)
     config = _config_stub(checkpoints, race_distance_meters)
     splits = rebuild_splits_from_events(events=active_events, athletes=roster, config=config)

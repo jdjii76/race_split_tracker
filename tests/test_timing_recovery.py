@@ -170,3 +170,45 @@ def test_recent_activity_is_deterministic_scoped_and_marks_corrections():
     assert activity[0].label.startswith("Manual")
     assert activity[1].label.startswith("Correction")
     assert all(item.event_id != unrelated.id for item in activity)
+
+
+def test_wrong_athlete_reassignment_is_append_only_and_updates_projection():
+    repo, race, session, emma, sarah, state = correction_setup(athlete_name="Emma")
+    wrong = add_event(repo, session, emma, 1, 300, 1)
+
+    history = repo.correct_split_athlete(wrong.id, session.id, emma.athlete_id, 1, sarah.athlete_id, "Coach A", str(uuid4()))
+    synchronize_shared_timing(state)
+
+    projected = {item.athlete.athlete_id: item for item in state.projected_race_state.athletes}
+    assert [item.event_type for item in history] == ["split_voided", "split_corrected"]
+    assert repo.split_events[wrong.id] == wrong
+    assert projected[emma.athlete_id].completed_split_count == 0
+    assert projected[sarah.athlete_id].completed_split_count == 1
+    assert projected[sarah.athlete_id].latest_elapsed_seconds == 300
+
+
+def test_reassignment_rejects_duplicate_checkpoint_and_second_correction():
+    repo, _, session, emma, sarah, _ = correction_setup(athlete_name="Emma")
+    wrong = add_event(repo, session, emma, 1, 300, 1)
+    add_event(repo, session, sarah, 1, 310, 2)
+    with pytest.raises(RepositoryError, match="already has"):
+        repo.correct_split_athlete(wrong.id, session.id, emma.athlete_id, 1, sarah.athlete_id, "Coach", str(uuid4()))
+    repo.invalidate_split_event(wrong.id, session.id, emma.athlete_id, 1, "Coach")
+    with pytest.raises(RepositoryError, match="already changed"):
+        repo.correct_split_athlete(wrong.id, session.id, emma.athlete_id, 1, sarah.athlete_id, "Coach", str(uuid4()))
+
+
+def test_undo_finish_appends_audit_event_and_returns_athlete_to_finish_checkpoint():
+    repo, _, session, athlete, _, state = correction_setup()
+    first = add_event(repo, session, athlete, 1, 300, 1)
+    finish = add_event(repo, session, athlete, 2, 700, 2)
+    synchronize_shared_timing(state)
+    assert next(item for item in state.projected_race_state.athletes if item.athlete.athlete_id == athlete.athlete_id).finished
+
+    repo.invalidate_split_event(finish.id, session.id, athlete.athlete_id, 2, "Coach", require_latest=True)
+    synchronize_shared_timing(state)
+
+    projected = next(item for item in state.projected_race_state.athletes if item.athlete.athlete_id == athlete.athlete_id)
+    assert not projected.finished and projected.next_checkpoint.number == 2
+    assert [event.id for event in state.projected_race_state.events] == [first.id]
+    assert len(repo.list_all_split_events(session.id)) == 3
