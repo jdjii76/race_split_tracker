@@ -20,6 +20,15 @@ def _handle_error(action: str, exc: Exception) -> None:
     st.error(f"{action} failed. Your form data was not discarded. {exc}")
 
 
+def _open_race_in_setup(meet: Meet, race: Race) -> None:
+    """Open a race while containing storage failures within the page."""
+    try:
+        load_race_into_setup(st.session_state, meet, race)
+        st.switch_page(st.session_state.page_registry["meet_setup"])
+    except RepositoryError as exc:
+        _handle_error("Open race setup", exc)
+
+
 def _dev_cleanup_enabled() -> bool:
     return os.environ.get("RACE_SPLIT_TRACKER_ENABLE_DEV_CLEANUP", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -166,8 +175,7 @@ def _race_management(meet: Meet) -> None:
                         _handle_error("Update race", exc)
             c1, c2, c3, c4 = st.columns(4)
             if c1.button("Open in Race Setup", key=f"open_race_{race.id}"):
-                load_race_into_setup(st.session_state, meet, race)
-                st.switch_page(st.session_state.page_registry["meet_setup"])
+                _open_race_in_setup(meet, race)
             if c2.button("Duplicate", key=f"duplicate_race_{race.id}"):
                 try:
                     _repo().duplicate_race(race.id)

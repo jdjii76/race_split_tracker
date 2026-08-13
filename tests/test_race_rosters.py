@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pytest
+
 from split_tracker.models import Athlete
-from split_tracker.repository import InMemoryRaceRepository, Meet, Race, SupabaseRaceRepository, _athlete_from_row, _athlete_to_row
+from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError, SplitEvent, SupabaseRaceRepository, _athlete_from_row, _athlete_to_row
 from split_tracker.state import initialize_state, load_race_into_setup, replace_setup
+from split_tracker.timing_persistence import restore_timing_state
 
 
 class Session(dict):
@@ -88,6 +93,87 @@ def test_live_timing_receives_roster_for_selected_race():
 
     load_race_into_setup(session, meet, girls)
     assert [athlete.athlete_id for athlete in session.athletes] == ["girls-1"]
+
+
+def test_navigation_does_not_replace_stale_roster_for_race_with_splits():
+    class TrackingRepository(InMemoryRaceRepository):
+        replace_calls = 0
+
+        def replace_race_athletes(self, race_id, athletes):
+            self.replace_calls += 1
+            return super().replace_race_athletes(race_id, athletes)
+
+    repo = TrackingRepository()
+    meet = repo.create_meet(Meet(name="Invite"))
+    race_a = repo.create_race(Race(meet_id=meet.id, name="Race A", distance_meters=5000))
+    race_b = repo.create_race(Race(meet_id=meet.id, name="Race B", distance_meters=5000))
+    roster = [Athlete(name=name, athlete_id=name.lower(), active=name != "C") for name in "ABC"]
+    repo.replace_race_athletes(race_a.id, roster)
+    timing = repo.create_race_session(RaceSession(race_id=race_a.id, started_at=datetime.now(timezone.utc), status="running"))
+    repo.create_split_event(SplitEvent(race_session_id=timing.id, athlete_id="a", athlete_name="A", checkpoint_number=1, checkpoint_label="Mile 1", elapsed_seconds=300, event_order=1))
+    session = make_session(repo)
+    load_race_into_setup(session, meet, race_a)
+    session.athletes = session.athletes[:2]  # stale/filtered UI state
+    calls_before_navigation = repo.replace_calls
+
+    load_race_into_setup(session, meet, race_b)
+
+    assert repo.replace_calls == calls_before_navigation
+    assert [athlete.athlete_id for athlete in repo.list_race_athletes(race_a.id, include_inactive=True)] == ["a", "b", "c"]
+
+
+def test_running_race_can_be_left_and_restored_without_roster_or_event_changes():
+    repo, meet, race_a, race_b = make_two_races()
+    roster = [Athlete(name="Ben", athlete_id="boys-1"), Athlete(name="Bo", athlete_id="boys-2")]
+    repo.replace_race_athletes(race_a.id, roster)
+    timing = repo.create_race_session(RaceSession(race_id=race_a.id, started_at=datetime.now(timezone.utc), status="running", elapsed_offset_seconds=20))
+    event = repo.create_split_event(SplitEvent(race_session_id=timing.id, athlete_id="boys-1", athlete_name="Ben", checkpoint_number=1, checkpoint_label="Mile 1", elapsed_seconds=300, event_order=1))
+    session = make_session(repo)
+
+    load_race_into_setup(session, meet, race_a)
+    load_race_into_setup(session, meet, race_b)
+    load_race_into_setup(session, meet, race_a)
+    restored = restore_timing_state(session)
+
+    assert [athlete.athlete_id for athlete in repo.list_race_athletes(race_a.id)] == ["boys-1", "boys-2"]
+    assert [item.id for item in repo.list_all_split_events(timing.id)] == [event.id]
+    assert restored.id == timing.id
+    assert session.race_clock.status == "running"
+
+
+def test_explicit_save_still_updates_unstarted_roster_and_started_removal_is_rejected():
+    repo, meet, race_a, _ = make_two_races()
+    roster = [Athlete(name="Ben", athlete_id="boys-1"), Athlete(name="Bo", athlete_id="boys-2")]
+    repo.replace_race_athletes(race_a.id, roster)
+    session = make_session(repo)
+    load_race_into_setup(session, meet, race_a)
+
+    replace_setup(session, session.meet_config, roster[:1])
+    assert [athlete.athlete_id for athlete in repo.list_race_athletes(race_a.id)] == ["boys-1"]
+
+    repo.replace_race_athletes(race_a.id, roster)
+    repo.create_race_session(RaceSession(race_id=race_a.id, started_at=datetime.now(timezone.utc), status="running"))
+    with pytest.raises(RepositoryError, match="cannot be removed"):
+        replace_setup(session, session.meet_config, roster[:1])
+    assert [athlete.athlete_id for athlete in repo.list_race_athletes(race_a.id)] == ["boys-1", "boys-2"]
+
+
+def test_open_race_repository_error_is_shown_instead_of_switching_page(monkeypatch):
+    import pages.meet_management as page
+
+    repo, meet, race, _ = make_two_races()
+    messages = []
+    switched = []
+    monkeypatch.setattr(page.st, "session_state", make_session(repo))
+    page.st.session_state.page_registry = {"meet_setup": "setup.py"}
+    monkeypatch.setattr(page, "load_race_into_setup", lambda *_: (_ for _ in ()).throw(RepositoryError("Roster unavailable.")))
+    monkeypatch.setattr(page.st, "error", messages.append)
+    monkeypatch.setattr(page.st, "switch_page", switched.append)
+
+    page._open_race_in_setup(meet, race)
+
+    assert messages == ["Open race setup failed. Your form data was not discarded. Roster unavailable."]
+    assert switched == []
 
 
 def test_race_scoped_roster_cache_survives_rerun_simulation():
