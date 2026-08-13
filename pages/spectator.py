@@ -84,7 +84,8 @@ def _render_race(public_repository, profile, race_id, session_id) -> None:
     subtitle = view.meet.name if view.meet else profile.program_name
     render_school_header(profile, view.race.name, subtitle=subtitle, compact=True)
     st.header(f"{view.race.name} • {format_distance(view.race.distance_meters)}")
-    st.markdown(f"## {view.status.upper()}")
+    public_status = "FINAL" if view.session and view.session.status == "completed" else "LIVE"
+    st.markdown(f"## {public_status}")
     st.caption(f"Last updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
 
     if view.session is None:

@@ -799,3 +799,20 @@ fragment and avoid a full application rerun, but taps that arrive while the
 browser is submitting the previous widget event cannot be guaranteed at
 sub-second spacing. The isolated button surface is the intended seam for a
 small queued custom component if field measurements require simultaneous input.
+
+### Live timing mistake recovery
+
+Live Timing includes append-only Undo, wrong-athlete reassignment, missed-split entry,
+and correction history. Corrections are persisted in the shared race event stream; the
+original tap remains in the audit trail while coach, live-board, and spectator projections
+ignore events superseded by a void action. Completed races must be reopened before timing
+history can be corrected.
+
+### Finish, review, finalize, and share
+
+When all rostered runners have either finished or been marked DNF, **Finish Race** pauses
+the authoritative clock and opens a provisional results review. Coaches can inspect place,
+finish time, average pace, and checkpoint splits, return to Live Timing for append-only
+corrections, and then choose **Finalize & Publish Results**. Finalization locks the session,
+retains it in race history, changes the public parent page from **LIVE** to **FINAL**, and
+enables CSV, printable HTML, team-summary, and share-link output from Results.

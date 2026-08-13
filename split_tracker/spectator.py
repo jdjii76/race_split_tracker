@@ -98,7 +98,7 @@ class PublicSupabaseSpectatorRepository:
 
     def list_active_split_events(self, race_session_id: str):
         rows = self._rows(self.__client.table("spectator_split_events").select("*").eq("race_session_id", race_session_id).order("event_order"))
-        return [SplitEvent(race_session_id=race_session_id, athlete_id=str(row["athlete_id"]), athlete_name=row.get("athlete_name") or "", checkpoint_number=int(row["checkpoint_number"]), checkpoint_label=row.get("checkpoint_label") or "", elapsed_seconds=float(row["elapsed_seconds"]), event_order=int(row.get("event_order") or 0), id=str(row["id"]), correction_type=row.get("correction_type") or "") for row in rows]
+        return [SplitEvent(race_session_id=race_session_id, athlete_id=str(row["athlete_id"]), athlete_name=row.get("athlete_name") or "", checkpoint_number=int(row["checkpoint_number"]), checkpoint_label=row.get("checkpoint_label") or "", elapsed_seconds=float(row["elapsed_seconds"]), event_order=int(row.get("event_order") or 0), id=str(row["id"]), correction_type=row.get("correction_type") or "", event_type=row.get("event_type") or "split_recorded", target_event_id=str(row["target_event_id"]) if row.get("target_event_id") else None, corrects_event_id=str(row["corrects_event_id"]) if row.get("corrects_event_id") else None) for row in rows]
 
     def list_race_athlete_outcomes(self, race_session_id: str):
         rows = self._rows(self.__client.table("spectator_outcomes").select("*").eq("race_session_id", race_session_id))

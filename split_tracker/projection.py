@@ -181,12 +181,14 @@ def project_race_state(
     fills the missing prefix. This keeps correction replay deterministic.
     """
     dnf_ids = dnf_athlete_ids or set()
+    session_events = [event for event in split_events if event.race_session_id == race_session.id]
+    inactive_ids = {
+        event.target_event_id for event in session_events
+        if event.event_type == "split_voided" and event.target_event_id
+    }
     ordered = sorted(
-        (
-            event
-            for event in split_events
-            if event.race_session_id == race_session.id and not event.is_deleted
-        ),
+        (event for event in session_events if not event.is_deleted
+         and event.event_type != "split_voided" and event.id not in inactive_ids),
         key=split_event_sort_key,
     )
     checkpoint_by_number = {checkpoint.number: checkpoint for checkpoint in checkpoints}

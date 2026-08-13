@@ -22,8 +22,8 @@ from split_tracker.timing_persistence import (
     persist_pause,
     persist_resume,
     persist_event_correction,
+    persist_athlete_reassignment,
     persist_manual_correction,
-    persist_finalization,
     persist_reopen,
     persist_dnf,
     poll_shared_timing,
@@ -297,6 +297,18 @@ def _add_missed_split(athlete_id: str, checkpoint_number: int, elapsed_seconds: 
         return False
 
 
+def _reassign_event(event, athlete_id: str) -> bool:
+    try:
+        persist_athlete_reassignment(st.session_state, event, athlete_id)
+        st.session_state.message = "Split reassigned. All shared views will refresh from the audit history."
+        st.session_state.recovery_mode = ""
+        return True
+    except Exception as exc:
+        _show_persistence_error("Reassign split", exc)
+        st.error(f"This timing event could not be changed: {exc} Race data has been refreshed.")
+        return False
+
+
 def _event_details(event) -> None:
     st.markdown(f"**{event.athlete_name}**")
     st.write(event.checkpoint_label)
@@ -326,7 +338,8 @@ def _render_timing_recovery(projection, clock) -> None:
         if clock.status == "ended":
             st.caption("Reopen the race before using correction tools.")
     if mode == "undo":
-        event = latest_active_event(events, race_session_id)
+        requested_id = st.session_state.get("recovery_event_id")
+        event = next((item for item in active_events_for_athlete(events, race_session_id, next((candidate.athlete_id for candidate in events if candidate.id == requested_id), "")) if item.id == requested_id), None) if requested_id else latest_active_event(events, race_session_id)
         with st.container(border=True):
             st.markdown("### Undo last recorded split?")
             if event is None:
@@ -336,15 +349,20 @@ def _render_timing_recovery(projection, clock) -> None:
                 cancel, confirm = st.columns(2)
                 if cancel.button("Cancel", key="cancel_last_split", use_container_width=True):
                     st.session_state.recovery_mode = ""
+                    st.session_state.recovery_event_id = None
                     st.rerun()
                 if confirm.button("Undo Split", key=f"undo_event:{event.id}", use_container_width=True):
-                    if _correct_event(event, require_latest=True): st.rerun()
+                    if _correct_event(event, require_latest=not requested_id):
+                        st.session_state.recovery_event_id = None
+                        st.rerun()
 
     elif mode == "correct" and projection:
         with st.container(border=True):
             st.markdown("### Correct a Specific Split")
             athlete_options = [state.athlete for state in projection.athletes]
-            athlete_id = st.selectbox(
+            requested_id = st.session_state.get("recovery_event_id")
+            requested_event = next((item for item in events if item.id == requested_id), None)
+            athlete_id = requested_event.athlete_id if requested_event else st.selectbox(
                 "Athlete", [athlete.athlete_id for athlete in athlete_options],
                 format_func=lambda value: next(athlete.name for athlete in athlete_options if athlete.athlete_id == value),
                 key="correction_athlete_id",
@@ -353,7 +371,7 @@ def _render_timing_recovery(projection, clock) -> None:
             if not athlete_events:
                 st.info("This athlete has no active recorded checkpoints.")
             else:
-                event_id = st.selectbox(
+                event_id = requested_event.id if requested_event else st.selectbox(
                     "Recorded checkpoint", [event.id for event in athlete_events],
                     format_func=lambda value: next(f"{event.checkpoint_label} • {format_duration(event.elapsed_seconds)}" for event in athlete_events if event.id == value),
                     key="correction_event_id",
@@ -362,12 +380,16 @@ def _render_timing_recovery(projection, clock) -> None:
                 _event_details(event)
                 if any(item.checkpoint_number > event.checkpoint_number for item in athlete_events):
                     st.warning("Later checkpoints remain in history but will be held out of progress until this missing checkpoint is replaced.")
-                confirm = st.checkbox("I confirm this exact split should be invalidated.", key=f"confirm_correction:{event.id}")
+                destinations = [athlete for athlete in athlete_options if athlete.athlete_id != event.athlete_id]
+                destination_id = st.selectbox("Change athlete to", [athlete.athlete_id for athlete in destinations], format_func=lambda value: next(athlete.name for athlete in destinations if athlete.athlete_id == value), key=f"reassign:{event.id}") if destinations else None
+                confirm = st.checkbox("I confirm this split belongs to the selected athlete.", key=f"confirm_correction:{event.id}")
                 cancel, apply = st.columns(2)
                 if cancel.button("Cancel", key="cancel_specific_correction", use_container_width=True):
-                    st.session_state.recovery_mode = ""; st.rerun()
-                if apply.button("Correct Split", key=f"correct_event:{event.id}", disabled=not confirm, use_container_width=True):
-                    if _correct_event(event): st.rerun()
+                    st.session_state.recovery_mode = ""; st.session_state.recovery_event_id = None; st.rerun()
+                if apply.button("Confirm Reassignment", key=f"correct_event:{event.id}", disabled=not confirm or not destination_id, use_container_width=True):
+                    if _reassign_event(event, destination_id):
+                        st.session_state.recovery_event_id = None
+                        st.rerun()
 
     elif mode == "missed" and projection:
         with st.container(border=True):
@@ -398,8 +420,27 @@ def _render_timing_recovery(projection, clock) -> None:
     activity = recent_timing_activity(events, race_session_id, limit=8) if race_session_id else []
     if not activity:
         st.caption("No timing activity in this race session yet.")
+    active_ids = {active.id for athlete in projection.athletes for active in active_events_for_athlete(events, race_session_id, athlete.athlete.athlete_id)} if projection else set()
+    event_by_id = {event.id: event for event in events}
     for item in activity:
-        st.write(f"**{item.occurred_at.strftime('%H:%M:%S')}** — {item.label}")
+        row, undo_action, correct_action = st.columns([5, 2, 2])
+        row.write(f"**{item.occurred_at.strftime('%H:%M:%S')}** — {item.label}")
+        event = event_by_id.get(item.event_id)
+        enabled = event is not None and event.id in active_ids and not recovery_locked
+        if undo_action.button("Undo", key=f"recent_undo:{item.event_id}", disabled=not enabled, use_container_width=True):
+            st.session_state.recovery_event_id = item.event_id
+            st.session_state.recovery_mode = "undo"
+            st.rerun()
+        if correct_action.button("Correct", key=f"recent_correct:{item.event_id}", disabled=not enabled, use_container_width=True):
+            st.session_state.recovery_event_id = item.event_id
+            st.session_state.recovery_mode = "correct"
+            st.rerun()
+    corrections = [item for item in activity if item.is_correction]
+    with st.expander("Correction History"):
+        if not corrections:
+            st.caption("No corrections in this race session.")
+        for item in corrections:
+            st.write(f"**{item.occurred_at.strftime('%H:%M:%S')}** — {item.label}")
 
 
 def _render_finish_controls(projection, clock) -> None:
@@ -435,8 +476,10 @@ def _render_finish_controls(projection, clock) -> None:
                         _show_persistence_error("Reopen race", exc); st.error(str(exc))
         return
 
-    if st.button("Finish Race", use_container_width=True, disabled=clock.status not in {"running", "paused"}):
+    if st.button("Finish Race", type="primary", use_container_width=True, disabled=clock.status not in {"running", "paused"}):
         st.session_state.finish_confirmation = True
+    if not unresolved:
+        st.success("All runners are resolved. Finish timing and review provisional results when ready.")
     if not st.session_state.get("finish_confirmation"):
         return
     with st.container(border=True):
@@ -468,14 +511,16 @@ def _render_finish_controls(projection, clock) -> None:
         cancel, confirm = st.columns(2)
         if cancel.button("Cancel", key="cancel_finish", use_container_width=True):
             st.session_state.finish_confirmation = False; st.rerun()
-        if confirm.button("Finish Race", key="confirm_finish", disabled=bool(unresolved), use_container_width=True):
+        if confirm.button("Review Provisional Results", key="confirm_finish", disabled=bool(unresolved), type="primary", use_container_width=True):
             try:
-                persist_finalization(st.session_state)
+                if clock.status == "running":
+                    persist_pause(st.session_state)
                 st.session_state.finish_confirmation = False
                 st.session_state.selected_results_session_id = race_session_id
-                st.rerun()
+                st.session_state.results_review_session_id = race_session_id
+                st.switch_page(st.session_state.page_registry["results"])
             except Exception as exc:
-                _show_persistence_error("Finish race", exc); st.error(str(exc))
+                _show_persistence_error("Prepare results review", exc); st.error(str(exc))
 
 
 def render() -> None:
