@@ -19,6 +19,11 @@ class AthleteResult:
     race_date: date | None; distance_meters: float; status: str
     finish_seconds: float | None; place: int | None; course_id: str | None; course_name: str
     splits: tuple[dict[str, object], ...] = ()
+    athlete_name: str = ""
+    classification: str = ""
+    gender: str = ""
+    race_category: str = ""
+    is_test: bool = False
 
     @property
     def season(self) -> int | None: return self.race_date.year if self.race_date else None
@@ -101,5 +106,5 @@ def get_completed_results(repository, athlete_id=None):
                     athlete_splits.append({"label":cp.label,"distance_meters":cp.distance_meters,"cumulative":event.elapsed_seconds,"segment":event.elapsed_seconds-previous})
                     previous=event.elapsed_seconds
             course=courses.get(race.course_id)
-            output.append(AthleteResult(str(row["Athlete ID"]),session.id,race.id,race.name,meet.name,meet.meet_date,race.distance_meters,str(row["Status"]),row["Finish Time Seconds"],row["Overall Place"],race.course_id,course.course_name if course else "",tuple(athlete_splits)))
+            output.append(AthleteResult(str(row["Athlete ID"]),session.id,race.id,race.name,meet.name,meet.meet_date,race.distance_meters,str(row["Status"]),row["Finish Time Seconds"],row["Overall Place"],race.course_id,course.course_name if course else "",tuple(athlete_splits),str(row["Athlete"]),str(row.get("Category/Group") or row.get("Team") or ""),str(row.get("Gender") or ""),race.race_category,race.name.lstrip().upper().startswith("TEST")))
     return sorted(output,key=lambda r:(r.race_date or date.min,r.session_id),reverse=True)

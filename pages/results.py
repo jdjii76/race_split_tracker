@@ -184,6 +184,10 @@ def render() -> None:
                 st.error(f"Results could not be finalized: {exc}")
     elif summary.status == "completed":
         st.success("FINAL RESULTS — Published to the parent page and retained in race history.")
+        if st.button("Open Coach Analytics", type="primary", use_container_width=True):
+            st.session_state.analytics_race_id = race.id
+            st.session_state.analytics_session_id = session.id
+            st.switch_page(st.session_state.page_registry["coach_analytics"])
 
     st.subheader("Final Results" if summary.status == "completed" else "Provisional Results")
     final_columns = [column for column in ("Place", "Athlete", "Final Time", "Average Pace", "Split Times", "Status")]

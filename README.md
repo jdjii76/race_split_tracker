@@ -848,3 +848,22 @@ Only completed race sessions count as history. DNF entries remain visible but ar
 Metrics are derived, not stored. A season PR is the fastest finish within one race-date year and distance. Best pace is the lowest final-time-per-mile value. Improvement is the first chronological finish minus the fastest finish for the same season and distance. Course bests group only by permanent course UUID and distance. For segment consistency, at most 3% spread is **Even**; otherwise a 3% later-half slowdown is **Positive Split**, a 3% speed-up is **Negative Split**, and other patterns are **Variable**. Two segments are required.
 
 Team Progress uses existing gender and Varsity/JV/Swing team-division values. Apply `supabase/migrations/021_athlete_progression_courses.sql`, then restart Streamlit. The additive migration creates protected courses, adds nullable `races.course_id`, and adds history indexes. Existing races remain functional. Courses are created and linked in **Meets & Races**.
+
+## Coach Post-Race Analytics
+
+**Coach Analytics** is a protected, read-only view available from a completed race card and from Final Results. It is authoritative only after **Finalize & Publish Results**. The dashboard derives finishers, distance-specific PRs, Top 7, 1–5 and 1–7 spreads, Top-5 compression, early/late pace, negative splits, late fades, and previous-race comparisons from finalized canonical results; it stores no analytics rows.
+
+A PR requires a faster prior finalized, non-test result for the same athlete and distance; a first result is labeled **First recorded**, DNF cannot PR, and the current session is excluded. Early pace is the first valid positive-distance segment and late pace is the final valid positive-distance segment, each normalized to seconds per mile. Pace change is late minus early: negative is a negative split and positive is a fade. These are descriptive measurements and do not infer strategy or cause.
+
+Top 7 eligibility follows the actual selected race roster. BV and GV races therefore remain separate, while a Swing athlete can rank in the varsity or JV race they actually ran without changing their permanent classification. Spreads use team-ranked finishers. Missing or invalid checkpoints are never treated as zero: athletes remain in finish analytics but are excluded from pace metrics unless at least two measurable segments exist.
+
+The prior comparison is the most recent earlier finalized, non-test session with the same distance and normalized race category (falling back to race name). Different distances and categories are not compared. If none exists, the page reports that explicitly. Append-only corrections are resolved by the existing active-event projection, so only replacements affect analytics while the audit trail stays intact. No database migration is required for Coach Analytics.
+
+### Manual Coach Analytics test
+
+1. Create and finalize Race A at 5K with realistic checkpoint splits.
+2. Create Race B with the same category, distance, and at least seven finishers.
+3. Include a PR, a negative split, a late fade, and an athlete missing an intermediate checkpoint; finalize Race B.
+4. Open **Coach Analytics** from Race B and verify PR amount, highlights, Top 7, both spreads, Top-5 gaps, pace profile, Race A comparison, and athlete table.
+5. Confirm the missing-split athlete remains in finish metrics but not pace metrics.
+6. In a third race, correct a result during provisional review, finalize, and verify analytics use the replacement while Recent Actions/audit history retains the original and void.

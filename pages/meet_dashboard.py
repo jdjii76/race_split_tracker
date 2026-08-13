@@ -52,6 +52,12 @@ def _race_card(meet, summary: RaceDashboardSummary, *, emphasized: bool = False)
             use_container_width=True,
         ):
             _open_race(meet, summary)
+        if summary.category == "completed" and st.button(
+            "Coach Analytics", key=f"analytics:{summary.race.id}:{summary.session.id}", use_container_width=True
+        ):
+            st.session_state.analytics_race_id = summary.race.id
+            st.session_state.analytics_session_id = summary.session.id
+            st.switch_page(st.session_state.page_registry["coach_analytics"])
         with st.expander("Share Live View"):
             public_url = spectator_url(
                 summary.race.id,
