@@ -8,7 +8,7 @@ import streamlit as st
 from split_tracker.branding import render_school_header
 
 from split_tracker.formatting import format_distance
-from split_tracker.repository import Meet, MeetTemplate, Race, RepositoryError, TemplateRace
+from split_tracker.repository import Course, Meet, MeetTemplate, Race, RepositoryError, TemplateRace
 from split_tracker.state import cleanup_after_all_timing_delete, cleanup_after_meet_delete, cleanup_after_race_delete, cleanup_after_test_data_delete, load_race_into_setup
 
 
@@ -139,15 +139,29 @@ def _meet_detail() -> None:
 def _race_management(meet: Meet) -> None:
     st.subheader("Races")
     races = _repo().list_races_for_meet(meet.id)
+    courses = _repo().list_courses()
+    with st.expander("Create a reusable course"):
+        with st.form(f"add_course_{meet.id}"):
+            cc1, cc2 = st.columns(2)
+            course_name = cc1.text_input("Course name")
+            course_location = cc2.text_input("Course location")
+            course_distance = cc1.number_input("Course distance (meters, optional)", min_value=0.0, value=0.0, step=100.0)
+            course_notes = cc2.text_input("Course notes")
+            if st.form_submit_button("Create course"):
+                try:
+                    _repo().create_course(Course(course_name=course_name, location=course_location, distance_meters=course_distance or None, notes=course_notes))
+                    st.rerun()
+                except RepositoryError as exc: _handle_error("Create course", exc)
     with st.form(f"add_race_{meet.id}"):
         c1, c2, c3, c4 = st.columns(4)
         name = c1.text_input("Race name", placeholder="Boys Varsity")
         category = c2.text_input("Category", placeholder="Varsity")
         distance = c3.number_input("Distance (meters)", min_value=1.0, value=5000.0, step=100.0)
         course_type = c4.selectbox("Course type", ["Cross Country", "Track"])
+        course_id = st.selectbox("Course (optional)", [None, *(course.id for course in courses)], format_func=lambda value: "Unknown / not linked" if value is None else next(course.course_name for course in courses if course.id == value))
         if st.form_submit_button("Add race"):
             try:
-                _repo().create_race(Race(meet_id=meet.id, name=name.strip(), race_category=category.strip(), distance_meters=float(distance), course_type=course_type, display_order=len(races)))
+                _repo().create_race(Race(meet_id=meet.id, name=name.strip(), race_category=category.strip(), distance_meters=float(distance), course_type=course_type, course_id=course_id, display_order=len(races)))
                 st.rerun()
             except RepositoryError as exc:
                 _handle_error("Add race", exc)
@@ -166,9 +180,10 @@ def _race_management(meet: Meet) -> None:
                 distance = c3.number_input("Distance meters", min_value=1.0, value=float(race.distance_meters), step=100.0)
                 status = c4.selectbox("Status", ["draft", "ready", "running", "paused", "completed", "archived"], index=["draft", "ready", "running", "paused", "completed", "archived"].index(race.status))
                 order = st.number_input("Display order", min_value=0, value=int(race.display_order), step=1, key=f"order_{race.id}")
+                linked_course = st.selectbox("Permanent course", [None, *(course.id for course in courses)], index=[None, *(course.id for course in courses)].index(race.course_id) if race.course_id in {course.id for course in courses} else 0, format_func=lambda value: "Unknown / not linked" if value is None else next(course.course_name for course in courses if course.id == value))
                 if st.form_submit_button("Save race"):
                     try:
-                        _repo().update_race(replace(race, name=race_name.strip(), race_category=category.strip(), distance_meters=float(distance), status=status, display_order=int(order)))
+                        _repo().update_race(replace(race, name=race_name.strip(), race_category=category.strip(), distance_meters=float(distance), status=status, course_id=linked_course, display_order=int(order)))
                         st.success("Race updated.")
                         st.rerun()
                     except RepositoryError as exc:
