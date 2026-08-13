@@ -807,3 +807,12 @@ and correction history. Corrections are persisted in the shared race event strea
 original tap remains in the audit trail while coach, live-board, and spectator projections
 ignore events superseded by a void action. Completed races must be reopened before timing
 history can be corrected.
+
+### Finish, review, finalize, and share
+
+When all rostered runners have either finished or been marked DNF, **Finish Race** pauses
+the authoritative clock and opens a provisional results review. Coaches can inspect place,
+finish time, average pace, and checkpoint splits, return to Live Timing for append-only
+corrections, and then choose **Finalize & Publish Results**. Finalization locks the session,
+retains it in race history, changes the public parent page from **LIVE** to **FINAL**, and
+enables CSV, printable HTML, team-summary, and share-link output from Results.

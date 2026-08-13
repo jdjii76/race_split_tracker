@@ -150,6 +150,43 @@ def results_to_frame(rows: list[dict[str, object]], *, formatted_for_export: boo
     return frame
 
 
+def build_team_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Summarize finishers and scoring places for each named team."""
+    teams: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        team = str(row.get("Team") or "").strip()
+        if team:
+            teams.setdefault(team, []).append(row)
+    summary = []
+    for team, team_rows in teams.items():
+        finishers = [row for row in team_rows if row.get("Status") == "Finished"]
+        scoring = finishers[:5]
+        summary.append({
+            "Team": team,
+            "Finishers": len(finishers),
+            "DNF": sum(row.get("Status") == "DNF" for row in team_rows),
+            "Top 5 Score": sum(int(row["Place"]) for row in scoring) if len(scoring) == 5 else "—",
+            "First Finisher": finishers[0].get("Athlete", "—") if finishers else "—",
+        })
+    return sorted(summary, key=lambda row: (row["Top 5 Score"] == "—", row["Top 5 Score"] if row["Top 5 Score"] != "—" else 0, row["Team"]))
+
+
+def printable_results_html(meet_name: str, race_name: str, rows: list[dict[str, object]]) -> str:
+    """Build a standalone printable results document without internal IDs."""
+    from html import escape
+
+    body = "".join(
+        f"<tr><td>{escape(str(row.get('Place', '—')))}</td><td>{escape(str(row.get('Athlete', '')))}</td>"
+        f"<td>{escape(str(row.get('Final Time', '—')))}</td><td>{escape(str(row.get('Average Pace', '—')))}</td>"
+        f"<td>{escape(str(row.get('Split Times', '—')))}</td><td>{escape(str(row.get('Status', '')))}</td></tr>"
+        for row in rows
+    )
+    return f"""<!doctype html><html><head><meta charset=\"utf-8\"><title>{escape(race_name)} Results</title>
+<style>body{{font-family:Arial,sans-serif;margin:2rem}}table{{border-collapse:collapse;width:100%}}th,td{{padding:.5rem;border-bottom:1px solid #bbb;text-align:left}}@media print{{button{{display:none}}}}</style></head>
+<body><button onclick=\"window.print()\">Print</button><h1>{escape(meet_name)}</h1><h2>{escape(race_name)} — Results</h2>
+<table><thead><tr><th>Place</th><th>Athlete</th><th>Finish</th><th>Average pace</th><th>Splits</th><th>Status</th></tr></thead><tbody>{body}</tbody></table></body></html>"""
+
+
 def filter_results(
     rows: list[dict[str, object]],
     *,

@@ -7,7 +7,7 @@ import pytest
 from split_tracker.models import Athlete, Checkpoint, PermanentAthlete
 from split_tracker.navigation import build_race_dashboard_summaries
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError, SplitEvent
-from split_tracker.results import reconstruct_results
+from split_tracker.results import build_team_summary, printable_results_html, reconstruct_results
 
 
 def finalization_fixture():
@@ -141,3 +141,35 @@ def test_dashboard_moves_completed_and_reopened_session_between_categories():
 
     reopened = repo.reopen_race_session(session.id)
     assert build_race_dashboard_summaries([race], [reopened], {race.id: 2})[0].category == "running"
+
+
+def test_team_summary_scores_top_five_and_printable_results_include_race_details():
+    rows = [
+        {"Place": place, "Athlete": f"Runner {place}", "Team": "KMHS", "Status": "Finished", "Final Time": f"20:{place:02d}", "Average Pace": "6:30", "Split Times": "6:30 / 13:00"}
+        for place in range(1, 6)
+    ] + [{"Place": "—", "Athlete": "Runner DNF", "Team": "KMHS", "Status": "DNF", "Final Time": "—", "Average Pace": "—", "Split Times": "7:00 / —"}]
+
+    summary = build_team_summary(rows)
+    printable = printable_results_html("County Meet", "Varsity Boys", rows)
+
+    assert summary == [{"Team": "KMHS", "Finishers": 5, "DNF": 1, "Top 5 Score": 15, "First Finisher": "Runner 1"}]
+    assert "County Meet" in printable and "Varsity Boys" in printable
+    assert "Average pace" in printable and "Runner DNF" in printable
+
+
+def test_provisional_session_can_be_corrected_then_finalized_and_retained():
+    repo, _, _, session, _, _ = finalization_fixture()
+    for order, (athlete, checkpoint, elapsed) in enumerate([
+        ("a", 1, 300), ("b", 1, 310), ("a", 2, 620), ("b", 2, 640)
+    ], start=1):
+        event(repo, session, athlete, checkpoint, elapsed, order)
+    provisional = repo.transition_race_session(session.id, "pause")
+    finish = next(item for item in repo.list_active_split_events(session.id) if item.athlete_id == "b" and item.checkpoint_number == 2)
+    repo.invalidate_split_event(finish.id, session.id, "b", 2, "Coach")
+    repo.record_manual_split(session.id, "b", 2, 635, "Coach", "replacement-finish")
+
+    completed = repo.finalize_race_session(session.id)
+
+    assert provisional.status == "paused" and completed.status == "completed"
+    assert len(repo.list_all_split_events(session.id)) == 6
+    assert repo.get_race_session(session.id).ended_at is not None

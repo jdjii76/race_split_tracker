@@ -9,7 +9,8 @@ from split_tracker.branding import branded_export_filename, render_school_header
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.formatting import format_distance, format_duration
 from split_tracker.repository import RaceRepository, RepositoryError
-from split_tracker.results import filter_results, reconstruct_results, results_to_frame, session_label, summarize_sessions
+from split_tracker.results import build_team_summary, filter_results, printable_results_html, reconstruct_results, results_to_frame, session_label, summarize_sessions
+from split_tracker.spectator import spectator_url
 from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.state import cleanup_after_session_delete
 
@@ -167,8 +168,25 @@ def render() -> None:
         st.info("This session has no roster or split events to reconstruct.")
         return
 
-    st.subheader("Reconstructed Results")
-    final_columns = [column for column in ("Place", "Athlete", "Final Time", "Split Times", "Status")]
+    reviewing = summary.status != "completed" and st.session_state.get("results_review_session_id") == session.id
+    if reviewing:
+        st.warning("PROVISIONAL RESULTS — Review places, times, pace, and splits before finalizing. Parent results remain LIVE.")
+        correct, finalize = st.columns(2)
+        if correct.button("Correct Results in Live Timing", use_container_width=True):
+            st.switch_page(st.session_state.page_registry["live_timing"])
+        if finalize.button("Finalize & Publish Results", type="primary", use_container_width=True):
+            try:
+                repository.finalize_race_session(session.id)
+                st.session_state.results_review_session_id = None
+                st.success("Results finalized and published to the parent page.")
+                st.rerun()
+            except RepositoryError as exc:
+                st.error(f"Results could not be finalized: {exc}")
+    elif summary.status == "completed":
+        st.success("FINAL RESULTS — Published to the parent page and retained in race history.")
+
+    st.subheader("Final Results" if summary.status == "completed" else "Provisional Results")
+    final_columns = [column for column in ("Place", "Athlete", "Final Time", "Average Pace", "Split Times", "Status")]
     st.dataframe(results_to_frame(rows)[final_columns], hide_index=True, use_container_width=True)
     scope = st.radio("Result scope", ["Overall", "Gender", "Team", "Group/category", "Status"], horizontal=True)
     gender = team = category = status = None
@@ -196,6 +214,25 @@ def render() -> None:
         mime="text/csv",
         use_container_width=True,
     )
+    printable = printable_results_html(meet.name, race.name, rows)
+    st.download_button(
+        "Download Printable Results",
+        data=printable.encode("utf-8"),
+        file_name=branded_export_filename(profile, [meet.name, race.name, "print-results"], "html"),
+        mime="text/html",
+        use_container_width=True,
+    )
+
+    team_summary = build_team_summary(rows)
+    if team_summary:
+        st.subheader("Team Summary")
+        st.dataframe(pd.DataFrame(team_summary), hide_index=True, use_container_width=True)
+
+    if summary.status == "completed":
+        st.subheader("Share Final Results")
+        public_url = spectator_url(race.id, session.id)
+        st.code(public_url, language=None)
+        st.link_button("Open Parent Results Page", public_url, use_container_width=True)
 
     chartable = pd.DataFrame([row for row in rows if row.get("Status") == "Finished"])
     if not chartable.empty:

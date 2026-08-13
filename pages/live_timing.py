@@ -24,7 +24,6 @@ from split_tracker.timing_persistence import (
     persist_event_correction,
     persist_athlete_reassignment,
     persist_manual_correction,
-    persist_finalization,
     persist_reopen,
     persist_dnf,
     poll_shared_timing,
@@ -477,8 +476,10 @@ def _render_finish_controls(projection, clock) -> None:
                         _show_persistence_error("Reopen race", exc); st.error(str(exc))
         return
 
-    if st.button("Finish Race", use_container_width=True, disabled=clock.status not in {"running", "paused"}):
+    if st.button("Finish Race", type="primary", use_container_width=True, disabled=clock.status not in {"running", "paused"}):
         st.session_state.finish_confirmation = True
+    if not unresolved:
+        st.success("All runners are resolved. Finish timing and review provisional results when ready.")
     if not st.session_state.get("finish_confirmation"):
         return
     with st.container(border=True):
@@ -510,14 +511,16 @@ def _render_finish_controls(projection, clock) -> None:
         cancel, confirm = st.columns(2)
         if cancel.button("Cancel", key="cancel_finish", use_container_width=True):
             st.session_state.finish_confirmation = False; st.rerun()
-        if confirm.button("Finish Race", key="confirm_finish", disabled=bool(unresolved), use_container_width=True):
+        if confirm.button("Review Provisional Results", key="confirm_finish", disabled=bool(unresolved), type="primary", use_container_width=True):
             try:
-                persist_finalization(st.session_state)
+                if clock.status == "running":
+                    persist_pause(st.session_state)
                 st.session_state.finish_confirmation = False
                 st.session_state.selected_results_session_id = race_session_id
-                st.rerun()
+                st.session_state.results_review_session_id = race_session_id
+                st.switch_page(st.session_state.page_registry["results"])
             except Exception as exc:
-                _show_persistence_error("Finish race", exc); st.error(str(exc))
+                _show_persistence_error("Prepare results review", exc); st.error(str(exc))
 
 
 def render() -> None:
