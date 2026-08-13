@@ -188,7 +188,7 @@ def project_race_state(
     }
     ordered = sorted(
         (event for event in session_events if not event.is_deleted
-         and event.event_type != "split_voided" and event.id not in inactive_ids),
+         and event.event_type not in {"split_voided", "pack_conflict"} and event.id not in inactive_ids),
         key=split_event_sort_key,
     )
     checkpoint_by_number = {checkpoint.number: checkpoint for checkpoint in checkpoints}

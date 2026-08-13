@@ -120,6 +120,13 @@ class SplitEvent:
     target_event_id: str | None = None
     corrects_event_id: str | None = None
     reason: str = ""
+    client_event_id: str | None = None
+    captured_at: datetime | None = None
+    received_at: datetime | None = None
+    capture_mode: str = "normal"
+    device_id: str = ""
+    capture_sequence: int | None = None
+    clock_offset_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -268,6 +275,7 @@ class RaceRepository(Protocol):
     def count_race_athletes_for_races(self, race_ids: list[str]) -> dict[str, int]: ...
     def create_split_event(self, event: SplitEvent) -> SplitEvent: ...
     def record_shared_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, recorded_by: str, request_id: str) -> SplitEvent: ...
+    def record_pack_split_events(self, race_session_id: str, events: list[dict[str, Any]], recorded_by: str) -> list[SplitEvent]: ...
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
@@ -844,10 +852,46 @@ class InMemoryRaceRepository:
                 recorded_at=recorded_at,
             ))
 
+    def record_pack_split_events(self, race_session_id: str, events: list[dict[str, Any]], recorded_by: str) -> list[SplitEvent]:
+        """Atomically validate captured client times and append an idempotent pack."""
+        saved: list[SplitEvent] = []
+        with self._race_session_lock:
+            session = self.race_sessions.get(race_session_id)
+            if session is None or session.status != "running" or session.started_at is None:
+                raise RepositoryError("Race session is not running.")
+            ordered = sorted(events, key=lambda item: (item["captured_at"], int(item["capture_sequence"]), item["client_event_id"]))
+            for item in ordered:
+                event_id = str(item["client_event_id"])
+                existing = self.split_events.get(event_id)
+                if existing:
+                    if existing.race_session_id != race_session_id or existing.athlete_id != str(item["athlete_id"]):
+                        raise RepositoryError("Pack event ID belongs to a different action.")
+                    saved.append(existing); continue
+                athlete = next((a for a in self.list_race_athletes(session.race_id) if a.athlete_id == str(item["athlete_id"])), None)
+                checkpoint = next((c for c in self.list_race_session_checkpoints(race_session_id) if c.checkpoint_sequence == int(item["checkpoint_number"])), None)
+                if athlete is None or checkpoint is None:
+                    raise RepositoryError("Invalid athlete or checkpoint for this race session.")
+                captured = item["captured_at"]
+                if isinstance(captured, str): captured = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+                elapsed = max(0.0, session.elapsed_offset_seconds + (captured - session.started_at).total_seconds())
+                conflict = any(e.athlete_id == athlete.athlete_id and e.checkpoint_number == checkpoint.checkpoint_sequence for e in self.list_active_split_events(race_session_id))
+                event = SplitEvent(id=event_id, race_session_id=race_session_id, athlete_id=athlete.athlete_id,
+                    athlete_name=athlete.name, bib_number=athlete.bib_number, checkpoint_number=checkpoint.checkpoint_sequence,
+                    checkpoint_label=checkpoint.label, elapsed_seconds=elapsed,
+                    event_order=max([e.event_order for e in self.list_all_split_events(race_session_id)] or [0])+1,
+                    recorded_by=recorded_by, recorded_at=captured, client_event_id=event_id, captured_at=captured,
+                    received_at=utc_now(), capture_mode="pack", device_id=str(item.get("device_id", "")),
+                    capture_sequence=int(item["capture_sequence"]), clock_offset_ms=float(item.get("clock_offset_ms", 0)),
+                    event_type="pack_conflict" if conflict else "split_recorded", reason="duplicate logical split" if conflict else "")
+                # Conflicts remain in audit history but projection excludes them.
+                self.split_events[event.id] = event
+                saved.append(event)
+        return saved
+
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         events = self.list_all_split_events(race_session_id)
         inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
-        return [event for event in events if event.event_type != "split_voided" and not event.is_deleted and event.id not in inactive]
+        return [event for event in events if event.event_type not in {"split_voided", "pack_conflict"} and not event.is_deleted and event.id not in inactive]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         return sorted(
@@ -1277,6 +1321,13 @@ def _split_event_to_row(event: SplitEvent) -> dict[str, Any]:
         "target_event_id": event.target_event_id,
         "corrects_event_id": event.corrects_event_id,
         "reason": event.reason or None,
+        "client_event_id": event.client_event_id,
+        "captured_at": event.captured_at.isoformat() if event.captured_at else None,
+        "received_at": event.received_at.isoformat() if event.received_at else None,
+        "capture_mode": event.capture_mode,
+        "device_id": event.device_id or None,
+        "capture_sequence": event.capture_sequence,
+        "clock_offset_ms": event.clock_offset_ms,
     }
 
 
@@ -1303,6 +1354,11 @@ def _split_event_from_row(row: dict[str, Any]) -> SplitEvent:
         target_event_id=str(row["target_event_id"]) if row.get("target_event_id") else None,
         corrects_event_id=str(row["corrects_event_id"]) if row.get("corrects_event_id") else None,
         reason=row.get("reason") or "",
+        client_event_id=str(row["client_event_id"]) if row.get("client_event_id") else None,
+        captured_at=_parse_datetime(row.get("captured_at")), received_at=_parse_datetime(row.get("received_at")),
+        capture_mode=row.get("capture_mode") or "normal", device_id=row.get("device_id") or "",
+        capture_sequence=int(row["capture_sequence"]) if row.get("capture_sequence") is not None else None,
+        clock_offset_ms=float(row["clock_offset_ms"]) if row.get("clock_offset_ms") is not None else None,
     )
 
 
@@ -2125,10 +2181,19 @@ class SupabaseRaceRepository:
             raise RepositoryError("Could not record shared split.")
         return _split_event_from_row(row)
 
+    def record_pack_split_events(self, race_session_id: str, events: list[dict[str, Any]], recorded_by: str) -> list[SplitEvent]:
+        if not events: return []
+        try:
+            result = self.client.rpc("record_pack_split_events", {"p_session_id": race_session_id, "p_events": events, "p_recorded_by": recorded_by or None}).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError("Pack events remain safely queued on this device.", diagnostic=_safe_repository_diagnostic(exc)) from exc
+        return [_split_event_from_row(row) for row in (getattr(result, "data", []) or [])]
+
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         events = self.list_all_split_events(race_session_id)
         inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
-        return [event for event in events if event.event_type != "split_voided" and not event.is_deleted and event.id not in inactive]
+        return [event for event in events if event.event_type not in {"split_voided", "pack_conflict"} and not event.is_deleted and event.id not in inactive]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).order("event_order", desc=False), "Could not list split events.")
