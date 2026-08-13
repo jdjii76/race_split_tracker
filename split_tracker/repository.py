@@ -58,6 +58,18 @@ class Race:
     display_order: int = 0
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    course_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Course:
+    course_name: str
+    id: str = field(default_factory=lambda: str(uuid4()))
+    location: str = ""
+    distance_meters: float | None = None
+    notes: str = ""
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(frozen=True)
@@ -221,6 +233,9 @@ class RaceRepository(Protocol):
     def archive_race(self, race_id: str) -> Race: ...
     def delete_draft_race(self, race_id: str) -> bool: ...
     def delete_race(self, race_id: str) -> bool: ...
+    def list_courses(self) -> list[Course]: ...
+    def create_course(self, course: Course) -> Course: ...
+    def update_course(self, course: Course) -> Course: ...
     def list_race_athletes(self, race_id: str, *, include_inactive: bool = False) -> list[Athlete]: ...
     def replace_race_athletes(self, race_id: str, athletes: list[Athlete]) -> list[Athlete]: ...
     def delete_race_athlete(self, race_id: str, athlete_id: str) -> bool: ...
@@ -308,6 +323,7 @@ class InMemoryRaceRepository:
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
         self.sponsors: dict[str, SchoolSponsor] = {}
+        self.courses: dict[str, Course] = {}
         self._race_session_start_lock = threading.Lock()
         # Mirrors PostgreSQL's race_sessions row lock for lifecycle/split races.
         self._race_session_lock = threading.RLock()
@@ -475,6 +491,19 @@ class InMemoryRaceRepository:
         saved = replace(race, created_at=race.created_at, updated_at=utc_now())
         self.races[saved.id] = saved
         return saved
+
+    def list_courses(self) -> list[Course]:
+        return sorted(self.courses.values(), key=lambda item: (item.course_name.casefold(), item.id))
+
+    def create_course(self, course: Course) -> Course:
+        if not course.course_name.strip(): raise RepositoryError("Course name is required.")
+        saved = replace(course, course_name=course.course_name.strip(), updated_at=utc_now())
+        self.courses[saved.id] = saved
+        return saved
+
+    def update_course(self, course: Course) -> Course:
+        if course.id not in self.courses: raise RepositoryError("Course not found.")
+        return self.create_course(replace(course, created_at=self.courses[course.id].created_at))
 
     def update_race(self, race: Race) -> Race:
         if race.id not in self.races:
@@ -1198,6 +1227,7 @@ def _race_to_row(race: Race) -> dict[str, Any]:
         "display_order": race.display_order,
         "created_at": race.created_at.isoformat(),
         "updated_at": race.updated_at.isoformat(),
+        "course_id": race.course_id,
     }
 
 
@@ -1215,7 +1245,21 @@ def _race_from_row(row: dict[str, Any]) -> Race:
         display_order=int(row.get("display_order") or 0),
         created_at=_parse_datetime(row.get("created_at")) or utc_now(),
         updated_at=_parse_datetime(row.get("updated_at")) or utc_now(),
+        course_id=str(row["course_id"]) if row.get("course_id") else None,
     )
+
+
+def _course_to_row(course: Course) -> dict[str, Any]:
+    return {"id": course.id, "course_name": course.course_name, "location": course.location or None,
+            "distance_meters": course.distance_meters, "notes": course.notes or None,
+            "created_at": course.created_at.isoformat(), "updated_at": course.updated_at.isoformat()}
+
+
+def _course_from_row(row: dict[str, Any]) -> Course:
+    return Course(id=str(row["id"]), course_name=str(row["course_name"]), location=row.get("location") or "",
+                  distance_meters=float(row["distance_meters"]) if row.get("distance_meters") is not None else None,
+                  notes=row.get("notes") or "", created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+                  updated_at=_parse_datetime(row.get("updated_at")) or utc_now())
 
 
 def _template_to_row(template: MeetTemplate) -> dict[str, Any]:
@@ -1573,6 +1617,7 @@ class SupabaseRaceRepository:
             ("race_session_checkpoints", "id"),
             ("race_session_athlete_outcomes", "race_session_id"),
             ("athletes", "id"),
+            ("courses", "id"),
         )
         for table_name, columns in checks:
             message = f"Supabase schema check failed for {table_name}. Apply the required migrations."
@@ -1813,6 +1858,22 @@ class SupabaseRaceRepository:
     def create_race(self, race: Race) -> Race:
         row = self._single(self.client.table("races").insert(_race_to_row(race)), "Could not create race.")
         return _race_from_row(row or _race_to_row(race))
+
+    def list_courses(self) -> list[Course]:
+        result = self._execute(self.client.table("courses").select("*").order("course_name"), "Could not list courses.")
+        return [_course_from_row(row) for row in getattr(result, "data", [])]
+
+    def create_course(self, course: Course) -> Course:
+        if not course.course_name.strip(): raise RepositoryError("Course name is required.")
+        saved = replace(course, course_name=course.course_name.strip(), updated_at=utc_now())
+        row = self._single(self.client.table("courses").insert(_course_to_row(saved)), "Could not create course.")
+        return _course_from_row(row or _course_to_row(saved))
+
+    def update_course(self, course: Course) -> Course:
+        saved = replace(course, course_name=course.course_name.strip(), updated_at=utc_now())
+        row = self._single(self.client.table("courses").update(_course_to_row(saved)).eq("id", saved.id), "Could not update course.")
+        if not row: raise RepositoryError("Course not found.")
+        return _course_from_row(row)
 
     def update_race(self, race: Race) -> Race:
         saved = replace(race, updated_at=utc_now())

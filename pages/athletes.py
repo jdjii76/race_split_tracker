@@ -187,6 +187,9 @@ def render() -> None:
         details.append(athlete.status.title())
         with st.container(border=True):
             st.markdown(f"**{' • '.join(details)}**")
+            if st.button("View Profile", key=f"profile_{athlete.id}", use_container_width=True):
+                st.session_state.profile_athlete_id = athlete.id
+                st.switch_page(st.session_state.page_registry["athlete_profile"])
             if athlete.status == "archived":
                 if st.button("Restore", key=f"restore_{athlete.id}"):
                     _run_roster_action(repository, athlete, "restore")

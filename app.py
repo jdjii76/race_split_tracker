@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 from dataclasses import replace
 
-from pages import athletes, coach_login, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding, spectator
+from pages import athlete_profile, athletes, coach_analytics, coach_login, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding, spectator, team_progress
 from split_tracker.auth import current_identity, sign_out
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
@@ -116,6 +116,9 @@ MEET_SETUP_PAGE = st.Page(
     url_path="meet-setup",
 )
 ATHLETES_PAGE = st.Page(athletes.render, title="Athletes", icon="🏃", url_path="athletes")
+ATHLETE_PROFILE_PAGE = st.Page(athlete_profile.render, title="Athlete Profile", icon="📈", url_path="athlete-profile")
+TEAM_PROGRESS_PAGE = st.Page(team_progress.render, title="Team Progress", icon="📊", url_path="team-progress")
+COACH_ANALYTICS_PAGE = st.Page(coach_analytics.render, title="Coach Analytics", icon="📋", url_path="coach-analytics")
 CONFIGURE_RACE_PAGE = st.Page(
     meet_setup.render,
     title="Race Setup",
@@ -161,6 +164,8 @@ st.session_state.page_registry = {
     "results": RESULTS_PAGE,
     "school_branding": SCHOOL_BRANDING_PAGE,
     "athletes": ATHLETES_PAGE,
+    "athlete_profile": ATHLETE_PROFILE_PAGE,
+    "coach_analytics": COACH_ANALYTICS_PAGE,
     "spectator": SPECTATOR_PAGE,
 }
 
@@ -168,6 +173,9 @@ race_day_pages = [MEET_DASHBOARD_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE]
 settings_pages = []
 if identity and identity.is_admin:
     race_day_pages.insert(1, ATHLETES_PAGE)
+    race_day_pages.insert(2, TEAM_PROGRESS_PAGE)
+    race_day_pages.insert(3, ATHLETE_PROFILE_PAGE)
+    race_day_pages.insert(4, COACH_ANALYTICS_PAGE)
     settings_pages.append(SCHOOL_BRANDING_PAGE)
 pages = {
     "Race Day": race_day_pages,
