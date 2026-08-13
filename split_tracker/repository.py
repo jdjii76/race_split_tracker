@@ -116,6 +116,10 @@ class SplitEvent:
     correction_type: str = ""
     corrected_at: datetime | None = None
     corrected_by: str = ""
+    event_type: str = "split_recorded"
+    target_event_id: str | None = None
+    corrects_event_id: str | None = None
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -268,6 +272,7 @@ class RaceRepository(Protocol):
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
     def invalidate_split_event(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, *, require_latest: bool = False) -> SplitEvent: ...
+    def correct_split_athlete(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, new_athlete_id: str, corrected_by: str, request_id: str) -> list[SplitEvent]: ...
     def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent: ...
     def list_recent_split_events(self, race_session_id: str, *, limit: int = 10) -> list[SplitEvent]: ...
     def restore_split_event(self, split_event_id: str) -> SplitEvent: ...
@@ -775,13 +780,8 @@ class InMemoryRaceRepository:
         session = self.race_sessions.get(event.race_session_id)
         if session is None:
             raise RepositoryError("Race session not found.")
-        if any(
-            not existing.is_deleted
-            and existing.race_session_id == event.race_session_id
-            and existing.athlete_id == event.athlete_id
-            and existing.checkpoint_number == event.checkpoint_number
-            for existing in self.split_events.values()
-        ):
+        if any(existing.athlete_id == event.athlete_id and existing.checkpoint_number == event.checkpoint_number
+               for existing in self.list_active_split_events(event.race_session_id)):
             raise RepositoryError("That athlete already has an active split at this checkpoint.")
         saved = replace(event, created_at=event.created_at, updated_at=utc_now())
         self.split_events[saved.id] = saved
@@ -845,7 +845,9 @@ class InMemoryRaceRepository:
             ))
 
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
-        return [event for event in self.list_all_split_events(race_session_id) if not event.is_deleted]
+        events = self.list_all_split_events(race_session_id)
+        inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
+        return [event for event in events if event.event_type != "split_voided" and not event.is_deleted and event.id not in inactive]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         return sorted(
@@ -871,23 +873,54 @@ class InMemoryRaceRepository:
         event = self._require_split_event(split_event_id)
         if event.race_session_id != race_session_id or event.athlete_id != athlete_id or event.checkpoint_number != checkpoint_number:
             raise RepositoryError("Split correction no longer matches the selected race-session event.")
-        if event.is_deleted:
+        if event.is_deleted or event.id not in {item.id for item in self.list_active_split_events(race_session_id)}:
             raise RepositoryError("That split was already corrected by another user.")
         if require_latest and any(
             item.race_session_id == race_session_id and not item.is_deleted and item.event_order > event.event_order
             for item in self.split_events.values()
         ):
             raise RepositoryError("A newer split was recorded. Refresh before choosing Undo Last Split.")
-        saved = replace(
-            event,
-            is_deleted=True,
-            correction_type="invalidated",
-            corrected_at=utc_now(),
-            corrected_by=corrected_by.strip(),
-            updated_at=utc_now(),
+        corrected_at = utc_now()
+        saved = SplitEvent(
+            race_session_id=race_session_id, athlete_id=event.athlete_id,
+            athlete_name=event.athlete_name, bib_number=event.bib_number,
+            checkpoint_number=event.checkpoint_number, checkpoint_label=event.checkpoint_label,
+            elapsed_seconds=event.elapsed_seconds,
+            event_order=max([item.event_order for item in self.list_all_split_events(race_session_id)] or [0]) + 1,
+            recorded_by=corrected_by.strip(), recorded_at=corrected_at,
+            correction_type="invalidated", corrected_at=corrected_at,
+            corrected_by=corrected_by.strip(), event_type="split_voided",
+            target_event_id=event.id, reason="undo",
         )
         self.split_events[saved.id] = saved
         return saved
+
+    def correct_split_athlete(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, new_athlete_id: str, corrected_by: str, request_id: str) -> list[SplitEvent]:
+        """Atomically void a split and append a timestamp-preserving reassignment."""
+        with self._race_session_lock:
+            target = self._require_split_event(split_event_id)
+            if target.race_session_id != race_session_id or target.athlete_id != athlete_id or target.checkpoint_number != checkpoint_number:
+                raise RepositoryError("Split correction no longer matches the selected race-session event.")
+            active = self.list_active_split_events(race_session_id)
+            if target.id not in {item.id for item in active}:
+                raise RepositoryError("That split was already changed by another coach.")
+            session = self.get_race_session(race_session_id)
+            destination = next((item for item in self.list_race_athletes(session.race_id) if item.athlete_id == new_athlete_id), None) if session else None
+            if destination is None: raise RepositoryError("Invalid athlete for this race session.")
+            if any(item.athlete_id == new_athlete_id and item.checkpoint_number == checkpoint_number for item in active):
+                raise RepositoryError(f"{destination.name} already has a {target.checkpoint_label} split.")
+            voided = self._invalidate_split_event_locked(split_event_id, race_session_id, athlete_id, checkpoint_number, corrected_by, False)
+            replacement = SplitEvent(
+                id=request_id, race_session_id=race_session_id, athlete_id=new_athlete_id,
+                athlete_name=destination.name, bib_number=destination.bib_number,
+                checkpoint_number=target.checkpoint_number, checkpoint_label=target.checkpoint_label,
+                elapsed_seconds=target.elapsed_seconds, event_order=voided.event_order + 1,
+                recorded_by=corrected_by.strip(), recorded_at=target.recorded_at,
+                correction_type="manual", corrected_at=utc_now(), corrected_by=corrected_by.strip(),
+                event_type="split_corrected", corrects_event_id=target.id, reason="wrong athlete",
+            )
+            self.split_events[replacement.id] = replacement
+            return [voided, replacement]
 
     def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent:
         """Insert the athlete's exact next missing checkpoint with entered elapsed time."""
@@ -934,6 +967,7 @@ class InMemoryRaceRepository:
             event_order=max([event.event_order for event in self.list_all_split_events(race_session_id)] or [0]) + 1,
             recorded_by=recorded_by.strip(),
             correction_type="manual",
+            event_type="split_manual",
             corrected_at=corrected_at,
             corrected_by=recorded_by.strip(),
         )
@@ -1239,6 +1273,10 @@ def _split_event_to_row(event: SplitEvent) -> dict[str, Any]:
         "correction_type": event.correction_type or None,
         "corrected_at": event.corrected_at.isoformat() if event.corrected_at else None,
         "corrected_by": event.corrected_by or None,
+        "event_type": event.event_type,
+        "target_event_id": event.target_event_id,
+        "corrects_event_id": event.corrects_event_id,
+        "reason": event.reason or None,
     }
 
 
@@ -1261,6 +1299,10 @@ def _split_event_from_row(row: dict[str, Any]) -> SplitEvent:
         correction_type=row.get("correction_type") or "",
         corrected_at=_parse_datetime(row.get("corrected_at")),
         corrected_by=row.get("corrected_by") or "",
+        event_type=row.get("event_type") or "split_recorded",
+        target_event_id=str(row["target_event_id"]) if row.get("target_event_id") else None,
+        corrects_event_id=str(row["corrects_event_id"]) if row.get("corrects_event_id") else None,
+        reason=row.get("reason") or "",
     )
 
 
@@ -2084,11 +2126,9 @@ class SupabaseRaceRepository:
         return _split_event_from_row(row)
 
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
-        result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).eq("is_deleted", False).order("event_order", desc=False), "Could not list active split events.")
-        return sorted(
-            [_split_event_from_row(row) for row in getattr(result, "data", [])],
-            key=_split_event_order_key,
-        )
+        events = self.list_all_split_events(race_session_id)
+        inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
+        return [event for event in events if event.event_type != "split_voided" and not event.is_deleted and event.id not in inactive]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).order("event_order", desc=False), "Could not list split events.")
@@ -2156,6 +2196,16 @@ class SupabaseRaceRepository:
         )
         events = [_split_event_from_row(row) for row in getattr(result, "data", [])]
         return sorted(events, key=lambda event: (event.corrected_at or event.recorded_at, event.event_order, event.id), reverse=True)[:max(0, limit)]
+
+    def correct_split_athlete(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, new_athlete_id: str, corrected_by: str, request_id: str) -> list[SplitEvent]:
+        try:
+            result = self.client.rpc("correct_split_athlete", {"p_event_id": split_event_id, "p_session_id": race_session_id, "p_athlete_id": athlete_id, "p_checkpoint_number": checkpoint_number, "p_new_athlete_id": new_athlete_id, "p_corrected_by": corrected_by or None, "p_request_id": request_id}).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError(str(exc)) from exc
+        rows = getattr(result, "data", []) or []
+        if len(rows) != 2: raise RepositoryError("The split reassignment was not completed.")
+        return [_split_event_from_row(row) for row in rows]
 
     def restore_split_event(self, split_event_id: str) -> SplitEvent:
         updated_at = utc_now().isoformat()

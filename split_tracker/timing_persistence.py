@@ -524,3 +524,18 @@ def persist_manual_correction(
         requests.pop(key, None)
     synchronize_shared_timing(session_state)
     return saved
+
+
+def persist_athlete_reassignment(session_state, event: SplitEvent, new_athlete_id: str) -> list[SplitEvent]:
+    """Atomically append a void and timestamp-preserving replacement event."""
+    repository: RaceRepository | None = session_state.repository
+    race_session_id = session_state.get("active_race_session_id")
+    if repository is None or not race_session_id:
+        raise RepositoryError("No shared race session is connected.")
+    request_id = str(uuid4())
+    saved = repository.correct_split_athlete(
+        event.id, race_session_id, event.athlete_id, event.checkpoint_number,
+        new_athlete_id, session_state.get("timer_name", ""), request_id,
+    )
+    synchronize_shared_timing(session_state)
+    return saved
