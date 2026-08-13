@@ -816,3 +816,25 @@ finish time, average pace, and checkpoint splits, return to Live Timing for appe
 corrections, and then choose **Finalize & Publish Results**. Finalization locks the session,
 retains it in race history, changes the public parent page from **LIVE** to **FINAL**, and
 enables CSV, printable HTML, team-summary, and share-link output from Results.
+# Race-day timing modes
+
+## Normal Timing
+
+Use the standard athlete buttons when runners are separated. Each tap is validated by the shared race session and immediately becomes an authoritative split.
+
+## Pack Mode
+
+Use **Pack Mode** when several runners approach the same checkpoint together:
+
+1. Choose the checkpoint and enter Pack Mode.
+2. Rapidly tap athletes in crossing order; buttons acknowledge taps entirely in the browser, without waiting for a Streamlit rerun.
+3. Watch the captured/queued/synchronized counters and the chronological capture strip.
+4. Use **Undo Last Pack Tap** immediately after a mistake. Pending taps are cancelled locally; synchronized taps use the normal append-only void workflow.
+5. Exit when the pack clears. If synchronization is outstanding, remain and retry or exit knowing the browser queue is preserved.
+6. Use **Recent Activity** for later corrections exactly as with normal timing.
+
+"Captured locally" means the tap and its UTC/monotonic timing metadata are durable in browser `localStorage`; it is not yet visible to other devices. "Synchronized" means the idempotent batch RPC accepted it into canonical `split_events`. Only canonical active events projected by `project_race_state()` are authoritative race results and visible to coaches and spectators.
+
+At entry the component estimates device-clock offset from a reference UTC value supplied by the app. Offsets up to ten seconds are applied to capture UTC while preserving `performance.now()` and capture sequence for ordering; a warning is shown above two seconds, and larger corrections are not silently applied. Network failure never blocks taps: queued events remain namespaced by race session, checkpoint, and device, survive refresh, and retry automatically when connectivity returns.
+
+The capture grid uses direct browser event handlers and a 500 ms batch debounce. It therefore accepts a five- or twenty-runner sequence without a Python round trip between taps; database synchronization occurs after capture and preserves capture timestamp/sequence ordering.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
@@ -32,6 +33,8 @@ from split_tracker.timing_persistence import (
     start_and_synchronize_shared_timing,
 )
 from split_tracker.timing_recovery import active_events_for_athlete, latest_active_event, recent_timing_activity
+from split_tracker.pack_component import pack_capture
+from split_tracker.pack_timing import normalize_pack_batch
 from split_tracker.state import (
     elapsed_seconds,
     end_race,
@@ -271,6 +274,57 @@ def _record_tap(athlete_id: str) -> bool:
             f"Split was not saved: {exc} Tap again after resolving the error."
         )
         return False
+
+
+def _render_pack_mode(projection, clock, shared_unavailable: bool) -> bool:
+    """Render the browser-owned rapid-capture surface; return whether it is active."""
+    session_id = st.session_state.get("active_race_session_id")
+    eligible = [state for state in (projection.athletes if projection else ()) if state.next_checkpoint and not state.finished and state.outcome_status != "dnf"]
+    allowed = bool(session_id and clock.status == "running" and eligible and not shared_unavailable and st.session_state.timer_name)
+    st.markdown("### ⚡ PACK MODE")
+    if not st.session_state.get("pack_mode_active"):
+        st.caption("Rapid browser capture for runners arriving seconds apart. Normal timing remains available below.")
+        if st.button("Enter Pack Mode", type="primary", use_container_width=True, disabled=not allowed):
+            st.session_state.pack_mode_active = True; st.rerun()
+        return False
+    if not allowed:
+        st.error("Pack Mode stopped: the race/checkpoint context is no longer valid.")
+        st.session_state.pack_mode_active = False
+        return False
+    checkpoint_numbers = sorted({state.next_checkpoint.number for state in eligible})
+    checkpoint_number = st.selectbox("Current checkpoint", checkpoint_numbers, format_func=lambda n: next(cp.label for cp in st.session_state.meet_config.checkpoints if cp.number == n), key="pack_checkpoint")
+    targets = [state for state in eligible if state.next_checkpoint.number == checkpoint_number]
+    cp = next(cp for cp in st.session_state.meet_config.checkpoints if cp.number == checkpoint_number)
+    st.session_state.setdefault("pack_device_id", str(uuid4()))
+    ack_ids = st.session_state.get("pack_ack_ids", [])
+    athlete_rows=[]
+    race_order={state.athlete.athlete_id:i for i,state in enumerate(ordered_race_board_athletes(projection))}
+    for i,state in enumerate(targets):
+        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"roster":i,"race":race_order[state.athlete.athlete_id]})
+    value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=cp.label,
+        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, key=f"pack:{session_id}:{checkpoint_number}")
+    events = value.get("events", []) if isinstance(value, dict) else []
+    action = value.get("action", "") if isinstance(value, dict) else ""
+    if action.startswith("undo_synced:"):
+        event_id=action.split(":",1)[1]; event=next((e for e in st.session_state.get("persisted_split_events",()) if (e.client_event_id or e.id)==event_id),None)
+        if event: _correct_event(event); st.rerun()
+    if events:
+        try:
+            saved=normalize_pack_batch(st.session_state.repository,st.session_state.selected_race_id,session_id,checkpoint_number,events,st.session_state.timer_name)
+            st.session_state.pack_ack_ids=list({*ack_ids,*(e.client_event_id or e.id for e in saved)})
+            st.session_state.pack_last_sync_at=datetime.now(timezone.utc); st.session_state.pack_sync_error=""
+            poll_shared_timing(st.session_state)
+        except Exception as exc:
+            st.session_state.pack_sync_error=str(exc)
+    if st.session_state.get("pack_sync_error"): st.warning(f"OFFLINE / synchronization delayed — events remain in browser storage. {st.session_state.pack_sync_error}")
+    left,right=st.columns(2)
+    if left.button("Retry synchronization",use_container_width=True): st.rerun()
+    if right.button("Exit Pack Mode",use_container_width=True):
+        if events: st.warning(f"{len(events)} captured splits are still waiting to synchronize. Exit preserves the durable browser queue.")
+        else: st.session_state.pack_mode_active=False; st.rerun()
+    if st.session_state.get("debug_mode"):
+        with st.expander("Pack diagnostics"): st.json({"device_id":st.session_state.pack_device_id,"submitted":len(events),"acknowledged":len(st.session_state.get("pack_ack_ids",[])),"latest_sync":str(st.session_state.get("pack_last_sync_at")),"sync_error":st.session_state.get("pack_sync_error","")})
+    return True
 
 
 def _correct_event(event, *, require_latest: bool = False) -> bool:
@@ -707,6 +761,9 @@ def render() -> None:
         )
 
     projection = st.session_state.get("projected_race_state")
+    pack_active = _render_pack_mode(projection, clock, shared_unavailable)
+    if pack_active:
+        st.caption("Normal timing controls are temporarily hidden to prevent accidental duplicate taps. Exit Pack Mode to restore them.")
     search_col, order_col = st.columns([2, 1])
     search_value = search_col.text_input(
         "Find athlete",
@@ -763,7 +820,8 @@ def render() -> None:
                     type="primary",
                 )
 
-    render_button_grid(active_athletes)
+    if not pack_active:
+        render_button_grid(active_athletes)
     if not matching:
         st.info("No race athletes match that name or bib.")
     if finished_athletes:
