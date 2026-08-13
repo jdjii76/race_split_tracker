@@ -229,7 +229,7 @@ def undo_last_split(session_state) -> SplitRecord | None:
 def replace_setup(session_state, config: MeetConfig, athletes: list[Athlete]) -> None:
     """Replace saved setup while preserving existing splits when possible."""
     session_state.meet_config = config
-    session_state.athletes = _save_roster_for_selected_race(session_state, athletes)
+    session_state.athletes = _persist_roster_for_selected_race(session_state, athletes)
     session_state.setup_saved = True
     refresh_all_splits(session_state)
 
@@ -342,19 +342,27 @@ def _clone_athletes(athletes: list[Athlete]) -> list[Athlete]:
     return [replace(athlete) for athlete in athletes]
 
 
-def _save_roster_for_selected_race(session_state, athletes: list[Athlete] | None = None) -> list[Athlete]:
-    """Save the selected race roster to the race-scoped cache and repository."""
+def _cache_roster_for_selected_race(session_state, athletes: list[Athlete] | None = None) -> list[Athlete]:
+    """Preserve the selected race roster in session state without writing storage."""
     race_id = session_state.get("selected_race_id")
     roster = _clone_athletes(session_state.athletes if athletes is None else athletes)
     if not race_id:
         return roster
     session_state.setdefault("race_rosters", {})
     session_state.race_rosters[race_id] = _clone_athletes(roster)
+    return roster
+
+
+def _persist_roster_for_selected_race(session_state, athletes: list[Athlete]) -> list[Athlete]:
+    """Persist an explicitly saved roster and refresh its race-scoped cache."""
+    race_id = session_state.get("selected_race_id")
+    roster = _clone_athletes(athletes)
+    if not race_id:
+        return roster
     repository = session_state.get("repository")
     if repository is not None:
         roster = repository.replace_race_athletes(race_id, roster)
-        session_state.race_rosters[race_id] = _clone_athletes(roster)
-    return roster
+    return _cache_roster_for_selected_race(session_state, roster)
 
 
 def load_selected_race_roster(session_state, race_id: str) -> list[Athlete]:
@@ -385,7 +393,9 @@ def load_race_into_setup(session_state, meet, race) -> None:
     )
     previous_race_id = session_state.get("selected_race_id")
     if previous_race_id and previous_race_id != race.id:
-        _save_roster_for_selected_race(session_state)
+        # Navigation may preserve an in-progress UI draft locally, but must never
+        # interpret that draft as an explicit request to replace persisted data.
+        _cache_roster_for_selected_race(session_state)
         reset_race(session_state)
         session_state.active_race_session_id = None
         session_state.timing_restored_for_race_id = None
