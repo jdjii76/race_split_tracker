@@ -48,3 +48,5 @@ def test_timer_pack_grid_receives_full_stable_roster_and_void_acknowledgements()
     assert '"eligible":state.athlete.athlete_id in eligible_ids' in source
     assert 'void_ids=st.session_state.get("pack_void_ids", [])' in source
     assert "st.session_state.pack_void_ids=list" in source
+    assert "expected_arrival_metadata" in source
+    assert "or station_number is not None" in source

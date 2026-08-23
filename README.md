@@ -31,6 +31,10 @@ timestamp, and synchronization state; undo restores the uncaptured appearance
 after the existing local cancellation or append-only server correction succeeds.
 Timer cards show each athlete as **First Name Last Name**, prefixed by the real
 bib number only when one is present.
+Checkpoint timers can optionally switch from **Stable Roster** to **Expected
+Arrival Order**, which snapshots the order from the preceding checkpoint's
+cumulative times. Athletes missing that prior split remain tappable and show a
+red missing-checkpoint indicator; captures never reorder the selected view.
 
 Completed races now include a coach-only **Manage Results** panel. Coaches can add
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official

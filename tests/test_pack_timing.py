@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from split_tracker.models import Athlete, Checkpoint
-from split_tracker.pack_timing import normalize_pack_batch
+from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch
 from split_tracker.projection import project_race_state
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError
 
@@ -43,8 +44,44 @@ def test_pack_grid_keeps_captured_athletes_in_stable_all_athletes_view():
     assert "✓ " in render
     assert "${a.name}" in render
     assert "${a.last.toUpperCase()}" not in render
-    assert "${a.bib? a.bib+'  ':''}${a.name}" in render
-    assert "First name" in render
+    assert "${a.bib? a.bib+'  ':''}" in render
+    assert "Stable Roster" in render
+    assert "Expected Arrival Order" in render
+    assert "displayMode='stable'" in source
+
+
+def test_expected_arrival_metadata_sorts_prior_times_and_marks_missing():
+    checkpoints = [Checkpoint(1, "Mile 1", 1609), Checkpoint(2, "Mile 2", 3218)]
+    states = [
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="john"), splits=(SimpleNamespace(checkpoint_number=1, cumulative_time_seconds=362.0),)),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="alex"), splits=(SimpleNamespace(checkpoint_number=1, cumulative_time_seconds=375.0),)),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="sarah"), splits=(SimpleNamespace(checkpoint_number=1, cumulative_time_seconds=381.0),)),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="chris"), splits=()),
+    ]
+
+    metadata = expected_arrival_metadata(states, checkpoints, 2)
+    ordered = sorted(
+        metadata,
+        key=lambda athlete_id: (
+            metadata[athlete_id]["arrival_time"] is None,
+            metadata[athlete_id]["arrival_time"] or 0,
+        ),
+    )
+
+    assert ordered == ["john", "alex", "sarah", "chris"]
+    assert metadata["chris"]["missing_previous"] is True
+    assert metadata["chris"]["missing_label"] == "Mile 1"
+    assert metadata["john"]["missing_previous"] is False
+
+
+def test_expected_arrival_order_is_snapshotted_and_capture_does_not_resort():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+
+    assert "expected-order" in source
+    assert "expectedOrder.length" in source
+    assert "expectedPosition=new Map" in source
+    capture = source[source.index("function capture"):source.index("function undo")]
+    assert "expectedOrder" not in capture
 
 
 def test_pack_undo_void_ack_restores_uncaptured_card_without_deleting_history():
