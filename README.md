@@ -1,5 +1,31 @@
 # Race Split Tracker
 
+## Race Day Timer Mode
+
+Provision the shared volunteer account with the `timer` role after applying
+`supabase/migrations/024_race_day_timer_role.sql` and
+`supabase/migrations/025_timer_race_start.sql`, then apply
+`supabase/migrations/026_timer_pack_sync.sql`. On sign-in, that account is
+routed to **Race Day Timer** instead of the coach application. The volunteer
+chooses a ready/running race and checkpoint, then sees only the station name,
+authoritative race clock, athlete split buttons, connection state, and a control
+to change stations. Setup, analytics, results, athlete progression, race
+lifecycle, corrections, and administration remain outside timer navigation.
+The volunteer assigned to **Finish Line** is the race starter and receives the
+single control that starts the authoritative shared clock; split-station timers
+wait for that start and do not receive lifecycle controls.
+
+The timer role can read race-day meet, race, roster, session, checkpoint, and
+split data and can insert authoritative split events. It cannot edit meet/race
+setup or control the race lifecycle through table policies.
+
+Timer stations open directly in **Pack Mode** once selected. The compact capture
+grid acknowledges each tap in the browser before synchronization, shows the
+three newest captures and their saved/synchronized state, and keeps **Undo Last
+Tap** within thumb reach. The durable localStorage queue, UUID event identities,
+offline retry, server validation, and append-only correction path are unchanged.
+Timers can switch to Individual Timing when runners are separated.
+
 Completed races now include a coach-only **Manage Results** panel. Coaches can add
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
 corrections. Corrections become the single result used by history, PR, scoring,

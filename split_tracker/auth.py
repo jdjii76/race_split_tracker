@@ -20,6 +20,10 @@ class AppIdentity:
         return self.role in {"coach", "admin"}
 
     @property
+    def is_timer(self) -> bool:
+        return self.role == "timer"
+
+    @property
     def is_admin(self) -> bool:
         return self.role == "admin"
 
@@ -34,8 +38,8 @@ def _identity(client: Any, user: Any) -> AppIdentity:
     except Exception as exc:
         raise AuthenticationError("Could not verify your KMHS application role.") from exc
     role = str(rows[0].get("role", "")) if rows else ""
-    if role not in {"coach", "admin"}:
-        raise AuthenticationError("This account is not authorized as a KMHS coach or administrator.")
+    if role not in {"timer", "coach", "admin"}:
+        raise AuthenticationError("This account is not authorized for the KMHS Running Split App.")
     return AppIdentity(user_id=user_id, email=str(getattr(user, "email", "") or ""), role=role)
 
 
