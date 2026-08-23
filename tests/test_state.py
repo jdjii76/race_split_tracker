@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.models import Athlete, MeetConfig, RaceClock
-from split_tracker.state import elapsed_seconds, is_athlete_finished, record_split, start_race, undo_last_split, validate_setup
+from split_tracker.state import elapsed_seconds, initialize_state, is_athlete_finished, record_split, start_race, undo_last_split, validate_setup
 
 
 class SessionState(SimpleNamespace):
@@ -25,6 +25,15 @@ def make_session():
         pending_duplicate=None,
         setup_saved=True,
     )
+
+
+def test_timer_timing_mode_defaults_to_pack():
+    session = SessionState()
+
+    initialize_state(session)
+
+    assert session.timer_timing_mode == "pack"
+    assert session.pack_void_ids == []
 
 
 def test_elapsed_seconds_running_and_paused():
