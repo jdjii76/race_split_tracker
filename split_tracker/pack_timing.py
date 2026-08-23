@@ -7,6 +7,52 @@ from typing import Any
 from split_tracker.repository import RaceRepository, RepositoryError, SplitEvent
 
 
+def expected_arrival_metadata(
+    athlete_states,
+    checkpoints,
+    station_number: int,
+) -> dict[str, dict[str, object]]:
+    """Describe prior-checkpoint arrival data without changing capture state."""
+    ordered_checkpoints = sorted(checkpoints, key=lambda checkpoint: checkpoint.number)
+    station_index = next(
+        (index for index, checkpoint in enumerate(ordered_checkpoints) if checkpoint.number == station_number),
+        None,
+    )
+    previous = ordered_checkpoints[station_index - 1] if station_index not in {None, 0} else None
+    metadata: dict[str, dict[str, object]] = {}
+    for roster_index, state in enumerate(athlete_states):
+        prior_split = next(
+            (
+                split
+                for split in state.splits
+                if previous is not None and split.checkpoint_number == previous.number
+            ),
+            None,
+        )
+        metadata[state.athlete.athlete_id] = {
+            "arrival_time": prior_split.cumulative_time_seconds if prior_split else None,
+            "missing_previous": previous is not None and prior_split is None,
+            "missing_label": previous.label if previous is not None and prior_split is None else "",
+            "previous_label": previous.label if previous is not None else "",
+            "roster": roster_index,
+        }
+    return metadata
+
+
+def ordered_expected_arrival_states(athlete_states, metadata):
+    """Order timed arrivals first, using stable roster order for every tie."""
+    return tuple(
+        sorted(
+            athlete_states,
+            key=lambda state: (
+                metadata[state.athlete.athlete_id]["arrival_time"] is None,
+                metadata[state.athlete.athlete_id]["arrival_time"] or 0,
+                metadata[state.athlete.athlete_id]["roster"],
+            ),
+        )
+    )
+
+
 def normalize_pack_batch(repository: RaceRepository, race_id: str, session_id: str, checkpoint_number: int,
                          payload: list[dict[str, Any]], recorded_by: str) -> list[SplitEvent]:
     """Revalidate an untrusted component payload and submit one idempotent batch."""
