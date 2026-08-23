@@ -40,6 +40,8 @@ def _select_station(option: TimerRaceOption, checkpoint_number: int) -> None:
     st.session_state.timing_restored_for_race_id = None
     st.session_state.timer_station_checkpoint = checkpoint_number
     st.session_state.timer_mode = True
+    st.session_state.timer_timing_mode = "pack"
+    st.session_state.pack_mode_active = True
     checkpoint = next(item for item in option.checkpoints if item.number == checkpoint_number)
     identity = st.session_state.app_identity
     st.session_state.timer_name = f"{station_label(checkpoint)} • {identity.email}"

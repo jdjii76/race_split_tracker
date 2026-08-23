@@ -18,6 +18,13 @@ The timer role can read race-day meet, race, roster, session, checkpoint, and
 split data and can insert authoritative split events. It cannot edit meet/race
 setup or control the race lifecycle through table policies.
 
+Timer stations open directly in **Pack Mode** once selected. The compact capture
+grid acknowledges each tap in the browser before synchronization, shows the
+three newest captures and their saved/synchronized state, and keeps **Undo Last
+Tap** within thumb reach. The durable localStorage queue, UUID event identities,
+offline retry, server validation, and append-only correction path are unchanged.
+Timers can switch to Individual Timing when runners are separated.
+
 Completed races now include a coach-only **Manage Results** panel. Coaches can add
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
 corrections. Corrections become the single result used by history, PR, scoring,

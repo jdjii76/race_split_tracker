@@ -22,3 +22,18 @@ def test_only_finish_line_timer_receives_start_control():
     assert "finish_line_starter" in source
     assert "checkpoint.is_finish" in source
     assert '"You are the race starter.' in source
+
+
+def test_timer_defaults_to_pack_mode_and_preserves_individual_timing():
+    source = (
+        Path(__file__).resolve().parents[1] / "pages/live_timing.py"
+    ).read_text(encoding="utf-8")
+    selection_source = (
+        Path(__file__).resolve().parents[1] / "pages/race_day_timer.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'st.session_state.timer_timing_mode = "pack"' in selection_source
+    assert "st.session_state.pack_mode_active = True" in selection_source
+    assert '"Switch to Individual Timing"' in source
+    assert '"Switch to Pack Mode"' in source
+    assert "if timer_mode and st.session_state.get(\"timer_timing_mode\", \"pack\") == \"pack\":" in source
