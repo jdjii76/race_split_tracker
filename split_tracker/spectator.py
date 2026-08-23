@@ -173,7 +173,7 @@ def spectator_url(
 def spectator_status(session: RaceSession | None) -> str:
     if session is None or session.status == "ready":
         return "Not Started"
-    return {"running": "Running", "paused": "Paused", "completed": "Finished", "cancelled": "Finished"}.get(session.status, "Not Started")
+    return {"running": "Running", "paused": "Paused", "awaiting_review": "Timing Complete", "completed": "Finished", "cancelled": "Finished"}.get(session.status, "Not Started")
 
 
 def load_spectator_race(

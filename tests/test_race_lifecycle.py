@@ -12,6 +12,7 @@ from split_tracker.repository import (
     Race,
     RaceSession,
     RepositoryError,
+    ResultEvent,
 )
 
 
@@ -146,3 +147,57 @@ def test_ready_cancel_has_no_end_timestamp_and_preserves_snapshots():
     assert cancelled.started_at is None
     assert cancelled.ended_at is None
     assert len(repo.list_race_session_checkpoints(ready.id)) == 1
+
+
+def test_end_timing_allows_unresolved_athletes_and_preserves_split_history():
+    repo, session = _running_repository()
+    split = repo.record_pack_split_events(
+        session.id,
+        [{
+            "client_event_id": "00000000-0000-0000-0000-000000000001",
+            "athlete_id": "athlete",
+            "checkpoint_number": 1,
+            "captured_at": datetime.now(timezone.utc),
+            "capture_sequence": 1,
+            "device_id": "coach-device",
+        }],
+        "Coach",
+    )[0]
+    repo.invalidate_split_event(split.id, session.id, "athlete", 1, "Coach")
+
+    awaiting = repo.complete_race_timing(session.id)
+
+    assert awaiting.status == "awaiting_review"
+    assert awaiting.ended_at is not None
+    assert len(repo.list_all_split_events(session.id)) == 2
+    with pytest.raises(RepositoryError, match="not running"):
+        repo.record_shared_split(session.id, "athlete", 1, "Coach", "after-timing")
+
+
+def test_awaiting_review_result_can_be_corrected_then_finalized():
+    repo, session = _running_repository()
+    repo.complete_race_timing(session.id)
+    correction = repo.save_post_race_result(
+        ResultEvent(session.id, "athlete", "dns", "official", note="Verified absent")
+    )
+
+    completed = repo.finalize_race_session(session.id)
+
+    assert correction.status == "dns"
+    assert completed.status == "completed"
+
+
+def test_only_finish_checkpoint_assignment_can_end_timing_as_timer():
+    repo, session = _running_repository()
+    repo.race_session_checkpoints.clear()
+    repo.create_race_session_checkpoints(
+        session.id,
+        [Checkpoint(1, "Mile 1", 1609), Checkpoint(2, "Finish", 5000, True)],
+    )
+
+    with pytest.raises(RepositoryError, match="Finish Line"):
+        repo.complete_race_timing(session.id, finish_checkpoint_number=1)
+
+    awaiting = repo.complete_race_timing(session.id, finish_checkpoint_number=2)
+
+    assert awaiting.status == "awaiting_review"

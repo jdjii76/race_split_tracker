@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 from dataclasses import replace
 
-from pages import athlete_profile, athletes, coach_analytics, coach_login, live_timing, meet_dashboard, meet_management, meet_setup, results, school_branding, spectator, team_progress
+from pages import athlete_profile, athletes, coach_analytics, coach_login, live_timing, meet_dashboard, meet_management, meet_setup, race_day_timer, results, school_branding, spectator, team_progress
 from split_tracker.auth import current_identity, sign_out
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
@@ -44,6 +44,7 @@ auth_client = getattr(st.session_state.repository, "client", None)
 identity = current_identity(auth_client) if auth_client is not None and not spectator_mode else None
 st.session_state.app_identity = identity
 authenticated = bool(identity and identity.is_coach)
+timer_authenticated = bool(identity and identity.is_timer)
 if not spectator_mode and authenticated and st.session_state.repository is not None:
     try:
         requested_meet_id = st.query_params.get("meet") or st.session_state.active_meet_id
@@ -155,6 +156,12 @@ COACH_LOGIN_PAGE = st.Page(
     icon="🔐",
     url_path="coach-sign-in",
 )
+RACE_DAY_TIMER_PAGE = st.Page(
+    race_day_timer.render,
+    title="Race Day Timer",
+    icon="⏱️",
+    url_path="race-day-timer",
+)
 
 st.session_state.page_registry = {
     "meet_dashboard": MEET_DASHBOARD_PAGE,
@@ -167,6 +174,7 @@ st.session_state.page_registry = {
     "athlete_profile": ATHLETE_PROFILE_PAGE,
     "coach_analytics": COACH_ANALYTICS_PAGE,
     "spectator": SPECTATOR_PAGE,
+    "race_day_timer": RACE_DAY_TIMER_PAGE,
 }
 
 race_day_pages = [MEET_DASHBOARD_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE]
@@ -186,6 +194,8 @@ if settings_pages:
 
 if spectator_mode:
     navigation = st.navigation([SPECTATOR_PAGE], position="hidden")
+elif timer_authenticated:
+    navigation = st.navigation([RACE_DAY_TIMER_PAGE, LIVE_TIMING_PAGE], position="hidden")
 elif not authenticated:
     navigation = st.navigation([COACH_LOGIN_PAGE], position="hidden")
 else:

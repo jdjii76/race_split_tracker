@@ -47,7 +47,7 @@ def race_clock_from_session(session: RaceSession, *, now_perf: float | None = No
         return RaceClock(status="running", start_perf_counter=perf - elapsed, paused_total_seconds=0.0)
     if session.status == "paused":
         return RaceClock(status="paused", start_perf_counter=perf - elapsed, pause_started_at=perf, paused_total_seconds=0.0)
-    if session.status == "completed":
+    if session.status in {"awaiting_review", "completed"}:
         return RaceClock(status="ended", ended_elapsed_seconds=elapsed)
     return RaceClock()
 
@@ -407,6 +407,17 @@ def persist_resume(session_state, *, now_perf: float | None = None, now_utc: dat
 
 def persist_completion(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
     return _persist_lifecycle_transition(session_state, "complete", now_perf=now_perf, now_utc=now_utc)
+
+
+def persist_timing_complete(session_state, *, finish_checkpoint_number: int | None = None, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession:
+    """Stop authoritative capture and enter post-race review."""
+    repository: RaceRepository | None = session_state.repository
+    race_session_id = session_state.get("active_race_session_id")
+    if repository is None or not race_session_id:
+        raise RepositoryError("No shared race session is connected.")
+    saved = repository.complete_race_timing(race_session_id, finish_checkpoint_number)
+    synchronize_shared_timing(session_state, now_perf=now_perf, now_utc=now_utc)
+    return saved
 
 
 def persist_finalization(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession:
