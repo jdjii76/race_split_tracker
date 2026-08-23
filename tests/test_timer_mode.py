@@ -1,4 +1,6 @@
 """Race-day timer option projection tests."""
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from split_tracker.models import Checkpoint
@@ -100,3 +102,57 @@ def test_timer_option_uses_authoritative_session_checkpoint_snapshot():
     assert option.session == session
     assert [checkpoint.label for checkpoint in option.checkpoints] == ["2 Mile", "Finish"]
     assert race_is_available(race, session)
+
+
+def test_scheduled_race_is_upcoming_then_ready_five_minutes_before_start():
+    repository = InMemoryRaceRepository()
+    meet = repository.create_meet(Meet(name="Invitational", status="upcoming"))
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
+    race = repository.create_race(Race(
+        meet_id=meet.id,
+        name="Varsity",
+        distance_meters=5000,
+        scheduled_start=now + timedelta(minutes=10),
+    ))
+
+    upcoming = build_timer_options(repository, now=now)[0]
+    ready = build_timer_options(repository, now=now + timedelta(minutes=5))[0]
+
+    assert upcoming.race.id == race.id
+    assert upcoming.status_label == "Upcoming"
+    assert ready.status_label == "Ready"
+    assert upcoming.session is None and ready.session is None
+
+
+def test_only_finish_station_opens_when_scheduled_race_becomes_ready():
+    repository = InMemoryRaceRepository()
+    meet = repository.create_meet(Meet(name="Invitational", status="active"))
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
+    repository.create_race(Race(
+        meet_id=meet.id,
+        name="Varsity",
+        distance_meters=5000,
+        scheduled_start=now + timedelta(minutes=5),
+    ))
+
+    option = build_timer_options(repository, now=now)[0]
+    finish = next(checkpoint for checkpoint in option.checkpoints if checkpoint.is_finish)
+    split = next(checkpoint for checkpoint in option.checkpoints if not checkpoint.is_finish)
+
+    assert option.station_is_open(finish)
+    assert not option.station_is_open(split)
+
+
+def test_existing_unscheduled_ready_race_keeps_finish_starter_workflow():
+    repository = InMemoryRaceRepository()
+    meet = repository.create_meet(Meet(name="Invitational", status="active"))
+    repository.create_race(Race(
+        meet_id=meet.id, name="Varsity", distance_meters=5000, status="ready"
+    ))
+
+    option = build_timer_options(repository)[0]
+    finish = next(checkpoint for checkpoint in option.checkpoints if checkpoint.is_finish)
+
+    assert option.status_label == "Ready"
+    assert option.station_is_open(finish)
+    assert option.session is None

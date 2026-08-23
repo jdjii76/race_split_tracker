@@ -902,6 +902,13 @@ to its persisted checkpoint, and Expected Arrival cards identify both the missin
 checkpoint and the athlete's latest available checkpoint. Coaches can fill the missing split
 later through the existing append-only correction workflow.
 
+Races may optionally have a scheduled UTC start in **Meets & Races**. Scheduled races display
+as **Upcoming** until five minutes before that time and **Ready** inside the five-minute window;
+this is computed display state and never starts the race clock. While ready, only the Finish
+Line station opens so its timer can use the existing manual **Start Race** control. Split
+stations open after the shared race session is running. Unscheduled races continue to use
+their existing persisted readiness and manual-start workflow.
+
 ## Athlete Progression
 
 Administrators can choose **Athletes → View Profile** to open the protected athlete profile, or use **Team Progress** for season-wide comparison. Profiles include archived athletes when opened from the archived roster filter and are not added to spectator routes.

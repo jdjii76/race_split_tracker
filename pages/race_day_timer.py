@@ -85,13 +85,23 @@ def render() -> None:
             st.write(f"**{option.meet.name}**")
             details = " • ".join(filter(None, [option.race.race_category, format_distance(option.race.distance_meters)]))
             st.caption(details)
+            if option.race.scheduled_start is not None:
+                st.caption(
+                    f"Scheduled start: {option.race.scheduled_start.strftime('%-I:%M %p UTC')}"
+                )
             st.metric("Race status", option.status_label)
             st.markdown("**Select your timing station**")
             for checkpoint in option.checkpoints:
+                station_open = option.station_is_open(checkpoint)
                 if st.button(
                     station_label(checkpoint),
                     key=f"timer_station:{option.race.id}:{checkpoint.number}",
                     type="primary",
                     use_container_width=True,
+                    disabled=not station_open,
                 ):
                     _select_station(option, checkpoint.number)
+            if option.status_label == "Upcoming":
+                st.caption("Stations open five minutes before the scheduled start.")
+            elif option.status_label == "Ready":
+                st.caption("Finish Line starts the race. Split stations open when the race is running.")
