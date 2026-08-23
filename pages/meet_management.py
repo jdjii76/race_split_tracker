@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from datetime import datetime, time, timezone
 import streamlit as st
 from split_tracker.branding import render_school_header
 
@@ -159,9 +160,24 @@ def _race_management(meet: Meet) -> None:
         distance = c3.number_input("Distance (meters)", min_value=1.0, value=5000.0, step=100.0)
         course_type = c4.selectbox("Course type", ["Cross Country", "Track"])
         course_id = st.selectbox("Course (optional)", [None, *(course.id for course in courses)], format_func=lambda value: "Unknown / not linked" if value is None else next(course.course_name for course in courses if course.id == value))
+        scheduled_enabled = st.checkbox("Schedule a race start")
+        start_date, start_time = st.columns(2)
+        scheduled_date = start_date.date_input(
+            "Scheduled start date (UTC)", value=meet.meet_date
+        )
+        scheduled_time = start_time.time_input(
+            "Scheduled start time (UTC)", value=time(8, 0)
+        )
         if st.form_submit_button("Add race"):
+            if scheduled_enabled and scheduled_date is None:
+                st.error("Scheduled start date is required when scheduling a race.")
+                return
+            scheduled_start = (
+                datetime.combine(scheduled_date, scheduled_time, tzinfo=timezone.utc)
+                if scheduled_enabled else None
+            )
             try:
-                _repo().create_race(Race(meet_id=meet.id, name=name.strip(), race_category=category.strip(), distance_meters=float(distance), course_type=course_type, course_id=course_id, display_order=len(races)))
+                _repo().create_race(Race(meet_id=meet.id, name=name.strip(), race_category=category.strip(), scheduled_start=scheduled_start, distance_meters=float(distance), course_type=course_type, course_id=course_id, display_order=len(races)))
                 st.rerun()
             except RepositoryError as exc:
                 _handle_error("Add race", exc)
@@ -179,11 +195,30 @@ def _race_management(meet: Meet) -> None:
                 category = c2.text_input("Category", value=race.race_category)
                 distance = c3.number_input("Distance meters", min_value=1.0, value=float(race.distance_meters), step=100.0)
                 status = c4.selectbox("Status", ["draft", "ready", "running", "paused", "completed", "archived"], index=["draft", "ready", "running", "paused", "completed", "archived"].index(race.status))
+                schedule_race = st.checkbox("Schedule a race start", value=race.scheduled_start is not None, key=f"schedule_{race.id}")
+                start_date, start_time = st.columns(2)
+                race_start_date = start_date.date_input(
+                    "Scheduled start date (UTC)",
+                    value=race.scheduled_start.date() if race.scheduled_start else meet.meet_date,
+                    key=f"start_date_{race.id}",
+                )
+                race_start_time = start_time.time_input(
+                    "Scheduled start time (UTC)",
+                    value=race.scheduled_start.time().replace(tzinfo=None) if race.scheduled_start else time(8, 0),
+                    key=f"start_time_{race.id}",
+                )
                 order = st.number_input("Display order", min_value=0, value=int(race.display_order), step=1, key=f"order_{race.id}")
                 linked_course = st.selectbox("Permanent course", [None, *(course.id for course in courses)], index=[None, *(course.id for course in courses)].index(race.course_id) if race.course_id in {course.id for course in courses} else 0, format_func=lambda value: "Unknown / not linked" if value is None else next(course.course_name for course in courses if course.id == value))
                 if st.form_submit_button("Save race"):
+                    if schedule_race and race_start_date is None:
+                        st.error("Scheduled start date is required when scheduling a race.")
+                        return
+                    scheduled_start = (
+                        datetime.combine(race_start_date, race_start_time, tzinfo=timezone.utc)
+                        if schedule_race else None
+                    )
                     try:
-                        _repo().update_race(replace(race, name=race_name.strip(), race_category=category.strip(), distance_meters=float(distance), status=status, course_id=linked_course, display_order=int(order)))
+                        _repo().update_race(replace(race, name=race_name.strip(), race_category=category.strip(), scheduled_start=scheduled_start, distance_meters=float(distance), status=status, course_id=linked_course, display_order=int(order)))
                         st.success("Race updated.")
                         st.rerun()
                     except RepositoryError as exc:
