@@ -166,7 +166,7 @@ def _race_management(meet: Meet) -> None:
             "Scheduled start date (UTC)", value=meet.meet_date
         )
         scheduled_time = start_time.time_input(
-            "Scheduled start time (UTC)", value=time(8, 0)
+            "Scheduled start time (UTC)", value=time(8, 0), step=60
         )
         if st.form_submit_button("Add race"):
             if scheduled_enabled and scheduled_date is None:
@@ -205,6 +205,7 @@ def _race_management(meet: Meet) -> None:
                 race_start_time = start_time.time_input(
                     "Scheduled start time (UTC)",
                     value=race.scheduled_start.time().replace(tzinfo=None) if race.scheduled_start else time(8, 0),
+                    step=60,
                     key=f"start_time_{race.id}",
                 )
                 order = st.number_input("Display order", min_value=0, value=int(race.display_order), step=1, key=f"order_{race.id}")

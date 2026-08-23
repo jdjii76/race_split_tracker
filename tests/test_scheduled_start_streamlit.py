@@ -15,6 +15,7 @@ def test_scheduled_start_fields_are_editable_in_create_and_edit_forms():
         assert "Scheduled start date (UTC)" in form_source
         assert "Scheduled start time (UTC)" in form_source
         assert "disabled=not" not in form_source
+        assert "step=60" in form_source
 
 
 def test_scheduled_start_checkbox_controls_create_and_update_persistence():
@@ -29,6 +30,14 @@ def test_scheduled_start_checkbox_controls_create_and_update_persistence():
     assert "datetime.combine(race_start_date, race_start_time, tzinfo=timezone.utc)" in editing
     assert "if schedule_race else None" in editing
     assert "scheduled_start=scheduled_start" in editing
+
+
+def test_scheduled_start_accepts_arbitrary_minute_values():
+    source = (ROOT / "pages/meet_management.py").read_text(encoding="utf-8")
+
+    assert source.count("step=60") == 2
+    assert "datetime.combine(scheduled_date, scheduled_time, tzinfo=timezone.utc)" in source
+    assert "datetime.combine(race_start_date, race_start_time, tzinfo=timezone.utc)" in source
 
 
 def test_timer_station_buttons_obey_computed_readiness():

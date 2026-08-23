@@ -36,3 +36,21 @@ def test_unscheduled_existing_race_uses_persisted_readiness():
     race = Race(meet_id="meet", name="Varsity", distance_meters=5000, status="ready")
 
     assert computed_race_status(race) == "Ready"
+
+
+def test_arbitrary_minute_scheduled_start_uses_exact_five_minute_boundary():
+    scheduled = datetime(2026, 9, 12, 8, 37, tzinfo=timezone.utc)
+    race = Race(
+        meet_id="meet",
+        name="Varsity",
+        distance_meters=5000,
+        scheduled_start=scheduled,
+    )
+
+    assert computed_race_status(
+        race, now=datetime(2026, 9, 12, 8, 31, 59, tzinfo=timezone.utc)
+    ) == "Upcoming"
+    assert computed_race_status(
+        race, now=datetime(2026, 9, 12, 8, 32, tzinfo=timezone.utc)
+    ) == "Ready"
+    assert race.scheduled_start == scheduled
