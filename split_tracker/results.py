@@ -11,7 +11,7 @@ import pandas as pd
 from split_tracker.calculations import athlete_finished
 from split_tracker.formatting import format_duration, format_pace
 from split_tracker.models import Athlete, Checkpoint, SplitRecord
-from split_tracker.repository import RaceAthleteOutcome, RaceRepository, RaceSession, SplitEvent
+from split_tracker.repository import RaceAthleteOutcome, RaceRepository, RaceSession, ResultEvent, SplitEvent, canonical_result_events
 from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.timing_persistence import persisted_elapsed_seconds, rebuild_splits_from_events
 
@@ -78,6 +78,7 @@ def reconstruct_results(
     race_distance_meters: float,
     events: list[SplitEvent],
     outcomes: list[RaceAthleteOutcome] | None = None,
+    result_events: list[ResultEvent] | None = None,
 ) -> list[dict[str, object]]:
     """Reconstruct result rows from roster, checkpoints, and active split events."""
     inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
@@ -87,6 +88,7 @@ def reconstruct_results(
     splits = rebuild_splits_from_events(events=active_events, athletes=roster, config=config)
     splits_by_athlete: dict[str, list[SplitRecord]] = {}
     outcome_by_athlete = {item.athlete_id: item.status for item in (outcomes or [])}
+    canonical = canonical_result_events(result_events or [])
     for split in splits:
         splits_by_athlete.setdefault(split.athlete_id, []).append(split)
 
@@ -94,8 +96,10 @@ def reconstruct_results(
     for athlete in sorted(roster, key=lambda item: (item.display_order, item.name, item.athlete_id)):
         athlete_splits = sorted(splits_by_athlete.get(athlete.athlete_id, []), key=lambda split: split.checkpoint_number)
         finish_split = next((split for split in reversed(athlete_splits) if split.is_finish), None)
+        managed = canonical.get(athlete.athlete_id)
         latest_split = athlete_splits[-1] if athlete_splits else None
-        status = _athlete_status(session.status, athlete_splits, checkpoints, outcome_by_athlete.get(athlete.athlete_id))
+        status = {"finished": "Finished", "dnf": "DNF", "dns": "DNS"}[managed.status] if managed else _athlete_status(session.status, athlete_splits, checkpoints, outcome_by_athlete.get(athlete.athlete_id))
+        finish_seconds = managed.finish_seconds if managed else (finish_split.cumulative_time_seconds if finish_split else None)
         row: dict[str, object] = {
             "Meet": meet_name,
             "Race": race_name,
@@ -108,11 +112,12 @@ def reconstruct_results(
             "Team": athlete.team,
             "Category/Group": athlete.group,
             "Active": athlete.active,
-            "Finish Time Seconds": finish_split.cumulative_time_seconds if finish_split else None,
-            "Elapsed Seconds": finish_split.cumulative_time_seconds if finish_split else None,
-            "Finish Time": format_duration(finish_split.cumulative_time_seconds if finish_split else None),
-            "Final Time": format_duration(finish_split.cumulative_time_seconds if finish_split else None),
-            "Average Pace": format_pace(finish_split.average_pace_seconds_per_mile if finish_split else None),
+            "Finish Time Seconds": finish_seconds,
+            "Elapsed Seconds": finish_seconds,
+            "Finish Time": format_duration(finish_seconds),
+            "Final Time": format_duration(finish_seconds),
+            "Average Pace": format_pace(finish_seconds / (race_distance_meters / 1609.344) if finish_seconds and race_distance_meters else None),
+            "Source": managed.source.title() if managed else ("Live" if finish_split or outcome_by_athlete.get(athlete.athlete_id) else "—"),
             "Overall Place": None,
             "Gender Place": None,
             "Category Place": None,
@@ -123,8 +128,11 @@ def reconstruct_results(
         }
         for checkpoint in checkpoints:
             matching = next((split for split in athlete_splits if split.checkpoint_number == checkpoint.number), None)
+            managed_cumulative = managed.splits.get(checkpoint.number) if managed else None
+            if managed and checkpoint.is_finish and managed.finish_seconds is not None:
+                managed_cumulative = managed.finish_seconds
             row[f"{checkpoint.label} Split"] = format_duration(matching.segment_split_seconds if matching else None)
-            row[f"{checkpoint.label} Cumulative"] = format_duration(matching.cumulative_time_seconds if matching else None)
+            row[f"{checkpoint.label} Cumulative"] = format_duration(managed_cumulative if managed_cumulative is not None else (matching.cumulative_time_seconds if matching else None))
         if latest_split and not finish_split:
             row["Latest Checkpoint"] = latest_split.checkpoint_label
         else:
