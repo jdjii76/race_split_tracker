@@ -80,6 +80,17 @@ def test_race_and_session_mismatch_and_double_correction_fail_safely():
     assert repo.list_all_split_events(other_session.id) == []
 
 
+def test_correction_uses_event_session_instead_of_stale_active_session_state():
+    repo, _, session, athlete, _, state = correction_setup()
+    event = add_event(repo, session, athlete, 1, 300, 1)
+    state.active_race_session_id = "stale-browser-session"
+
+    corrected = persist_event_correction(state, event)
+
+    assert corrected.race_session_id == event.race_session_id
+    assert corrected.target_event_id == event.id
+
+
 def test_identical_athlete_names_in_simultaneous_races_are_isolated_by_ids():
     repo, race_a, session_a, athlete_a, _, _ = correction_setup(athlete_name="Jordan Lee")
     race_b = repo.create_race(Race(meet_id=race_a.meet_id, name="Race B", distance_meters=3200))
@@ -126,7 +137,7 @@ def test_stale_undo_refuses_when_another_coach_recorded_a_newer_split():
     assert stale_target.id in {event.id for event in repo.list_active_split_events(session.id)}
 
 
-def test_specific_older_correction_is_excluded_and_manual_replacement_restores_later_event():
+def test_specific_older_correction_preserves_later_event_and_accepts_manual_replacement():
     repo, _, session, athlete, _, state = correction_setup()
     mile = add_event(repo, session, athlete, 1, 300, 1)
     finish = add_event(repo, session, athlete, 2, 700, 2)
@@ -134,8 +145,9 @@ def test_specific_older_correction_is_excluded_and_manual_replacement_restores_l
 
     persist_event_correction(state, mile)
     athlete_state = next(item for item in state.projected_race_state.athletes if item.athlete.athlete_id == athlete.athlete_id)
-    assert athlete_state.completed_split_count == 0
-    assert finish.id not in {event.id for event in state.projected_race_state.events}
+    assert athlete_state.completed_split_count == 1
+    assert finish.id in {event.id for event in state.projected_race_state.events}
+    assert athlete_state.splits[0].checkpoint_number == 2
 
     manual = persist_manual_correction(state, athlete.athlete_id, 1, 290)
     athlete_state = next(item for item in state.projected_race_state.athletes if item.athlete.athlete_id == athlete.athlete_id)
