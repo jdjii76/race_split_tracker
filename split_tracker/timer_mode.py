@@ -40,7 +40,7 @@ def build_timer_options(repository) -> list[TimerRaceOption]:
     """Load timer-ready races without exposing setup or reporting concepts."""
     options: list[TimerRaceOption] = []
     for meet in repository.list_meets():
-        if meet.status not in {"active", "upcoming"}:
+        if meet.status not in {"draft", "active", "upcoming"}:
             continue
         races = [race for race in repository.list_races_for_meet(meet.id) if race.status != "archived"]
         sessions = repository.list_race_sessions_for_races([race.id for race in races]) if races else []
@@ -48,8 +48,15 @@ def build_timer_options(repository) -> list[TimerRaceOption]:
         for session in sessions:
             by_race.setdefault(session.race_id, []).append(session)
         for race in races:
-            relevant = [item for item in by_race.get(race.id, []) if item.status in {"ready", "running", "paused"}]
-            session = sorted(relevant, key=lambda item: (item.created_at, item.id))[-1] if relevant else None
+            race_sessions = sorted(
+                by_race.get(race.id, []), key=lambda item: (item.created_at, item.id)
+            )
+            relevant = [
+                item
+                for item in race_sessions
+                if item.status in {"ready", "running", "paused"}
+            ]
+            session = (relevant or race_sessions)[-1] if race_sessions else None
             if not race_is_available(race, session):
                 continue
             checkpoints = configured_checkpoints(race)
