@@ -27,10 +27,10 @@ class TimerRaceOption:
         return self.display_status
 
     def station_is_open(self, checkpoint: Checkpoint) -> bool:
-        """Allow only the starter into a ready race; open all stations once live."""
-        if self.display_status in {"Running", "Paused"}:
+        """Open the starter while upcoming and every station once race-ready."""
+        if self.display_status in {"Ready", "Running", "Paused"}:
             return True
-        return self.display_status == "Ready" and checkpoint.is_finish
+        return self.display_status == "Upcoming" and checkpoint.is_finish
 
 
 def station_label(checkpoint: Checkpoint) -> str:

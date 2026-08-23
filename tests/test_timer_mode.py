@@ -124,7 +124,7 @@ def test_scheduled_race_is_upcoming_then_ready_five_minutes_before_start():
     assert upcoming.session is None and ready.session is None
 
 
-def test_only_finish_station_opens_when_scheduled_race_becomes_ready():
+def test_all_stations_open_when_scheduled_race_becomes_ready():
     repository = InMemoryRaceRepository()
     meet = repository.create_meet(Meet(name="Invitational", status="active"))
     now = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -140,7 +140,53 @@ def test_only_finish_station_opens_when_scheduled_race_becomes_ready():
     split = next(checkpoint for checkpoint in option.checkpoints if not checkpoint.is_finish)
 
     assert option.station_is_open(finish)
+    assert option.station_is_open(split)
+
+
+def test_upcoming_scheduled_race_opens_only_finish_station():
+    repository = InMemoryRaceRepository()
+    meet = repository.create_meet(Meet(name="Invitational", status="active"))
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
+    repository.create_race(Race(
+        meet_id=meet.id,
+        name="Varsity",
+        distance_meters=5000,
+        scheduled_start=now + timedelta(minutes=10),
+    ))
+
+    option = build_timer_options(repository, now=now)[0]
+    finish = next(checkpoint for checkpoint in option.checkpoints if checkpoint.is_finish)
+    split = next(checkpoint for checkpoint in option.checkpoints if not checkpoint.is_finish)
+
+    assert option.status_label == "Upcoming"
+    assert option.station_is_open(finish)
     assert not option.station_is_open(split)
+
+
+def test_running_race_opens_all_timer_stations():
+    repository, _, _ = _race_with_session("active", "running")
+
+    option = build_timer_options(repository)[0]
+
+    assert option.status_label == "Running"
+    assert all(option.station_is_open(checkpoint) for checkpoint in option.checkpoints)
+
+
+def test_ready_station_preparation_creates_session_without_starting_clock():
+    repository = InMemoryRaceRepository()
+    meet = repository.create_meet(Meet(name="Invitational", status="active"))
+    race = repository.create_race(Race(
+        meet_id=meet.id, name="Varsity", distance_meters=5000, status="ready"
+    ))
+    option = build_timer_options(repository)[0]
+
+    session = repository.prepare_race_session(
+        race.id, list(option.checkpoints)
+    )
+
+    assert session.status == "ready"
+    assert session.started_at is None
+    assert repository.list_race_session_checkpoints(session.id)
 
 
 def test_existing_unscheduled_ready_race_keeps_finish_starter_workflow():

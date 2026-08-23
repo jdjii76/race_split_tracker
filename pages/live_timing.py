@@ -35,7 +35,7 @@ from split_tracker.timing_persistence import (
 from split_tracker.timing_recovery import active_events_for_athlete, latest_active_event, recent_timing_activity
 from split_tracker.timer_mode import station_label
 from split_tracker.pack_component import pack_capture
-from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch, ordered_expected_arrival_states
+from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch, ordered_expected_arrival_states, pack_capture_allowed
 from split_tracker.state import (
     elapsed_seconds,
     end_race,
@@ -292,23 +292,28 @@ def _render_pack_mode(
             for state in eligible
             if state.next_checkpoint.number == station_number
         ]
-    allowed = bool(session_id and clock.status == "running" and not shared_unavailable and st.session_state.timer_name)
+    capture_allowed = pack_capture_allowed(
+        session_id, clock.status, shared_unavailable, st.session_state.timer_name
+    )
     st.markdown("### ⚡ PACK MODE")
     if not st.session_state.get("pack_mode_active"):
         st.caption("Rapid browser capture for runners arriving seconds apart. Normal timing remains available below.")
-        if st.button("Enter Pack Mode", type="primary", use_container_width=True, disabled=not allowed):
+        if st.button("Enter Pack Mode", type="primary", use_container_width=True, disabled=not capture_allowed):
             st.session_state.pack_mode_active = True; st.rerun()
         return False
-    if not allowed:
+    if not capture_allowed:
         if station_number is not None and not shared_unavailable:
             if clock.status == "ended":
                 st.info("Race timing is complete. Live capture is closed.")
-            else:
-                st.info("Pack Mode is ready. Waiting for the shared race clock to start.")
-            return True
-        st.error("Pack Mode stopped: the race/checkpoint context is no longer valid.")
-        st.session_state.pack_mode_active = False
-        return False
+                return True
+            if not session_id or projection is None:
+                st.info("Preparing the shared race session and athlete roster.")
+                return True
+            st.info("Pack Mode is prepared. Athlete capture unlocks when Finish Line starts the shared race clock.")
+        else:
+            st.error("Pack Mode stopped: the race/checkpoint context is no longer valid.")
+            st.session_state.pack_mode_active = False
+            return False
     if station_number is not None:
         checkpoint_number = station_number
     else:
@@ -334,7 +339,7 @@ def _render_pack_mode(
     )
     browser_states = ordered_expected_arrival_states(display_states, arrival_metadata)
     for state in browser_states:
-        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"race":race_order[state.athlete.athlete_id],"eligible":state.athlete.athlete_id in eligible_ids or station_number is not None and not state.finished and state.outcome_status != "dnf",**arrival_metadata[state.athlete.athlete_id]})
+        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"race":race_order[state.athlete.athlete_id],"eligible":capture_allowed and (state.athlete.athlete_id in eligible_ids or station_number is not None and not state.finished and state.outcome_status != "dnf"),**arrival_metadata[state.athlete.athlete_id]})
     value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
         athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []

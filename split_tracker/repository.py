@@ -291,6 +291,7 @@ class RaceRepository(Protocol):
 
     def create_race_session(self, session: RaceSession) -> RaceSession: ...
     def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
+    def prepare_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def get_or_create_active_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def get_race_session(self, race_session_id: str) -> RaceSession | None: ...
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
@@ -699,6 +700,25 @@ class InMemoryRaceRepository:
                 RaceSession(race_id=race_id, status="running", started_at=utc_now()),
                 checkpoints,
             )
+
+    def prepare_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession:
+        """Return or create an unstarted session with its checkpoint snapshot."""
+        if not checkpoints:
+            raise RepositoryError("At least one checkpoint is required to prepare a race session.")
+        self._require_race(race_id)
+        with self._race_session_start_lock:
+            active = [
+                session for session in self.list_race_sessions_for_race(race_id)
+                if session.status in {"ready", "running", "paused"}
+            ]
+            if active:
+                session = active[-1]
+                if session.status == "ready":
+                    self.create_race_session_checkpoints(session.id, checkpoints)
+                return session
+            session = self.create_race_session(RaceSession(race_id=race_id, status="ready"))
+            self.create_race_session_checkpoints(session.id, checkpoints)
+            return session
 
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         return self.race_sessions.get(race_session_id)
@@ -2175,6 +2195,26 @@ class SupabaseRaceRepository:
         data = getattr(result, "data", [])
         if not data:
             raise RepositoryError("Could not get or create the active race session.")
+        row = data[0] if isinstance(data, list) else data
+        return _race_session_from_row(row)
+
+    def prepare_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession:
+        """Prepare a shared ready session without starting its clock."""
+        if not checkpoints:
+            raise RepositoryError("At least one checkpoint is required to prepare a race session.")
+        result = self._execute(
+            self.client.rpc(
+                "prepare_race_session",
+                {
+                    "p_race_id": race_id,
+                    "p_checkpoints": [_session_checkpoint_rpc_payload(checkpoint) for checkpoint in checkpoints],
+                },
+            ),
+            "Could not prepare the race session.",
+        )
+        data = getattr(result, "data", [])
+        if not data:
+            raise RepositoryError("Could not prepare the race session.")
         row = data[0] if isinstance(data, list) else data
         return _race_session_from_row(row)
 

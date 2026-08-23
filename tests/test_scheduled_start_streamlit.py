@@ -45,4 +45,4 @@ def test_timer_station_buttons_obey_computed_readiness():
 
     assert "option.station_is_open(checkpoint)" in source
     assert "disabled=not station_open" in source
-    assert "Finish Line starts the race" in source
+    assert "Finish Line remains the only station that starts the race" in source

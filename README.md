@@ -904,10 +904,14 @@ later through the existing append-only correction workflow.
 
 Races may optionally have a scheduled UTC start, entered to any minute, in **Meets & Races**. Scheduled races display
 as **Upcoming** until five minutes before that time and **Ready** inside the five-minute window;
-this is computed display state and never starts the race clock. While ready, only the Finish
-Line station opens so its timer can use the existing manual **Start Race** control. Split
-stations open after the shared race session is running. Unscheduled races continue to use
+this is computed display state and never starts the race clock. Finish Line can open while
+the race is Upcoming. Inside the Ready window, every station can load its roster and prepare
+Pack Mode, but capture remains locked until Finish Line uses the existing manual **Start Race**
+control. Unscheduled races continue to use
 their existing persisted readiness and manual-start workflow.
+Apply `supabase/migrations/029_prepare_race_session.sql` so timer accounts can create the
+shared Ready session and checkpoint snapshot without starting the clock or receiving direct
+race-session write permission.
 
 ## Athlete Progression
 

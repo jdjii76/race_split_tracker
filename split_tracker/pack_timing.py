@@ -7,6 +7,21 @@ from typing import Any
 from split_tracker.repository import RaceRepository, RepositoryError, SplitEvent
 
 
+def pack_capture_allowed(
+    race_session_id: str | None,
+    clock_status: str,
+    shared_unavailable: bool,
+    timer_name: str,
+) -> bool:
+    """Allow browser capture only after the authoritative clock is running."""
+    return bool(
+        race_session_id
+        and clock_status == "running"
+        and not shared_unavailable
+        and timer_name
+    )
+
+
 def expected_arrival_metadata(
     athlete_states,
     checkpoints,

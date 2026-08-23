@@ -36,7 +36,10 @@ div[data-testid="stButton"] > button[kind="primary"]:focus-visible {
 def _select_station(option: TimerRaceOption, checkpoint_number: int) -> None:
     load_race_into_setup(st.session_state, option.meet, option.race)
     st.session_state.meet_config.checkpoints = list(option.checkpoints)
-    st.session_state.active_race_session_id = option.session.id if option.session else None
+    session = option.session or st.session_state.repository.prepare_race_session(
+        option.race.id, list(option.checkpoints)
+    )
+    st.session_state.active_race_session_id = session.id
     st.session_state.timing_restored_for_race_id = None
     st.session_state.timer_station_checkpoint = checkpoint_number
     st.session_state.timer_mode = True
@@ -102,6 +105,6 @@ def render() -> None:
                 ):
                     _select_station(option, checkpoint.number)
             if option.status_label == "Upcoming":
-                st.caption("Stations open five minutes before the scheduled start.")
+                st.caption("Finish Line can prepare now. Split stations open five minutes before the scheduled start.")
             elif option.status_label == "Ready":
-                st.caption("Finish Line starts the race. Split stations open when the race is running.")
+                st.caption("All stations can prepare. Finish Line remains the only station that starts the race.")

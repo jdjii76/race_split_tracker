@@ -9,6 +9,7 @@ from split_tracker.pack_timing import (
     expected_arrival_metadata,
     normalize_pack_batch,
     ordered_expected_arrival_states,
+    pack_capture_allowed,
 )
 from split_tracker.projection import project_race_state
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError
@@ -19,6 +20,12 @@ def test_browser_component_uses_durable_queue_and_no_streamlit_button_cycle():
     assert "localStorage.setItem" in source and "localStorage.getItem" in source
     assert "performance.now()" in source and "Date.now()" in source
     assert "setTimeout(()=>emit(),500)" in source
+
+
+def test_pack_capture_is_locked_while_ready_and_enabled_when_running():
+    assert not pack_capture_allowed("session", "not_started", False, "Mile 1")
+    assert not pack_capture_allowed("session", "paused", False, "Mile 1")
+    assert pack_capture_allowed("session", "running", False, "Mile 1")
 
 
 def test_browser_component_confirms_taps_before_sync_and_keeps_recent_undo_visible():
