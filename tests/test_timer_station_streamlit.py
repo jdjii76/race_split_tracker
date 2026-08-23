@@ -50,3 +50,15 @@ def test_timer_pack_grid_receives_full_stable_roster_and_void_acknowledgements()
     assert "st.session_state.pack_void_ids=list" in source
     assert "expected_arrival_metadata" in source
     assert "or station_number is not None" in source
+
+
+def test_end_race_timing_requires_confirmation_and_stays_out_of_timer_mode():
+    source = (
+        Path(__file__).resolve().parents[1] / "pages/live_timing.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'st.button("End Race Timing"' in source
+    assert 'st.markdown("### End race timing?")' in source
+    assert "Live capture will stop. Existing timing data will be preserved. Results can be verified and corrected later." in source
+    assert "persist_timing_complete(st.session_state)" in source
+    assert "if not timer_mode:" in source

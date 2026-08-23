@@ -5,7 +5,8 @@
 Provision the shared volunteer account with the `timer` role after applying
 `supabase/migrations/024_race_day_timer_role.sql` and
 `supabase/migrations/025_timer_race_start.sql`, then apply
-`supabase/migrations/026_timer_pack_sync.sql`. On sign-in, that account is
+`supabase/migrations/026_timer_pack_sync.sql` and
+`supabase/migrations/027_awaiting_review_lifecycle.sql`. On sign-in, that account is
 routed to **Race Day Timer** instead of the coach application. The volunteer
 chooses a ready/running race and checkpoint, then sees only the station name,
 authoritative race clock, athlete split buttons, connection state, and a control
@@ -35,6 +36,12 @@ Checkpoint timers can optionally switch from **Stable Roster** to **Expected
 Arrival Order**, which snapshots the order from the preceding checkpoint's
 cumulative times. Athletes missing that prior split remain tappable and show a
 red missing-checkpoint indicator; captures never reorder the selected view.
+
+Coaches and administrators can use **End Race Timing** to stop live capture
+without resolving every athlete. The session enters **AWAITING REVIEW**, retains
+all timing and audit events, and permits append-only result corrections before
+**Finalize & Publish Results** changes the persisted state to `completed`.
+Timer accounts cannot end timing or access result management.
 
 Completed races now include a coach-only **Manage Results** panel. Coaches can add
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official

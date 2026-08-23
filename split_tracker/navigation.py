@@ -27,6 +27,8 @@ def determine_race_primary_action(race_status: str, session_status: str | None =
     category, _ = normalize_dashboard_status(race_status, session_status)
     if category == "completed":
         return "View Results", "results"
+    if category == "awaiting_review":
+        return "Review Results", "results"
     if category == "running":
         return "Open Timing", "live_timing"
     return "Open Race", "meet_setup"
@@ -39,6 +41,8 @@ def normalize_dashboard_status(race_status: str, session_status: str | None) -> 
         return "running", "Running" if status == "running" else "Paused"
     if status == "completed":
         return "completed", "Finished"
+    if status == "awaiting_review":
+        return "awaiting_review", "Awaiting Review"
     return "up_next", "Not Started"
 
 

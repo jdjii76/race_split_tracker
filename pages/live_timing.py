@@ -20,13 +20,13 @@ from split_tracker.projection import (
 from split_tracker.timing_persistence import (
     persist_cancel,
     persist_completion,
+    persist_timing_complete,
     persist_pause,
     persist_resume,
     persist_event_correction,
     persist_athlete_reassignment,
     persist_manual_correction,
     persist_reopen,
-    persist_dnf,
     poll_shared_timing,
     record_authoritative_split,
     restore_timing_state,
@@ -301,7 +301,10 @@ def _render_pack_mode(
         return False
     if not allowed:
         if station_number is not None and not shared_unavailable:
-            st.info("Pack Mode is ready. Waiting for the shared race clock to start.")
+            if clock.status == "ended":
+                st.info("Race timing is complete. Live capture is closed.")
+            else:
+                st.info("Pack Mode is ready. Waiting for the shared race clock to start.")
             return True
         st.error("Pack Mode stopped: the race/checkpoint context is no longer valid.")
         st.session_state.pack_mode_active = False
@@ -541,12 +544,17 @@ def _render_finish_controls(projection, clock) -> None:
     unresolved = [state for state in projection.athletes if not state.finished and state.outcome_status != "dnf"]
     st.subheader("Race Controls")
     if clock.status == "ended":
-        st.success("## RACE FINISHED\nTiming and corrections are locked.")
-        view, reopen = st.columns(2)
-        if view.button("View Results", type="primary", use_container_width=True):
+        awaiting_review = st.session_state.get("persisted_race_status") == "awaiting_review"
+        st.success("## TIMING COMPLETE — AWAITING REVIEW" if awaiting_review else "## RACE FINISHED\nTiming and corrections are locked.")
+        if st.button("Review Results", type="primary", use_container_width=True):
             st.session_state.selected_results_session_id = race_session_id
+            if awaiting_review:
+                st.session_state.results_review_session_id = race_session_id
             st.switch_page(st.session_state.page_registry["results"])
-        if reopen.button("Reopen Race", use_container_width=True):
+        if awaiting_review:
+            st.caption("Live capture is stopped. Existing splits and audit history are preserved for coach review.")
+            return
+        if st.button("Reopen Race", use_container_width=True):
             st.session_state.reopen_confirmation = True
         if st.session_state.get("reopen_confirmation"):
             with st.container(border=True):
@@ -565,51 +573,27 @@ def _render_finish_controls(projection, clock) -> None:
                         _show_persistence_error("Reopen race", exc); st.error(str(exc))
         return
 
-    if st.button("Finish Race", type="primary", use_container_width=True, disabled=clock.status not in {"running", "paused"}):
-        st.session_state.finish_confirmation = True
-    if not unresolved:
-        st.success("All runners are resolved. Finish timing and review provisional results when ready.")
-    if not st.session_state.get("finish_confirmation"):
+    if st.button("End Race Timing", type="primary", use_container_width=True, disabled=clock.status not in {"running", "paused"}):
+        st.session_state.end_timing_confirmation = True
+    if not st.session_state.get("end_timing_confirmation"):
         return
     with st.container(border=True):
-        st.markdown(f"### Finish {st.session_state.meet_config.race_name}?")
+        st.markdown("### End race timing?")
+        st.write("Live capture will stop. Existing timing data will be preserved. Results can be verified and corrected later.")
         st.write(f"**Athletes:** {len(projection.athletes)}  \n**Finished:** {len(finished)}  \n**DNF:** {len(dnf)}  \n**Still unresolved:** {len(unresolved)}")
         st.caption(f"Race session: {race_session_id}")
-        if unresolved:
-            st.markdown("**Resolve Athletes**")
-            for state in unresolved:
-                left, action = st.columns([3, 1], vertical_alignment="center")
-                left.write(state.athlete.name)
-                if action.button("Mark DNF", key=f"dnf:{race_session_id}:{state.athlete.athlete_id}", use_container_width=True):
-                    try:
-                        persist_dnf(st.session_state, state.athlete.athlete_id)
-                        st.rerun()
-                    except Exception as exc:
-                        _show_persistence_error("Mark DNF", exc); st.error(str(exc))
-        if dnf:
-            with st.expander("DNF athletes"):
-                for state in dnf:
-                    left, action = st.columns([3, 1], vertical_alignment="center")
-                    left.write(state.athlete.name)
-                    if action.button("Reverse DNF", key=f"clear_dnf:{race_session_id}:{state.athlete.athlete_id}"):
-                        try:
-                            persist_dnf(st.session_state, state.athlete.athlete_id, clear=True)
-                            st.rerun()
-                        except Exception as exc:
-                            _show_persistence_error("Reverse DNF", exc); st.error(str(exc))
         cancel, confirm = st.columns(2)
-        if cancel.button("Cancel", key="cancel_finish", use_container_width=True):
-            st.session_state.finish_confirmation = False; st.rerun()
-        if confirm.button("Review Provisional Results", key="confirm_finish", disabled=bool(unresolved), type="primary", use_container_width=True):
+        if cancel.button("Keep Timing", key="cancel_end_timing", use_container_width=True):
+            st.session_state.end_timing_confirmation = False; st.rerun()
+        if confirm.button("End Race Timing", key="confirm_end_timing", type="primary", use_container_width=True):
             try:
-                if clock.status == "running":
-                    persist_pause(st.session_state)
-                st.session_state.finish_confirmation = False
+                persist_timing_complete(st.session_state)
+                st.session_state.end_timing_confirmation = False
                 st.session_state.selected_results_session_id = race_session_id
                 st.session_state.results_review_session_id = race_session_id
                 st.switch_page(st.session_state.page_registry["results"])
             except Exception as exc:
-                _show_persistence_error("Prepare results review", exc); st.error(str(exc))
+                _show_persistence_error("End race timing", exc); st.error(str(exc))
 
 
 def render() -> None:
@@ -636,6 +620,8 @@ def render() -> None:
     clock = st.session_state.race_clock
     valid_setup = setup_is_valid(st.session_state)
     status = STATUS_LABELS[clock.status]
+    if st.session_state.get("persisted_race_status") == "awaiting_review":
+        status = "Awaiting Review"
 
     render_school_header(
         st.session_state.school_profile,
@@ -680,7 +666,7 @@ def render() -> None:
             "Connection problem. Existing race data remains visible and retry is automatic."
         )
     if clock.status == "ended":
-        st.success("**RACE FINISHED — Timing is locked.**")
+        st.success("**TIMING COMPLETE — AWAITING REVIEW.**" if st.session_state.get("persisted_race_status") == "awaiting_review" else "**RACE FINISHED — Timing is locked.**")
     if st.session_state.get("debug_mode"):
         with st.expander("Development synchronization status", expanded=False):
             poll_at = st.session_state.get("poll_cycle_at")
