@@ -1,5 +1,10 @@
 # Race Split Tracker
 
+Completed races now include a coach-only **Manage Results** panel. Coaches can add
+missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
+corrections. Corrections become the single result used by history, PR, scoring,
+public results, and exports while prior timing/result events remain auditable.
+
 The app opens on **Race Day** whenever a valid active meet is available. The
 touch-friendly dashboard groups persisted races into Running Now, Up Next, and
 Completed, with direct Open Timing, Open Race, and View Results actions. It
@@ -867,3 +872,15 @@ The prior comparison is the most recent earlier finalized, non-test session with
 4. Open **Coach Analytics** from Race B and verify PR amount, highlights, Top 7, both spreads, Top-5 gaps, pace profile, Race A comparison, and athlete table.
 5. Confirm the missing-split athlete remains in finish metrics but not pace metrics.
 6. In a third race, correct a result during provisional review, finalize, and verify analytics use the replacement while Recent Actions/audit history retains the original and void.
+
+## Manual post-race result check
+
+1. Create or locate a completed test race, then open **Results** and select its completed session.
+2. Expand **Manage Results**, choose an athlete with no result, select **Finished**, enter `22:15.4`, and save.
+3. Confirm final results and the athlete profile/history each show the race once and the race remains completed with its finalized timestamp.
+4. Reopen **Manage Results**, select the athlete, change the time to `22:13.92`, choose **Official**, and enter `Official meet results`.
+5. Check the confirmation statement, save, and verify final results and athlete history show only `22:13.92`.
+6. Expand **Result History** and verify `22:15.4` is superseded; for a live-timed original, verify the original timing event is also identified as preserved.
+7. Open the parent results link and verify only `22:13.92` is public.
+8. Repeat with an athlete who has no timing events and a **DNF** result; verify no finish time or place is assigned.
+9. Correct an athlete whose original result came from live timing and verify the live clock/session is not reopened.

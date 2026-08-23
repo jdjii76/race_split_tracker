@@ -211,7 +211,7 @@ def load_spectator_race(
         final_rows = reconstruct_results(
             meet_name=meet.name if meet else "", race_name=race.name, session=session,
             athletes=athletes, checkpoints=checkpoints, race_distance_meters=race.distance_meters,
-            events=events, outcomes=outcomes,
+            events=events, outcomes=outcomes, result_events=repository.list_result_events(session.id),
         )
     return SpectatorRaceView(race, meet, session, spectator_status(session), tuple(rows), tuple(final_rows))
 

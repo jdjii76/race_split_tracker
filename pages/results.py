@@ -7,8 +7,8 @@ import streamlit as st
 from split_tracker.branding import branded_export_filename, render_school_header
 
 from split_tracker.calculations import generate_checkpoints
-from split_tracker.formatting import format_distance, format_duration
-from split_tracker.repository import RaceRepository, RepositoryError
+from split_tracker.formatting import format_distance, format_duration, parse_time_to_seconds
+from split_tracker.repository import RaceRepository, RepositoryError, ResultEvent, canonical_result_events
 from split_tracker.results import build_team_summary, filter_results, printable_results_html, reconstruct_results, results_to_frame, session_label, summarize_sessions
 from split_tracker.spectator import spectator_url
 from split_tracker.session_checkpoints import get_session_checkpoints
@@ -65,6 +65,62 @@ def _legacy_results() -> None:
 def _filter_options(rows: list[dict[str, object]], key: str) -> list[str]:
     values = sorted({str(row.get(key) or "") for row in rows if row.get(key)})
     return ["All", *values]
+
+
+def _manage_results(repository, session, athletes, checkpoints, rows, result_events, split_events) -> None:
+    """Render the narrow completed-session result editor."""
+    st.subheader("Manage Results")
+    st.caption("Add a missed result or append a correction. The race stays finalized and earlier values remain in Result History.")
+    current = canonical_result_events(result_events)
+    by_id = {str(row["Athlete ID"]): row for row in rows}
+    summary_rows = [{"Athlete": athlete.name, "Team/Division": athlete.team or athlete.group or "—",
+                     "Status": by_id[athlete.athlete_id]["Status"], "Finish Time": by_id[athlete.athlete_id]["Final Time"],
+                     "Source": by_id[athlete.athlete_id]["Source"]} for athlete in athletes]
+    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+    athlete = st.selectbox("Athlete", athletes, format_func=lambda item: item.name, key=f"manage_athlete_{session.id}")
+    existing = current.get(athlete.athlete_id)
+    row = by_id[athlete.athlete_id]
+    st.markdown(f"**Recorded Result:** {row['Status']} — {row['Final Time']} ({row['Source']})")
+    status = st.selectbox("Result status", ["Finished", "DNF", "DNS"], key=f"manage_status_{session.id}_{athlete.athlete_id}")
+    finish_text = st.text_input("New finish time", placeholder="22:15.4", disabled=status != "Finished",
+                                key=f"manage_finish_{session.id}_{athlete.athlete_id}")
+    source = st.selectbox("Result source", ["Manual", "Official"], key=f"manage_source_{session.id}_{athlete.athlete_id}")
+    entered_splits = {}
+    with st.expander("Optional checkpoint times"):
+        for checkpoint in checkpoints:
+            if not checkpoint.is_finish:
+                value = st.text_input(checkpoint.label, key=f"manage_cp_{session.id}_{athlete.athlete_id}_{checkpoint.number}")
+                if value.strip(): entered_splits[checkpoint.number] = value
+    note = st.text_area("Notes / correction reason", key=f"manage_note_{session.id}_{athlete.athlete_id}")
+    is_change = row["Status"] not in {"Unresolved", "DNS"} or existing is not None
+    confirmed = st.checkbox("I understand this becomes the active result and the recorded result remains in audit history.",
+                            disabled=not is_change, key=f"manage_confirm_{session.id}_{athlete.athlete_id}")
+    if st.button("Save Result", type="primary", use_container_width=True, disabled=is_change and not confirmed):
+        finish = parse_time_to_seconds(finish_text) if status == "Finished" else None
+        parsed_splits = {number: parse_time_to_seconds(value) for number, value in entered_splits.items()}
+        if status == "Finished" and finish is None:
+            st.error("Enter a positive finish time such as 21:34.6 or 1:02:15.4.")
+        elif any(value is None for value in parsed_splits.values()):
+            st.error("Each checkpoint time must be a positive duration such as 6:32.")
+        else:
+            try:
+                repository.save_post_race_result(ResultEvent(session.id, athlete.athlete_id, status.lower(), source.lower(),
+                    finish_seconds=finish, splits=parsed_splits, note=note.strip(), supersedes_id=existing.id if existing else None,
+                    created_by=getattr(st.session_state.get("app_identity"), "user_id", "")))
+                st.success("Result saved. Final results, history, PRs, and public results now use it.")
+                st.rerun()
+            except RepositoryError as exc: st.error(str(exc))
+    history = [event for event in result_events if event.athlete_id == athlete.athlete_id]
+    if history:
+        with st.expander("Result History"):
+            for event in reversed(history):
+                label = "Active" if existing and event.id == existing.id else "Superseded"
+                st.write(f"**{label} {event.source.title()}** — {format_duration(event.finish_seconds) if event.status == 'finished' else event.status.upper()} — {event.created_at:%b %d, %Y %H:%M}")
+                if event.note: st.caption(event.note)
+            live_finish = next((event for event in split_events if event.athlete_id == athlete.athlete_id and
+                                any(cp.is_finish and cp.number == event.checkpoint_number for cp in checkpoints)), None)
+            if live_finish:
+                st.write(f"**Original live timing event** — {format_duration(live_finish.elapsed_seconds)} — preserved in split-event history")
 
 
 def render() -> None:
@@ -156,6 +212,7 @@ def render() -> None:
         checkpoint_result = get_session_checkpoints(repository, session, checkpoints)
         events = repository.list_active_split_events(session.id)
         outcomes = repository.list_race_athlete_outcomes(session.id)
+        result_events = repository.list_result_events(session.id)
     except RepositoryError as exc:
         st.error(f"Could not load split events: {exc}")
         return
@@ -163,7 +220,7 @@ def render() -> None:
     if checkpoint_result.source == "legacy_fallback":
         st.warning("This legacy race session has no persisted checkpoint snapshot, so results use the current generated race checkpoints as an isolated fallback.")
 
-    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events, outcomes=outcomes)
+    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events, outcomes=outcomes, result_events=result_events)
     if not rows:
         st.info("This session has no roster or split events to reconstruct.")
         return
@@ -188,6 +245,8 @@ def render() -> None:
             st.session_state.analytics_race_id = race.id
             st.session_state.analytics_session_id = session.id
             st.switch_page(st.session_state.page_registry["coach_analytics"])
+        with st.expander("Manage Results", expanded=bool(st.session_state.get("manage_results_open"))):
+            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events)
 
     st.subheader("Final Results" if summary.status == "completed" else "Provisional Results")
     final_columns = [column for column in ("Place", "Athlete", "Final Time", "Average Pace", "Split Times", "Status")]
