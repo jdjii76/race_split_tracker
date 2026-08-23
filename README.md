@@ -4,7 +4,8 @@
 
 Provision the shared volunteer account with the `timer` role after applying
 `supabase/migrations/024_race_day_timer_role.sql` and
-`supabase/migrations/025_timer_race_start.sql`. On sign-in, that account is
+`supabase/migrations/025_timer_race_start.sql`, then apply
+`supabase/migrations/026_timer_pack_sync.sql`. On sign-in, that account is
 routed to **Race Day Timer** instead of the coach application. The volunteer
 chooses a ready/running race and checkpoint, then sees only the station name,
 authoritative race clock, athlete split buttons, connection state, and a control
