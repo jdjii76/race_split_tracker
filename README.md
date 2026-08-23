@@ -916,6 +916,10 @@ Apply `supabase/migrations/030_timer_pack_undo.sql` to bind each timer device to
 session checkpoint. This enables synchronized **Undo Last Tap** only for that device's own
 Pack Mode event and appends a `split_voided` audit event; it grants no direct split updates,
 manual result editing, or access to the coach/admin correction RPC.
+Apply `supabase/migrations/031_append_only_checkpoint_index.sql` to replace the legacy
+one-row-per-checkpoint unique index with a non-unique lookup index. RPC validation continues
+to enforce logical split rules while allowing the original, its `split_voided` audit row, and
+an optional replacement to coexist in append-only history.
 
 ## Athlete Progression
 

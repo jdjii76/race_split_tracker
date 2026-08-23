@@ -210,6 +210,22 @@ def test_timer_undo_own_pack_event_is_append_only_and_station_scoped():
     assert len(history) == 2 and repo.list_active_split_events(session.id) == []
 
 
+def test_replacement_pack_capture_is_possible_after_append_only_timer_undo():
+    repo,race,session,athletes,start=setup_repo()
+    repo.assign_timer_station(session.id,1,"device-a")
+    original=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"timer")[0]
+    void=repo.invalidate_timer_pack_event(original.id,session.id,1,"device-a","timer")
+    replacement_payload=batch(session,athletes[:1],start+timedelta(seconds=1))
+
+    replacement=normalize_pack_batch(repo,race.id,session.id,1,replacement_payload,"timer")[0]
+
+    history=repo.list_all_split_events(session.id)
+    assert original in history and void in history and replacement in history
+    assert void.target_event_id == original.id
+    assert replacement.event_type == "split_recorded"
+    assert repo.list_active_split_events(session.id) == [replacement]
+
+
 def test_timer_cannot_undo_another_station_or_device_event():
     repo,race,session,athletes,start=setup_repo()
     repo.race_session_checkpoints.clear()
