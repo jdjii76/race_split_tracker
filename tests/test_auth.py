@@ -61,3 +61,10 @@ def test_role_helpers_separate_coach_and_admin():
 
 def test_current_identity_survives_rerun_client_session():
     assert current_identity(Client("admin")).is_admin
+
+
+def test_timer_identity_is_authorized_without_coach_access():
+    identity = current_identity(Client("timer"))
+    assert identity is not None
+    assert identity.is_timer
+    assert not identity.is_coach

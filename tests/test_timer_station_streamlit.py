@@ -1,0 +1,24 @@
+"""Static checks for the touch-friendly station assignment surface."""
+from pathlib import Path
+
+
+def test_station_buttons_use_kmhs_green_touch_styling():
+    source = (
+        Path(__file__).resolve().parents[1] / "pages/race_day_timer.py"
+    ).read_text(encoding="utf-8")
+
+    assert "--kmhs-timer-green: #006633" in source
+    assert 'min-height: 4.5rem' in source
+    assert 'color: white' in source
+    assert 'station_label(checkpoint)' in source
+    assert 'f"Time {checkpoint.label}"' not in source
+
+
+def test_only_finish_line_timer_receives_start_control():
+    source = (
+        Path(__file__).resolve().parents[1] / "pages/live_timing.py"
+    ).read_text(encoding="utf-8")
+
+    assert "finish_line_starter" in source
+    assert "checkpoint.is_finish" in source
+    assert '"You are the race starter.' in source
