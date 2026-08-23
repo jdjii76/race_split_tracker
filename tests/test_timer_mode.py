@@ -3,7 +3,20 @@ import pytest
 
 from split_tracker.models import Checkpoint
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession
-from split_tracker.timer_mode import build_timer_options, race_is_available
+from split_tracker.timer_mode import build_timer_options, race_is_available, station_label
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "expected"),
+    [
+        (Checkpoint(1, "1 mile", 1609.344), "Mile 1 Split"),
+        (Checkpoint(2, "2 miles", 3218.688), "Mile 2 Split"),
+        (Checkpoint(3, "3 miles", 4828.032), "Mile 3 Split"),
+        (Checkpoint(4, "Finish", 5000, is_finish=True), "Finish Line"),
+    ],
+)
+def test_station_label_uses_volunteer_friendly_wording(checkpoint, expected):
+    assert station_label(checkpoint) == expected
 
 
 def _race_with_session(meet_status: str, session_status: str):

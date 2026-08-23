@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.models import Checkpoint
 from split_tracker.repository import Meet, Race, RaceSession
 from split_tracker.session_checkpoints import snapshots_to_checkpoints
+
+_MILE_STATION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*miles?\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -20,6 +23,16 @@ class TimerRaceOption:
     def status_label(self) -> str:
         status = self.session.status if self.session else self.race.status
         return {"ready": "Ready", "running": "Running", "paused": "Paused"}.get(status, status.title())
+
+
+def station_label(checkpoint: Checkpoint) -> str:
+    """Return volunteer-oriented wording for a timing station assignment."""
+    if checkpoint.is_finish or checkpoint.label.strip().casefold() == "finish":
+        return "Finish Line"
+    mile = _MILE_STATION_PATTERN.fullmatch(checkpoint.label)
+    if mile:
+        return f"Mile {mile.group(1)} Split"
+    return f"{checkpoint.label.strip()} Split"
 
 
 def race_is_available(race: Race, session: RaceSession | None) -> bool:

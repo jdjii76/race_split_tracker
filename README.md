@@ -3,12 +3,16 @@
 ## Race Day Timer Mode
 
 Provision the shared volunteer account with the `timer` role after applying
-`supabase/migrations/024_race_day_timer_role.sql`. On sign-in, that account is
+`supabase/migrations/024_race_day_timer_role.sql` and
+`supabase/migrations/025_timer_race_start.sql`. On sign-in, that account is
 routed to **Race Day Timer** instead of the coach application. The volunteer
 chooses a ready/running race and checkpoint, then sees only the station name,
 authoritative race clock, athlete split buttons, connection state, and a control
 to change stations. Setup, analytics, results, athlete progression, race
 lifecycle, corrections, and administration remain outside timer navigation.
+The volunteer assigned to **Finish Line** is the race starter and receives the
+single control that starts the authoritative shared clock; split-station timers
+wait for that start and do not receive lifecycle controls.
 
 The timer role can read race-day meet, race, roster, session, checkpoint, and
 split data and can insert authoritative split events. It cannot edit meet/race

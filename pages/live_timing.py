@@ -33,6 +33,7 @@ from split_tracker.timing_persistence import (
     start_and_synchronize_shared_timing,
 )
 from split_tracker.timing_recovery import active_events_for_athlete, latest_active_event, recent_timing_activity
+from split_tracker.timer_mode import station_label
 from split_tracker.pack_component import pack_capture
 from split_tracker.pack_timing import normalize_pack_batch
 from split_tracker.state import (
@@ -608,12 +609,13 @@ def render() -> None:
         subtitle=f"{config.meet_name or 'Meet not selected'} • {status}",
         compact=True,
     )
+    checkpoint = None
     if timer_mode:
         checkpoint = next(
             (item for item in config.checkpoints if item.number == station_number), None
         )
-        station_label = checkpoint.label if checkpoint else "Unknown checkpoint"
-        st.success(f"**TIMING STATION: {station_label}**")
+        station_name = station_label(checkpoint) if checkpoint else "Unknown checkpoint"
+        st.success(f"**TIMING STATION: {station_name}**")
         if st.button("Change Race / Checkpoint", use_container_width=True):
             st.session_state.timer_station_checkpoint = None
             st.session_state.timer_mode = False
@@ -721,6 +723,21 @@ def render() -> None:
     shared_unavailable = (
         repository_result is not None and repository_result.is_temporary
     )
+    finish_line_starter = bool(
+        timer_mode
+        and checkpoint is not None
+        and checkpoint.is_finish
+    )
+    if finish_line_starter and clock.status == "not_started":
+        st.info("You are the race starter. Confirm the course is ready, then start the shared race clock.")
+        if st.button(
+            "Start Race",
+            type="primary",
+            use_container_width=True,
+            disabled=shared_unavailable or not valid_setup,
+        ):
+            if _start_timing():
+                st.rerun()
     if not timer_mode:
         quick_start, quick_pause, quick_resume = st.columns(3)
         if quick_start.button(
