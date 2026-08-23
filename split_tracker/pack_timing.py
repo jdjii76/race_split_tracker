@@ -33,9 +33,24 @@ def expected_arrival_metadata(
             "arrival_time": prior_split.cumulative_time_seconds if prior_split else None,
             "missing_previous": previous is not None and prior_split is None,
             "missing_label": previous.label if previous is not None and prior_split is None else "",
+            "previous_label": previous.label if previous is not None else "",
             "roster": roster_index,
         }
     return metadata
+
+
+def ordered_expected_arrival_states(athlete_states, metadata):
+    """Order timed arrivals first, using stable roster order for every tie."""
+    return tuple(
+        sorted(
+            athlete_states,
+            key=lambda state: (
+                metadata[state.athlete.athlete_id]["arrival_time"] is None,
+                metadata[state.athlete.athlete_id]["arrival_time"] or 0,
+                metadata[state.athlete.athlete_id]["roster"],
+            ),
+        )
+    )
 
 
 def normalize_pack_batch(repository: RaceRepository, race_id: str, session_id: str, checkpoint_number: int,

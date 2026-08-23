@@ -891,6 +891,13 @@ At entry the component estimates device-clock offset from a reference UTC value 
 
 The capture grid uses direct browser event handlers and a 500 ms batch debounce. It therefore accepts a five- or twenty-runner sequence without a Python round trip between taps; database synchronization occurs after capture and preserves capture timestamp/sequence ordering.
 
+Pack Mode opens in **Expected Arrival Order** by default. For checkpoints after the first,
+athletes with a previous split are ordered by that cumulative time, ties retain roster order,
+and athletes missing the previous split remain selectable at the end with a visible warning.
+The order is snapshotted when the component loads and remains fixed through captures,
+synchronization, and rerenders. Timers can switch to **Stable Roster** at any time; both modes
+use the same name, optional bib, captured timestamp, and synchronization card treatment.
+
 ## Athlete Progression
 
 Administrators can choose **Athletes → View Profile** to open the protected athlete profile, or use **Team Progress** for season-wide comparison. Profiles include archived athletes when opened from the archived roster filter and are not added to spectator routes.

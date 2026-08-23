@@ -35,7 +35,7 @@ from split_tracker.timing_persistence import (
 from split_tracker.timing_recovery import active_events_for_athlete, latest_active_event, recent_timing_activity
 from split_tracker.timer_mode import station_label
 from split_tracker.pack_component import pack_capture
-from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch
+from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch, ordered_expected_arrival_states
 from split_tracker.state import (
     elapsed_seconds,
     end_race,
@@ -332,8 +332,9 @@ def _render_pack_mode(
         st.session_state.meet_config.checkpoints,
         checkpoint_number,
     )
-    for i,state in enumerate(display_states):
-        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"roster":i,"race":race_order[state.athlete.athlete_id],"eligible":state.athlete.athlete_id in eligible_ids or station_number is not None and not state.finished and state.outcome_status != "dnf",**arrival_metadata[state.athlete.athlete_id]})
+    browser_states = ordered_expected_arrival_states(display_states, arrival_metadata)
+    for state in browser_states:
+        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"race":race_order[state.athlete.athlete_id],"eligible":state.athlete.athlete_id in eligible_ids or station_number is not None and not state.finished and state.outcome_status != "dnf",**arrival_metadata[state.athlete.athlete_id]})
     value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
         athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []

@@ -5,7 +5,11 @@ from uuid import uuid4
 import pytest
 
 from split_tracker.models import Athlete, Checkpoint
-from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch
+from split_tracker.pack_timing import (
+    expected_arrival_metadata,
+    normalize_pack_batch,
+    ordered_expected_arrival_states,
+)
 from split_tracker.projection import project_race_state
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError
 
@@ -29,7 +33,7 @@ def test_browser_component_confirms_taps_before_sync_and_keeps_recent_undo_visib
     assert "Saved on device" in source and "Synchronized" in source
 
 
-def test_pack_grid_keeps_captured_athletes_in_stable_all_athletes_view():
+def test_pack_grid_defaults_to_expected_order_and_uses_unified_stable_cards():
     source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
     render = source[source.index("function render"):source.index("addEventListener('message'")]
 
@@ -44,10 +48,14 @@ def test_pack_grid_keeps_captured_athletes_in_stable_all_athletes_view():
     assert "✓ " in render
     assert "${a.name}" in render
     assert "${a.last.toUpperCase()}" not in render
-    assert "${a.bib? a.bib+'  ':''}" in render
+    assert "Bib ${a.bib}" in render
+    assert "Previous Split:" in render
+    assert "formatElapsed(a.arrival_time)" in render
+    assert "Missing ${a.missing_label}" in render
     assert "Stable Roster" in render
     assert "Expected Arrival Order" in render
-    assert "displayMode='stable'" in source
+    assert "displayMode='expected'" in source
+    assert render.index("Expected Arrival Order") < render.index("Stable Roster")
 
 
 def test_expected_arrival_metadata_sorts_prior_times_and_marks_missing():
@@ -60,18 +68,30 @@ def test_expected_arrival_metadata_sorts_prior_times_and_marks_missing():
     ]
 
     metadata = expected_arrival_metadata(states, checkpoints, 2)
-    ordered = sorted(
-        metadata,
-        key=lambda athlete_id: (
-            metadata[athlete_id]["arrival_time"] is None,
-            metadata[athlete_id]["arrival_time"] or 0,
-        ),
-    )
+    ordered = ordered_expected_arrival_states(states, metadata)
 
-    assert ordered == ["john", "alex", "sarah", "chris"]
+    assert [state.athlete.athlete_id for state in ordered] == ["john", "alex", "sarah", "chris"]
     assert metadata["chris"]["missing_previous"] is True
     assert metadata["chris"]["missing_label"] == "Mile 1"
+    assert metadata["john"]["previous_label"] == "Mile 1"
     assert metadata["john"]["missing_previous"] is False
+
+
+def test_expected_arrival_order_uses_stable_roster_to_break_ties():
+    states = [
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="first")),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="second")),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="missing")),
+    ]
+    metadata = {
+        "first": {"arrival_time": 375.0, "roster": 0},
+        "second": {"arrival_time": 375.0, "roster": 1},
+        "missing": {"arrival_time": None, "roster": 2},
+    }
+
+    ordered = ordered_expected_arrival_states(states, metadata)
+
+    assert [state.athlete.athlete_id for state in ordered] == ["first", "second", "missing"]
 
 
 def test_expected_arrival_order_is_snapshotted_and_capture_does_not_resort():
@@ -80,8 +100,18 @@ def test_expected_arrival_order_is_snapshotted_and_capture_does_not_resort():
     assert "expected-order" in source
     assert "expectedOrder.length" in source
     assert "expectedPosition=new Map" in source
+    assert "expectedOrder=(args.athletes||[]).map(a=>a.id)" in source
     capture = source[source.index("function capture"):source.index("function undo")]
     assert "expectedOrder" not in capture
+
+
+def test_missing_previous_split_card_remains_selectable():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+    render = source[source.index("function render"):source.index("addEventListener('message'")]
+
+    assert "missing=mode==='expected'&&a.missing_previous&&!done" in render
+    assert "enabled=a.eligible&&!done" in render
+    assert "${enabled?'':'disabled'}" in render
 
 
 def test_pack_undo_void_ack_restores_uncaptured_card_without_deleting_history():

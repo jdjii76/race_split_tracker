@@ -49,6 +49,8 @@ def test_timer_pack_grid_receives_full_stable_roster_and_void_acknowledgements()
     assert 'void_ids=st.session_state.get("pack_void_ids", [])' in source
     assert "st.session_state.pack_void_ids=list" in source
     assert "expected_arrival_metadata" in source
+    assert "browser_states = ordered_expected_arrival_states" in source
+    assert "for state in browser_states" in source
     assert "or station_number is not None" in source
 
 
