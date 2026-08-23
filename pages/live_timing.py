@@ -33,6 +33,7 @@ from split_tracker.timing_persistence import (
     start_and_synchronize_shared_timing,
 )
 from split_tracker.timing_recovery import active_events_for_athlete, latest_active_event, recent_timing_activity
+from split_tracker.timer_mode import station_label
 from split_tracker.pack_component import pack_capture
 from split_tracker.pack_timing import normalize_pack_batch
 from split_tracker.state import (
@@ -276,11 +277,22 @@ def _record_tap(athlete_id: str) -> bool:
         return False
 
 
-def _render_pack_mode(projection, clock, shared_unavailable: bool) -> bool:
+def _render_pack_mode(
+    projection,
+    clock,
+    shared_unavailable: bool,
+    station_number: int | None = None,
+) -> bool:
     """Render the browser-owned rapid-capture surface; return whether it is active."""
     session_id = st.session_state.get("active_race_session_id")
     eligible = [state for state in (projection.athletes if projection else ()) if state.next_checkpoint and not state.finished and state.outcome_status != "dnf"]
-    allowed = bool(session_id and clock.status == "running" and eligible and not shared_unavailable and st.session_state.timer_name)
+    if station_number is not None:
+        eligible = [
+            state
+            for state in eligible
+            if state.next_checkpoint.number == station_number
+        ]
+    allowed = bool(session_id and clock.status == "running" and not shared_unavailable and st.session_state.timer_name)
     st.markdown("### ⚡ PACK MODE")
     if not st.session_state.get("pack_mode_active"):
         st.caption("Rapid browser capture for runners arriving seconds apart. Normal timing remains available below.")
@@ -288,26 +300,41 @@ def _render_pack_mode(projection, clock, shared_unavailable: bool) -> bool:
             st.session_state.pack_mode_active = True; st.rerun()
         return False
     if not allowed:
+        if station_number is not None and not shared_unavailable:
+            st.info("Pack Mode is ready. Waiting for the shared race clock to start.")
+            return True
         st.error("Pack Mode stopped: the race/checkpoint context is no longer valid.")
         st.session_state.pack_mode_active = False
         return False
-    checkpoint_numbers = sorted({state.next_checkpoint.number for state in eligible})
-    checkpoint_number = st.selectbox("Current checkpoint", checkpoint_numbers, format_func=lambda n: next(cp.label for cp in st.session_state.meet_config.checkpoints if cp.number == n), key="pack_checkpoint")
+    if station_number is not None:
+        checkpoint_number = station_number
+    else:
+        checkpoint_numbers = sorted({state.next_checkpoint.number for state in eligible})
+        if not checkpoint_numbers:
+            st.info("No athletes currently have a checkpoint available for Pack Mode.")
+            return True
+        checkpoint_number = st.selectbox("Current checkpoint", checkpoint_numbers, format_func=lambda n: next(cp.label for cp in st.session_state.meet_config.checkpoints if cp.number == n), key="pack_checkpoint")
     targets = [state for state in eligible if state.next_checkpoint.number == checkpoint_number]
     cp = next(cp for cp in st.session_state.meet_config.checkpoints if cp.number == checkpoint_number)
+    if not targets:
+        st.info(f"Waiting for runners to become eligible at {station_label(cp)}.")
     st.session_state.setdefault("pack_device_id", str(uuid4()))
     ack_ids = st.session_state.get("pack_ack_ids", [])
     athlete_rows=[]
     race_order={state.athlete.athlete_id:i for i,state in enumerate(ordered_race_board_athletes(projection))}
-    for i,state in enumerate(targets):
-        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"roster":i,"race":race_order[state.athlete.athlete_id]})
-    value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=cp.label,
-        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, key=f"pack:{session_id}:{checkpoint_number}")
+    display_states = projection.athletes if station_number is not None and projection else targets
+    eligible_ids = {state.athlete.athlete_id for state in targets}
+    for i,state in enumerate(display_states):
+        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"roster":i,"race":race_order[state.athlete.athlete_id],"eligible":state.athlete.athlete_id in eligible_ids})
+    value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
+        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []
     action = value.get("action", "") if isinstance(value, dict) else ""
     if action.startswith("undo_synced:"):
         event_id=action.split(":",1)[1]; event=next((e for e in st.session_state.get("persisted_split_events",()) if (e.client_event_id or e.id)==event_id),None)
-        if event: _correct_event(event); st.rerun()
+        if event and _correct_event(event):
+            st.session_state.pack_void_ids=list({*st.session_state.get("pack_void_ids", []),event_id})
+            st.rerun()
     if events:
         try:
             saved=normalize_pack_batch(st.session_state.repository,st.session_state.selected_race_id,session_id,checkpoint_number,events,st.session_state.timer_name)
@@ -319,9 +346,12 @@ def _render_pack_mode(projection, clock, shared_unavailable: bool) -> bool:
     if st.session_state.get("pack_sync_error"): st.warning(f"OFFLINE / synchronization delayed — events remain in browser storage. {st.session_state.pack_sync_error}")
     left,right=st.columns(2)
     if left.button("Retry synchronization",use_container_width=True): st.rerun()
-    if right.button("Exit Pack Mode",use_container_width=True):
+    if right.button("Switch to Individual Timing" if station_number is not None else "Exit Pack Mode",use_container_width=True):
         if events: st.warning(f"{len(events)} captured splits are still waiting to synchronize. Exit preserves the durable browser queue.")
-        else: st.session_state.pack_mode_active=False; st.rerun()
+        else:
+            st.session_state.pack_mode_active=False
+            if station_number is not None: st.session_state.timer_timing_mode="individual"
+            st.rerun()
     if st.session_state.get("debug_mode"):
         with st.expander("Pack diagnostics"): st.json({"device_id":st.session_state.pack_device_id,"submitted":len(events),"acknowledged":len(st.session_state.get("pack_ack_ids",[])),"latest_sync":str(st.session_state.get("pack_last_sync_at")),"sync_error":st.session_state.get("pack_sync_error","")})
     return True
@@ -580,6 +610,16 @@ def _render_finish_controls(projection, clock) -> None:
 def render() -> None:
     """Render the existing controlled live-timing polling fragment."""
     st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
+    timer_mode = bool(
+        st.session_state.get("timer_mode")
+        and getattr(st.session_state.get("app_identity"), "is_timer", False)
+    )
+    station_number = st.session_state.get("timer_station_checkpoint") if timer_mode else None
+    if getattr(st.session_state.get("app_identity"), "is_timer", False) and station_number is None:
+        st.warning("Select a race and checkpoint before opening the timing screen.")
+        if st.button("Select Timing Station", type="primary", use_container_width=True):
+            st.switch_page(st.session_state.page_registry["race_day_timer"])
+        return
     st.session_state.last_fragment_rerun_at = datetime.now(timezone.utc)
     _restore_if_needed()
     # Poll the exact connected row even while the local clock is not_started.
@@ -598,6 +638,17 @@ def render() -> None:
         subtitle=f"{config.meet_name or 'Meet not selected'} • {status}",
         compact=True,
     )
+    checkpoint = None
+    if timer_mode:
+        checkpoint = next(
+            (item for item in config.checkpoints if item.number == station_number), None
+        )
+        station_name = station_label(checkpoint) if checkpoint else "Unknown checkpoint"
+        st.success(f"**TIMING STATION: {station_name}**")
+        if st.button("Change Race / Checkpoint", use_container_width=True):
+            st.session_state.timer_station_checkpoint = None
+            st.session_state.timer_mode = False
+            st.switch_page(st.session_state.page_registry["race_day_timer"])
     repository_result = st.session_state.get("repository_result")
     if repository_result is not None and repository_result.is_temporary:
         st.error(
@@ -701,42 +752,58 @@ def render() -> None:
     shared_unavailable = (
         repository_result is not None and repository_result.is_temporary
     )
-    quick_start, quick_pause, quick_resume = st.columns(3)
-    if quick_start.button(
-        "Start Race",
-        use_container_width=True,
-        disabled=shared_unavailable
-        or not valid_setup
-        or clock.status == "running"
-        or clock.status == "ended",
-    ):
-        if _start_timing():
-            st.rerun()
-    if quick_pause.button(
-        "Pause", use_container_width=True, disabled=clock.status != "running"
-    ):
-        if _pause_timing():
-            st.rerun()
-    if quick_resume.button(
-        "Resume", use_container_width=True, disabled=clock.status != "paused"
-    ):
-        if _resume_timing():
-            st.rerun()
-
-    with st.expander("Race Controls", expanded=False):
-        timer_name = st.text_input(
-            "Timer / display name",
-            value=st.session_state.timer_name,
-            placeholder="e.g. Finish line tablet",
-        )
-        st.session_state.timer_name = timer_name.strip()
-        st.caption(f"Session: {connected_id} • Storage: {storage}")
-        c3 = st.container()
-        confirm_reset = c3.checkbox("Confirm reset")
-        if c3.button(
-            "Reset Race", use_container_width=True, disabled=not confirm_reset
+    finish_line_starter = bool(
+        timer_mode
+        and checkpoint is not None
+        and checkpoint.is_finish
+    )
+    if finish_line_starter and clock.status == "not_started":
+        st.info("You are the race starter. Confirm the course is ready, then start the shared race clock.")
+        if st.button(
+            "Start Race",
+            type="primary",
+            use_container_width=True,
+            disabled=shared_unavailable or not valid_setup,
         ):
-            _reset_timing()
+            if _start_timing():
+                st.rerun()
+    if not timer_mode:
+        quick_start, quick_pause, quick_resume = st.columns(3)
+        if quick_start.button(
+            "Start Race",
+            use_container_width=True,
+            disabled=shared_unavailable
+            or not valid_setup
+            or clock.status == "running"
+            or clock.status == "ended",
+        ):
+            if _start_timing():
+                st.rerun()
+        if quick_pause.button(
+            "Pause", use_container_width=True, disabled=clock.status != "running"
+        ):
+            if _pause_timing():
+                st.rerun()
+        if quick_resume.button(
+            "Resume", use_container_width=True, disabled=clock.status != "paused"
+        ):
+            if _resume_timing():
+                st.rerun()
+
+        with st.expander("Race Controls", expanded=False):
+            timer_name = st.text_input(
+                "Timer / display name",
+                value=st.session_state.timer_name,
+                placeholder="e.g. Finish line tablet",
+            )
+            st.session_state.timer_name = timer_name.strip()
+            st.caption(f"Session: {connected_id} • Storage: {storage}")
+            c3 = st.container()
+            confirm_reset = c3.checkbox("Confirm reset")
+            if c3.button(
+                "Reset Race", use_container_width=True, disabled=not confirm_reset
+            ):
+                _reset_timing()
 
     if st.session_state.message:
         st.info(st.session_state.message)
@@ -761,7 +828,28 @@ def render() -> None:
         )
 
     projection = st.session_state.get("projected_race_state")
-    pack_active = _render_pack_mode(projection, clock, shared_unavailable)
+    if timer_mode:
+        st.markdown("### Timing Mode")
+        timing_mode = st.session_state.get("timer_timing_mode", "pack")
+        if timing_mode == "pack":
+            st.success("⚡ Pack Mode")
+            if st.button("Switch to Individual Timing", key="timer_individual_mode", use_container_width=True):
+                st.session_state.timer_timing_mode = "individual"
+                st.session_state.pack_mode_active = False
+                st.rerun()
+        elif st.button("Switch to Pack Mode", key="timer_pack_mode", type="primary", use_container_width=True):
+            st.session_state.timer_timing_mode = "pack"
+            st.session_state.pack_mode_active = True
+            st.rerun()
+    pack_active = _render_pack_mode(
+        projection,
+        clock,
+        shared_unavailable,
+        station_number if timer_mode else None,
+    ) if not timer_mode or st.session_state.get("timer_timing_mode", "pack") == "pack" else False
+    if timer_mode and st.session_state.get("timer_timing_mode", "pack") == "pack":
+        st.caption("Captures are saved on this device immediately and synchronize automatically.")
+        return
     if pack_active:
         st.caption("Normal timing controls are temporarily hidden to prevent accidental duplicate taps. Exit Pack Mode to restore them.")
     search_col, order_col = st.columns([2, 1])
@@ -782,6 +870,13 @@ def render() -> None:
     matching = [
         item for item in all_projected if athlete_matches_search(item, search_value)
     ]
+    if timer_mode:
+        matching = [
+            item
+            for item in matching
+            if item.next_checkpoint is not None
+            and item.next_checkpoint.number == station_number
+        ]
     active_athletes, finished_athletes = partition_finished_athletes(matching)
     st.caption(f"{len(active_athletes)} active • {len(finished_athletes)} finished / DNF")
 
@@ -832,13 +927,18 @@ def render() -> None:
                     f"**{item.athlete.name}** • #{item.athlete.bib_number or '—'} • {'DNF' if item.outcome_status == 'dnf' else format_duration(latest.cumulative_time_seconds) if latest else 'Finished'}"
                 )
 
-    _render_timing_recovery(projection, clock)
-    _render_finish_controls(projection, clock)
+    if not timer_mode:
+        _render_timing_recovery(projection, clock)
+        _render_finish_controls(projection, clock)
 
-    if all_projected and all(item.finished for item in all_projected):
+    if not timer_mode and all_projected and all(item.finished for item in all_projected):
         st.success("Race complete: all athletes have reached the finish.")
         if st.button("Go to Results", use_container_width=True):
             st.switch_page(st.session_state.page_registry["results"])
+
+    if timer_mode:
+        st.caption("Runners appear when this is their next checkpoint. Recorded runners are removed automatically.")
+        return
 
     st.subheader("Live Split Board")
     filter_value = st.selectbox(
