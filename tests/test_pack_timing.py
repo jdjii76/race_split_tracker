@@ -1,10 +1,16 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from split_tracker.models import Athlete, Checkpoint
-from split_tracker.pack_timing import normalize_pack_batch
+from split_tracker.pack_timing import (
+    expected_arrival_metadata,
+    normalize_pack_batch,
+    ordered_expected_arrival_states,
+    pack_capture_allowed,
+)
 from split_tracker.projection import project_race_state
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError
 
@@ -14,6 +20,138 @@ def test_browser_component_uses_durable_queue_and_no_streamlit_button_cycle():
     assert "localStorage.setItem" in source and "localStorage.getItem" in source
     assert "performance.now()" in source and "Date.now()" in source
     assert "setTimeout(()=>emit(),500)" in source
+
+
+def test_pack_capture_is_locked_while_ready_and_enabled_when_running():
+    assert not pack_capture_allowed("session", "not_started", False, "Mile 1")
+    assert not pack_capture_allowed("session", "paused", False, "Mile 1")
+    assert pack_capture_allowed("session", "running", False, "Mile 1")
+
+
+def test_browser_component_confirms_taps_before_sync_and_keeps_recent_undo_visible():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+
+    capture = source[source.index("function capture"):source.index("function undo")]
+    assert capture.index("persist()") < capture.index("emit()")
+    assert "lastCapturedId" in capture and "render()" in capture
+    assert "Recent Captures · newest first" in source
+    assert "UNDO LAST TAP" in source
+    assert "undo_synced:" in source
+    assert "Saved on device" in source and "Synchronized" in source
+
+
+def test_pack_grid_defaults_to_expected_order_and_uses_unified_stable_cards():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+    render = source[source.index("function render"):source.index("addEventListener('message'")]
+
+    assert "byAthlete=new Map" in render
+    assert "All Athletes" in render
+    assert "Remaining Only" in render
+    assert "Captured Only" in render
+    assert "Live order" not in render
+    assert "!captured.has(a.id)" not in render
+    assert "event=byAthlete.get(a.id)" in render
+    assert "captured-at" in render
+    assert "✓ " in render
+    assert "${a.name}" in render
+    assert "${a.last.toUpperCase()}" not in render
+    assert "Bib ${a.bib}" in render
+    assert "Previous Split:" in render
+    assert "formatElapsed(a.arrival_time)" in render
+    assert "Missing ${a.missing_label}" in render
+    assert "Latest: ${a.latest_checkpoint_label}" in render
+    assert "Stable Roster" in render
+    assert "Expected Arrival Order" in render
+    assert "displayMode='expected'" in source
+    assert render.index("Expected Arrival Order") < render.index("Stable Roster")
+
+
+def test_expected_arrival_metadata_sorts_prior_times_and_marks_missing():
+    checkpoints = [Checkpoint(1, "Mile 1", 1609), Checkpoint(2, "Mile 2", 3218)]
+    states = [
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="john"), splits=(SimpleNamespace(checkpoint_number=1, cumulative_time_seconds=362.0),)),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="alex"), splits=(SimpleNamespace(checkpoint_number=1, cumulative_time_seconds=375.0),)),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="sarah"), splits=(SimpleNamespace(checkpoint_number=1, cumulative_time_seconds=381.0),)),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="chris"), splits=()),
+    ]
+
+    metadata = expected_arrival_metadata(states, checkpoints, 2)
+    ordered = ordered_expected_arrival_states(states, metadata)
+
+    assert [state.athlete.athlete_id for state in ordered] == ["john", "alex", "sarah", "chris"]
+    assert metadata["chris"]["missing_previous"] is True
+    assert metadata["chris"]["missing_label"] == "Mile 1"
+    assert metadata["john"]["previous_label"] == "Mile 1"
+    assert metadata["john"]["missing_previous"] is False
+
+
+def test_expected_arrival_order_uses_stable_roster_to_break_ties():
+    states = [
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="first")),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="second")),
+        SimpleNamespace(athlete=SimpleNamespace(athlete_id="missing")),
+    ]
+    metadata = {
+        "first": {"arrival_time": 375.0, "roster": 0},
+        "second": {"arrival_time": 375.0, "roster": 1},
+        "missing": {"arrival_time": None, "roster": 2},
+    }
+
+    ordered = ordered_expected_arrival_states(states, metadata)
+
+    assert [state.athlete.athlete_id for state in ordered] == ["first", "second", "missing"]
+
+
+def test_expected_arrival_reports_missing_previous_and_latest_later_checkpoint():
+    checkpoints = [
+        Checkpoint(1, "Mile 1", 1609),
+        Checkpoint(2, "Mile 2", 3218),
+        Checkpoint(3, "Finish", 5000, True),
+    ]
+    state = SimpleNamespace(
+        athlete=SimpleNamespace(athlete_id="runner"),
+        splits=(SimpleNamespace(checkpoint_number=2, cumulative_time_seconds=765.0),),
+    )
+
+    metadata = expected_arrival_metadata([state], checkpoints, 2)["runner"]
+
+    assert metadata["arrival_time"] is None
+    assert metadata["missing_previous"] is True
+    assert metadata["missing_label"] == "Mile 1"
+    assert metadata["latest_checkpoint_label"] == "Mile 2"
+    assert metadata["latest_checkpoint_time"] == 765.0
+
+
+def test_expected_arrival_order_is_snapshotted_and_capture_does_not_resort():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+
+    assert "expected-order" in source
+    assert "expectedOrder.length" in source
+    assert "expectedPosition=new Map" in source
+    assert "expectedOrder=(args.athletes||[]).map(a=>a.id)" in source
+    capture = source[source.index("function capture"):source.index("function undo")]
+    assert "expectedOrder" not in capture
+
+
+def test_missing_previous_split_card_remains_selectable():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+    render = source[source.index("function render"):source.index("addEventListener('message'")]
+
+    assert "missing=mode==='expected'&&a.missing_previous&&!done" in render
+    assert "enabled=a.eligible&&!done" in render
+    assert "${enabled?'':'disabled'}" in render
+
+
+def test_pack_undo_void_ack_restores_uncaptured_card_without_deleting_history():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+
+    assert "void_ids" in source
+    assert "x.state='cancelled'" in source
+    assert "undo_synced:" in source
+    undo = source[source.index("function undo"):source.index("function render")]
+    assert "e.state='undo_pending'" in undo
+    assert undo.index("persist()") < undo.index("render()") < undo.index("emit('undo_synced:")
+    assert "!['cancelled','undo_pending'].includes(e.state)" in source
 
 
 def setup_repo():
@@ -57,3 +195,65 @@ def test_pack_event_uses_append_only_void():
     repo,race,session,athletes,start=setup_repo(); event=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"coach")[0]
     void=repo.invalidate_split_event(event.id,session.id,event.athlete_id,1,"coach")
     assert void.event_type=="split_voided" and len(repo.list_all_split_events(session.id))==2 and repo.list_active_split_events(session.id)==[]
+
+
+def test_timer_undo_own_pack_event_is_append_only_and_station_scoped():
+    repo,race,session,athletes,start=setup_repo()
+    repo.assign_timer_station(session.id,1,"device-a")
+    event=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"Mile 1 timer")[0]
+
+    void=repo.invalidate_timer_pack_event(event.id,session.id,1,"device-a","Mile 1 timer")
+
+    history=repo.list_all_split_events(session.id)
+    assert [item.id for item in history][0] == event.id
+    assert void.event_type == "split_voided" and void.target_event_id == event.id
+    assert len(history) == 2 and repo.list_active_split_events(session.id) == []
+
+
+def test_timer_cannot_undo_another_station_or_device_event():
+    repo,race,session,athletes,start=setup_repo()
+    repo.race_session_checkpoints.clear()
+    repo.create_race_session_checkpoints(session.id,[Checkpoint(1,"Mile 1",1609),Checkpoint(2,"Mile 2",3218)])
+    payload=batch(session,athletes[:1],start)
+    payload[0]["checkpoint_number"]=2; payload[0]["device_id"]="device-b"
+    event=normalize_pack_batch(repo,race.id,session.id,2,payload,"Mile 2 timer")[0]
+    repo.assign_timer_station(session.id,1,"device-a")
+
+    with pytest.raises(RepositoryError,match="assigned"):
+        repo.invalidate_timer_pack_event(event.id,session.id,2,"device-a","Mile 1 timer")
+    with pytest.raises(RepositoryError,match="assigned|own|belong"):
+        repo.invalidate_timer_pack_event(event.id,session.id,1,"device-a","Mile 1 timer")
+    assert repo.list_active_split_events(session.id) == [event]
+
+
+def test_timer_cannot_undo_pack_event_after_completion():
+    repo,race,session,athletes,start=setup_repo()
+    repo.assign_timer_station(session.id,1,"device-a")
+    event=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"timer")[0]
+    repo.update_race_session(RaceSession(**{**session.__dict__,"status":"completed"}))
+
+    with pytest.raises(RepositoryError,match="completed|Reopen"):
+        repo.invalidate_timer_pack_event(event.id,session.id,1,"device-a","timer")
+    assert repo.list_active_split_events(session.id) == [event]
+
+
+def test_two_timer_stations_capture_independent_batches_in_one_session():
+    repo, race, session, athletes, start = setup_repo()
+    repo.race_session_checkpoints.clear()
+    repo.create_race_session_checkpoints(
+        session.id,
+        [Checkpoint(1, "Mile 1", 1609), Checkpoint(2, "Mile 2", 3218)],
+    )
+    mile_one = batch(session, athletes[:2], start)
+    mile_two = batch(session, athletes[2:4], start)
+    for index, event in enumerate(mile_two, start=1):
+        event["checkpoint_number"] = 2
+        event["device_id"] = "device-b"
+        event["capture_sequence"] = index
+
+    first_saved = normalize_pack_batch(repo, race.id, session.id, 1, mile_one, "mile-one")
+    second_saved = normalize_pack_batch(repo, race.id, session.id, 2, mile_two, "mile-two")
+
+    assert {event.checkpoint_number for event in first_saved} == {1}
+    assert {event.checkpoint_number for event in second_saved} == {2}
+    assert {event.device_id for event in repo.list_all_split_events(session.id)} == {"device-a", "device-b"}

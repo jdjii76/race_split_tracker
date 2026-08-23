@@ -1,5 +1,52 @@
 # Race Split Tracker
 
+## Race Day Timer Mode
+
+Provision the shared volunteer account with the `timer` role after applying
+`supabase/migrations/024_race_day_timer_role.sql` and
+`supabase/migrations/025_timer_race_start.sql`, then apply
+`supabase/migrations/026_timer_pack_sync.sql` and
+`supabase/migrations/027_awaiting_review_lifecycle.sql`. On sign-in, that account is
+routed to **Race Day Timer** instead of the coach application. The volunteer
+chooses a ready/running race and checkpoint, then sees only the station name,
+authoritative race clock, athlete split buttons, connection state, and a control
+to change stations. Setup, analytics, results, athlete progression, race
+lifecycle, corrections, and administration remain outside timer navigation.
+The volunteer assigned to **Finish Line** is the race starter and receives the
+single control that starts the authoritative shared clock; split-station timers
+wait for that start and do not receive lifecycle controls.
+
+The timer role can read race-day meet, race, roster, session, checkpoint, and
+split data and can insert authoritative split events. It cannot edit meet/race
+setup or control the race lifecycle through table policies.
+
+Timer stations open directly in **Pack Mode** once selected. The compact capture
+grid acknowledges each tap in the browser before synchronization, shows the
+three newest captures and their saved/synchronized state, and keeps **Undo Last
+Tap** within thumb reach. The durable localStorage queue, UUID event identities,
+offline retry, server validation, and append-only correction path are unchanged.
+Timers can switch to Individual Timing when runners are separated.
+The Pack grid defaults to **All Athletes** and keeps every card in a stable
+position after capture. Captured cards remain visible with a green check,
+timestamp, and synchronization state; undo restores the uncaptured appearance
+after the existing local cancellation or append-only server correction succeeds.
+Timer cards show each athlete as **First Name Last Name**, prefixed by the real
+bib number only when one is present.
+Checkpoint timers can optionally switch from **Stable Roster** to **Expected
+Arrival Order**, which snapshots the order from the preceding checkpoint's
+cumulative times. Athletes missing that prior split remain tappable and show a
+red missing-checkpoint indicator; captures never reorder the selected view.
+
+Coaches and administrators can use **End Race Timing** to stop live capture
+without resolving every athlete. The session enters **AWAITING REVIEW**, retains
+all timing and audit events, and permits append-only result corrections before
+**Finalize & Publish Results** changes the persisted state to `completed`.
+Timer accounts cannot access result management or finalization.
+The timer assigned to the persisted **Finish Line** checkpoint is the sole timer
+exception: that station can use **End Race Timing** to enter `awaiting_review`.
+Mile/checkpoint timers receive no lifecycle action, and all result correction and
+finalization permissions remain coach/admin-only.
+
 Completed races now include a coach-only **Manage Results** panel. Coaches can add
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
 corrections. Corrections become the single result used by history, PR, scoring,
@@ -843,6 +890,32 @@ Use **Pack Mode** when several runners approach the same checkpoint together:
 At entry the component estimates device-clock offset from a reference UTC value supplied by the app. Offsets up to ten seconds are applied to capture UTC while preserving `performance.now()` and capture sequence for ordering; a warning is shown above two seconds, and larger corrections are not silently applied. Network failure never blocks taps: queued events remain namespaced by race session, checkpoint, and device, survive refresh, and retry automatically when connectivity returns.
 
 The capture grid uses direct browser event handlers and a 500 ms batch debounce. It therefore accepts a five- or twenty-runner sequence without a Python round trip between taps; database synchronization occurs after capture and preserves capture timestamp/sequence ordering.
+
+Pack Mode opens in **Expected Arrival Order** by default. For checkpoints after the first,
+athletes with a previous split are ordered by that cumulative time, ties retain roster order,
+and athletes missing the previous split remain selectable at the end with a visible warning.
+The order is snapshotted when the component loads and remains fixed through captures,
+synchronization, and rerenders. Timers can switch to **Stable Roster** at any time; both modes
+use the same name, optional bib, captured timestamp, and synchronization card treatment.
+Missing intermediate checkpoints do not discard later captures: each split remains attached
+to its persisted checkpoint, and Expected Arrival cards identify both the missing previous
+checkpoint and the athlete's latest available checkpoint. Coaches can fill the missing split
+later through the existing append-only correction workflow.
+
+Races may optionally have a scheduled UTC start, entered to any minute, in **Meets & Races**. Scheduled races display
+as **Upcoming** until five minutes before that time and **Ready** inside the five-minute window;
+this is computed display state and never starts the race clock. Finish Line can open while
+the race is Upcoming. Inside the Ready window, every station can load its roster and prepare
+Pack Mode, but capture remains locked until Finish Line uses the existing manual **Start Race**
+control. Unscheduled races continue to use
+their existing persisted readiness and manual-start workflow.
+Apply `supabase/migrations/029_prepare_race_session.sql` so timer accounts can create the
+shared Ready session and checkpoint snapshot without starting the clock or receiving direct
+race-session write permission.
+Apply `supabase/migrations/030_timer_pack_undo.sql` to bind each timer device to its selected
+session checkpoint. This enables synchronized **Undo Last Tap** only for that device's own
+Pack Mode event and appends a `split_voided` audit event; it grants no direct split updates,
+manual result editing, or access to the coach/admin correction RPC.
 
 ## Athlete Progression
 

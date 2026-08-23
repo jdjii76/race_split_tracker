@@ -1,5 +1,6 @@
 """Tests for active-meet restoration and race-day actions."""
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from split_tracker.models import Athlete
 from split_tracker.navigation import (
     build_race_dashboard_summaries,
@@ -28,6 +29,7 @@ def test_race_action_uses_session_status_as_source_of_truth():
     assert determine_race_primary_action("ready", "running") == ("Open Timing", "live_timing")
     assert determine_race_primary_action("running", "paused") == ("Open Timing", "live_timing")
     assert determine_race_primary_action("running", "completed") == ("View Results", "results")
+    assert determine_race_primary_action("running", "awaiting_review") == ("Review Results", "results")
 
 
 def test_dashboard_summaries_change_with_meet_and_handle_empty_meet():
@@ -64,9 +66,34 @@ def test_dashboard_classifies_not_started_running_and_finished():
         [upcoming, running, finished], sessions, {upcoming.id: 4, running.id: 5, finished.id: 6}
     )
 
-    assert [item.category for item in summaries] == ["up_next", "running", "completed"]
-    assert [item.display_status for item in summaries] == ["Not Started", "Running", "Finished"]
+    assert [item.category for item in summaries] == ["ready", "running", "completed"]
+    assert [item.display_status for item in summaries] == ["Ready", "Running", "Completed"]
     assert [item.athlete_count for item in summaries] == [4, 5, 6]
+
+
+def test_dashboard_classifies_timing_complete_as_awaiting_review():
+    race = Race(id="review-race", meet_id="meet", name="Open", distance_meters=5000)
+    session = RaceSession(id="review-session", race_id=race.id, status="awaiting_review")
+
+    summary = build_race_dashboard_summaries([race], [session], {})[0]
+
+    assert summary.category == "awaiting_review"
+    assert summary.display_status == "Awaiting Review"
+    assert summary.action_label == "Review Results"
+
+
+def test_dashboard_computes_upcoming_and_ready_from_scheduled_start():
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
+    upcoming = Race(
+        id="upcoming", meet_id="meet", name="JV", distance_meters=5000,
+        scheduled_start=now + timedelta(minutes=10),
+    )
+    ready = replace(upcoming, id="ready", name="Varsity", scheduled_start=now + timedelta(minutes=5))
+
+    summaries = build_race_dashboard_summaries([upcoming, ready], [], {}, now=now)
+
+    assert [summary.category for summary in summaries] == ["upcoming", "ready"]
+    assert [summary.display_status for summary in summaries] == ["Upcoming", "Ready"]
 
 
 def test_multiple_running_races_and_sessions_remain_isolated_by_race_uuid():
@@ -93,7 +120,7 @@ def test_one_race_status_cannot_mark_another_race_running():
     summaries = build_race_dashboard_summaries([first, second], [running], {})
 
     assert summaries[0].category == "running"
-    assert summaries[1].category == "up_next"
+    assert summaries[1].category == "upcoming"
     assert summaries[1].session is None
 
 
