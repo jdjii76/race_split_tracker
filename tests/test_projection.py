@@ -58,6 +58,50 @@ def test_projection_empty_and_next_checkpoint():
     assert all(item.button_enabled for item in state.athletes)
 
 
+def test_projection_keeps_mile_two_when_mile_one_is_missing():
+    session, athletes, _ = _fixtures()
+    checkpoints = [
+        Checkpoint(1, "Mile 1", 1609),
+        Checkpoint(2, "Mile 2", 3218),
+        Checkpoint(3, "Finish", 5000, True),
+    ]
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    state = project_race_state(
+        session,
+        athletes,
+        checkpoints,
+        [_event("a", 2, 765, event_id="mile-two", at=now, event_order=1)],
+    )
+
+    alex = state.athletes[0]
+    assert [(split.checkpoint_number, split.cumulative_time_seconds) for split in alex.splits] == [(2, 765)]
+    assert alex.next_checkpoint.number == 1
+    assert not alex.finished
+
+
+def test_projection_keeps_finish_when_both_intermediate_splits_are_missing():
+    session, athletes, _ = _fixtures()
+    checkpoints = [
+        Checkpoint(1, "Mile 1", 1609),
+        Checkpoint(2, "Mile 2", 3218),
+        Checkpoint(3, "Finish", 5000, True),
+    ]
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    state = project_race_state(
+        session,
+        athletes,
+        checkpoints,
+        [_event("a", 3, 1292, event_id="finish-only", at=now, event_order=1)],
+    )
+
+    alex = state.athletes[0]
+    assert [(split.checkpoint_number, split.cumulative_time_seconds) for split in alex.splits] == [(3, 1292)]
+    assert alex.next_checkpoint.number == 1
+    assert alex.finished
+
+
 def test_projection_orders_filters_and_deduplicates_persisted_events():
     session, athletes, checkpoints = _fixtures()
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)

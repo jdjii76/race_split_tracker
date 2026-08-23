@@ -126,7 +126,7 @@ def test_stale_undo_refuses_when_another_coach_recorded_a_newer_split():
     assert stale_target.id in {event.id for event in repo.list_active_split_events(session.id)}
 
 
-def test_specific_older_correction_is_excluded_and_manual_replacement_restores_later_event():
+def test_specific_older_correction_preserves_later_event_and_accepts_manual_replacement():
     repo, _, session, athlete, _, state = correction_setup()
     mile = add_event(repo, session, athlete, 1, 300, 1)
     finish = add_event(repo, session, athlete, 2, 700, 2)
@@ -134,8 +134,9 @@ def test_specific_older_correction_is_excluded_and_manual_replacement_restores_l
 
     persist_event_correction(state, mile)
     athlete_state = next(item for item in state.projected_race_state.athletes if item.athlete.athlete_id == athlete.athlete_id)
-    assert athlete_state.completed_split_count == 0
-    assert finish.id not in {event.id for event in state.projected_race_state.events}
+    assert athlete_state.completed_split_count == 1
+    assert finish.id in {event.id for event in state.projected_race_state.events}
+    assert athlete_state.splits[0].checkpoint_number == 2
 
     manual = persist_manual_correction(state, athlete.athlete_id, 1, 290)
     athlete_state = next(item for item in state.projected_race_state.athletes if item.athlete.athlete_id == athlete.athlete_id)
