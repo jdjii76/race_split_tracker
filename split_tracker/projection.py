@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from split_tracker.calculations import build_split_record
+from split_tracker.calculations import athlete_finished, build_split_record, next_checkpoint
 from split_tracker.models import Athlete, Checkpoint, MeetConfig, SplitRecord
 from split_tracker.repository import RaceSession, SplitEvent
 
@@ -176,9 +176,9 @@ def project_race_state(
 ) -> ProjectedRaceState:
     """Build all live controls and results from one persisted-data snapshot.
 
-    Invalid-session and duplicate checkpoint events are ignored. Out-of-order
-    later checkpoints are deferred, then accepted only if a manual replacement
-    fills the missing prefix. This keeps correction replay deterministic.
+    Invalid-session and duplicate checkpoint events are ignored. Each event is
+    projected using its persisted checkpoint identity, so a missed checkpoint
+    does not hide valid captures at later checkpoints.
     """
     dnf_ids = dnf_athlete_ids or set()
     session_events = [event for event in split_events if event.race_session_id == race_session.id]
@@ -193,30 +193,17 @@ def project_race_state(
     )
     checkpoint_by_number = {checkpoint.number: checkpoint for checkpoint in checkpoints}
     accepted: list[SplitEvent] = []
-    accepted_by_athlete: dict[str, list[SplitEvent]] = {
-        athlete.athlete_id: [] for athlete in race_athletes
+    accepted_by_athlete: dict[str, dict[int, SplitEvent]] = {
+        athlete.athlete_id: {} for athlete in race_athletes
     }
-    pending = list(ordered)
-    while pending:
-        deferred: list[SplitEvent] = []
-        progress = False
-        for event in pending:
-            history = accepted_by_athlete.get(event.athlete_id)
-            if history is None or len(history) >= len(checkpoints):
-                continue
-            expected = checkpoints[len(history)]
-            if event.checkpoint_number != expected.number:
-                deferred.append(event)
-                continue
-            history.append(event)
-            accepted.append(event)
-            progress = True
-        if not progress:
-            break
-        pending = deferred
-    # Keep global activity/undo identity chronological even when a manual
-    # replacement unlocked a previously deferred later checkpoint.
-    accepted.sort(key=split_event_sort_key)
+    for event in ordered:
+        history = accepted_by_athlete.get(event.athlete_id)
+        if history is None or event.checkpoint_number not in checkpoint_by_number:
+            continue
+        if event.checkpoint_number in history:
+            continue
+        history[event.checkpoint_number] = event
+        accepted.append(event)
 
     race_distance = checkpoints[-1].distance_meters if checkpoints else 0.0
     config = MeetConfig(race_distance_meters=race_distance, checkpoints=checkpoints)
@@ -224,7 +211,10 @@ def project_race_state(
     results: list[SplitRecord] = []
     for athlete in race_athletes:
         records: list[SplitRecord] = []
-        history = accepted_by_athlete[athlete.athlete_id]
+        history = sorted(
+            accepted_by_athlete[athlete.athlete_id].values(),
+            key=lambda event: checkpoint_by_number[event.checkpoint_number].number,
+        )
         for sequence, event in enumerate(history, start=1):
             checkpoint = checkpoint_by_number[event.checkpoint_number]
             record = build_split_record(
@@ -239,9 +229,9 @@ def project_race_state(
             )
             if record is not None:
                 records.append(record)
-        next_cp = checkpoints[len(records)] if len(records) < len(checkpoints) else None
-        latest = history[-1] if history else None
-        finished = next_cp is None and bool(checkpoints)
+        next_cp = next_checkpoint(records, checkpoints)
+        latest = max(history, key=split_event_sort_key) if history else None
+        finished = athlete_finished(records, checkpoints)
         status = (
             "DNF" if athlete.athlete_id in dnf_ids else ("FINISHED" if finished else f"Next: {next_cp.label if next_cp else '—'}")
         )

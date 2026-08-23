@@ -68,9 +68,9 @@ def _filter_options(rows: list[dict[str, object]], key: str) -> list[str]:
 
 
 def _manage_results(repository, session, athletes, checkpoints, rows, result_events, split_events) -> None:
-    """Render the narrow completed-session result editor."""
+    """Render the narrow post-timing result editor."""
     st.subheader("Manage Results")
-    st.caption("Add a missed result or append a correction. The race stays finalized and earlier values remain in Result History.")
+    st.caption("Add a missed result or append a correction. Earlier values remain in Result History.")
     current = canonical_result_events(result_events)
     by_id = {str(row["Athlete ID"]): row for row in rows}
     summary_rows = [{"Athlete": athlete.name, "Team/Division": athlete.team or athlete.group or "—",
@@ -182,7 +182,7 @@ def render() -> None:
     summary = st.selectbox("Race session", summaries, index=selected_index, format_func=session_label)
     st.session_state.selected_results_session_id = summary.session_id
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Status", summary.status)
+    c1.metric("Status", summary.status.replace("_", " ").upper())
     c2.metric("Duration", format_duration(summary.duration_seconds))
     c3.metric("Active splits", summary.active_split_count)
     c4.metric("Finishers", summary.finished_athlete_count)
@@ -225,12 +225,14 @@ def render() -> None:
         st.info("This session has no roster or split events to reconstruct.")
         return
 
-    reviewing = summary.status != "completed" and st.session_state.get("results_review_session_id") == session.id
+    reviewing = summary.status == "awaiting_review"
     if reviewing:
-        st.warning("PROVISIONAL RESULTS — Review places, times, pace, and splits before finalizing. Parent results remain LIVE.")
-        correct, finalize = st.columns(2)
-        if correct.button("Correct Results in Live Timing", use_container_width=True):
-            st.switch_page(st.session_state.page_registry["live_timing"])
+        st.warning("RACE STATUS: AWAITING REVIEW — Live capture has stopped. Verify unresolved athletes and times before finalizing.")
+        manage, correct, finalize = st.columns(3)
+        if manage.button("Manage Results", use_container_width=True):
+            st.session_state.manage_results_open = True
+        if correct.button("Correct Results", use_container_width=True):
+            st.session_state.manage_results_open = True
         if finalize.button("Finalize & Publish Results", type="primary", use_container_width=True):
             try:
                 repository.finalize_race_session(session.id)
@@ -239,6 +241,8 @@ def render() -> None:
                 st.rerun()
             except RepositoryError as exc:
                 st.error(f"Results could not be finalized: {exc}")
+        with st.expander("Manage Results", expanded=bool(st.session_state.get("manage_results_open"))):
+            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events)
     elif summary.status == "completed":
         st.success("FINAL RESULTS — Published to the parent page and retained in race history.")
         if st.button("Open Coach Analytics", type="primary", use_container_width=True):

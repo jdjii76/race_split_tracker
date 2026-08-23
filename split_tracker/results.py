@@ -221,7 +221,7 @@ def _athlete_status(session_status: str, athlete_splits: list[SplitRecord], chec
         return "Finished"
     if outcome_status == "dnf":
         return "DNF"
-    if session_status == "completed":
+    if session_status in {"awaiting_review", "completed"}:
         return "Unresolved"
     if athlete_splits:
         return "DNF" if session_status == "cancelled" else "In Progress"
