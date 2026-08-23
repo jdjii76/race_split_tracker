@@ -2,6 +2,8 @@
 from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
+from split_tracker.race_readiness import computed_race_status
 from split_tracker.repository import Meet, Race, RaceSession
 
 @dataclass(frozen=True)
@@ -23,23 +25,43 @@ def resolve_active_meet_id(saved_id: str | None, meets: list[Meet]) -> str | Non
     relevant = [meet for meet in available.values() if meet.status in {"active", "upcoming"}]
     return relevant[0].id if len(relevant) == 1 else None
 
-def determine_race_primary_action(race_status: str, session_status: str | None = None) -> tuple[str, str]:
-    category, _ = normalize_dashboard_status(race_status, session_status)
+def determine_race_primary_action(
+    race_status: str,
+    session_status: str | None = None,
+    *,
+    display_status: str | None = None,
+) -> tuple[str, str]:
+    category, _ = normalize_dashboard_status(race_status, session_status, display_status=display_status)
     if category == "completed":
         return "View Results", "results"
+    if category == "awaiting_review":
+        return "Review Results", "results"
     if category == "running":
         return "Open Timing", "live_timing"
     return "Open Race", "meet_setup"
 
 
-def normalize_dashboard_status(race_status: str, session_status: str | None) -> tuple[str, str]:
-    """Map persisted race/session states to the dashboard's three concepts."""
-    status = session_status or race_status
-    if status in {"running", "paused"}:
-        return "running", "Running" if status == "running" else "Paused"
-    if status == "completed":
-        return "completed", "Finished"
-    return "up_next", "Not Started"
+def normalize_dashboard_status(
+    race_status: str,
+    session_status: str | None,
+    *,
+    display_status: str | None = None,
+) -> tuple[str, str]:
+    """Map computed and persisted states to dashboard sections."""
+    shown = display_status or {
+        "running": "Running",
+        "paused": "Paused",
+        "completed": "Completed",
+        "awaiting_review": "Awaiting Review",
+        "ready": "Ready",
+    }.get(session_status or race_status, "Upcoming")
+    return {
+        "Running": ("running", "Running"),
+        "Paused": ("running", "Paused"),
+        "Completed": ("completed", "Completed"),
+        "Awaiting Review": ("awaiting_review", "Awaiting Review"),
+        "Ready": ("ready", "Ready"),
+    }.get(shown, ("upcoming", "Upcoming"))
 
 
 def is_test_race(name: str) -> bool:
@@ -58,7 +80,11 @@ def _current_session(sessions: list[RaceSession]) -> RaceSession | None:
 
 
 def build_race_dashboard_summaries(
-    races: list[Race], sessions: list[RaceSession], athlete_counts: dict[str, int]
+    races: list[Race],
+    sessions: list[RaceSession],
+    athlete_counts: dict[str, int],
+    *,
+    now: datetime | None = None,
 ) -> list[RaceDashboardSummary]:
     """Build isolated summaries by stable race UUID from batched persisted data."""
     sessions_by_race: dict[str, list[RaceSession]] = defaultdict(list)
@@ -73,8 +99,13 @@ def build_race_dashboard_summaries(
     for race in races:
         session = _current_session(sessions_by_race[race.id])
         session_status = session.status if session else None
-        category, display_status = normalize_dashboard_status(race.status, session_status)
-        label, destination = determine_race_primary_action(race.status, session_status)
+        computed_status = computed_race_status(race, session, now=now)
+        category, display_status = normalize_dashboard_status(
+            race.status, session_status, display_status=computed_status
+        )
+        label, destination = determine_race_primary_action(
+            race.status, session_status, display_status=computed_status
+        )
         summaries.append(RaceDashboardSummary(
             race=race,
             athlete_count=athlete_counts.get(race.id, 0),

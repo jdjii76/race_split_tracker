@@ -43,6 +43,8 @@ def _race_card(meet, summary: RaceDashboardSummary, *, emphasized: bool = False)
         metrics = st.columns(2)
         metrics[0].metric("Athletes", summary.athlete_count)
         metrics[1].metric("Status", summary.display_status)
+        if summary.race.scheduled_start is not None and summary.category in {"upcoming", "ready"}:
+            st.write(f"Scheduled {summary.race.scheduled_start.strftime('%-I:%M %p UTC')}")
         if summary.category == "running":
             st.write(_started_label(summary))
         if st.button(
@@ -128,13 +130,19 @@ def render() -> None:
         return
 
     running = [summary for summary in summaries if summary.category == "running"]
-    up_next = [summary for summary in summaries if summary.category == "up_next"]
+    upcoming = [summary for summary in summaries if summary.category == "upcoming"]
+    ready = [summary for summary in summaries if summary.category == "ready"]
     completed = [summary for summary in summaries if summary.category == "completed"]
+    awaiting_review = [summary for summary in summaries if summary.category == "awaiting_review"]
     if len(running) > 1:
         st.info("Multiple races are running. Confirm the race name before recording splits.")
     _section(meet, "🔴 RUNNING NOW", running, emphasized=True)
     st.divider()
-    _section(meet, "UP NEXT", up_next)
+    _section(meet, "UPCOMING", upcoming)
+    st.divider()
+    _section(meet, "🟢 READY", ready)
+    st.divider()
+    _section(meet, "🟠 AWAITING REVIEW", awaiting_review)
     st.divider()
     _section(meet, "COMPLETED", completed)
 
