@@ -16,6 +16,45 @@ def test_browser_component_uses_durable_queue_and_no_streamlit_button_cycle():
     assert "setTimeout(()=>emit(),500)" in source
 
 
+def test_browser_component_confirms_taps_before_sync_and_keeps_recent_undo_visible():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+
+    capture = source[source.index("function capture"):source.index("function undo")]
+    assert capture.index("persist()") < capture.index("emit()")
+    assert "lastCapturedId" in capture and "render()" in capture
+    assert "Recent Captures · newest first" in source
+    assert "UNDO LAST TAP" in source
+    assert "undo_synced:" in source
+    assert "Saved on device" in source and "Synchronized" in source
+
+
+def test_pack_grid_keeps_captured_athletes_in_stable_all_athletes_view():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+    render = source[source.index("function render"):source.index("addEventListener('message'")]
+
+    assert "byAthlete=new Map" in render
+    assert "All Athletes" in render
+    assert "Remaining Only" in render
+    assert "Captured Only" in render
+    assert "Live order" not in render
+    assert "!captured.has(a.id)" not in render
+    assert "event=byAthlete.get(a.id)" in render
+    assert "captured-at" in render
+    assert "✓ " in render
+    assert "${a.name}" in render
+    assert "${a.last.toUpperCase()}" not in render
+    assert "${a.bib? a.bib+'  ':''}${a.name}" in render
+    assert "First name" in render
+
+
+def test_pack_undo_void_ack_restores_uncaptured_card_without_deleting_history():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+
+    assert "void_ids" in source
+    assert "x.state='cancelled'" in source
+    assert "undo_synced:" in source
+
+
 def setup_repo():
     repo=InMemoryRaceRepository(); meet=repo.create_meet(Meet(name="Pack")); race=repo.create_race(Race(meet_id=meet.id,name="5K",distance_meters=5000,status="running"))
     athletes=[Athlete(name=n,bib_number=str(i+1)) for i,n in enumerate(["Emma Smith","Ava Jones","Mia Miller","Ivy Davis","Zoe Clark"])]
@@ -57,3 +96,25 @@ def test_pack_event_uses_append_only_void():
     repo,race,session,athletes,start=setup_repo(); event=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"coach")[0]
     void=repo.invalidate_split_event(event.id,session.id,event.athlete_id,1,"coach")
     assert void.event_type=="split_voided" and len(repo.list_all_split_events(session.id))==2 and repo.list_active_split_events(session.id)==[]
+
+
+def test_two_timer_stations_capture_independent_batches_in_one_session():
+    repo, race, session, athletes, start = setup_repo()
+    repo.race_session_checkpoints.clear()
+    repo.create_race_session_checkpoints(
+        session.id,
+        [Checkpoint(1, "Mile 1", 1609), Checkpoint(2, "Mile 2", 3218)],
+    )
+    mile_one = batch(session, athletes[:2], start)
+    mile_two = batch(session, athletes[2:4], start)
+    for index, event in enumerate(mile_two, start=1):
+        event["checkpoint_number"] = 2
+        event["device_id"] = "device-b"
+        event["capture_sequence"] = index
+
+    first_saved = normalize_pack_batch(repo, race.id, session.id, 1, mile_one, "mile-one")
+    second_saved = normalize_pack_batch(repo, race.id, session.id, 2, mile_two, "mile-two")
+
+    assert {event.checkpoint_number for event in first_saved} == {1}
+    assert {event.checkpoint_number for event in second_saved} == {2}
+    assert {event.device_id for event in repo.list_all_split_events(session.id)} == {"device-a", "device-b"}
