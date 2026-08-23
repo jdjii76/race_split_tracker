@@ -80,6 +80,17 @@ def test_race_and_session_mismatch_and_double_correction_fail_safely():
     assert repo.list_all_split_events(other_session.id) == []
 
 
+def test_correction_uses_event_session_instead_of_stale_active_session_state():
+    repo, _, session, athlete, _, state = correction_setup()
+    event = add_event(repo, session, athlete, 1, 300, 1)
+    state.active_race_session_id = "stale-browser-session"
+
+    corrected = persist_event_correction(state, event)
+
+    assert corrected.race_session_id == event.race_session_id
+    assert corrected.target_event_id == event.id
+
+
 def test_identical_athlete_names_in_simultaneous_races_are_isolated_by_ids():
     repo, race_a, session_a, athlete_a, _, _ = correction_setup(athlete_name="Jordan Lee")
     race_b = repo.create_race(Race(meet_id=race_a.meet_id, name="Race B", distance_meters=3200))

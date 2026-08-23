@@ -292,6 +292,7 @@ class RaceRepository(Protocol):
     def create_race_session(self, session: RaceSession) -> RaceSession: ...
     def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def prepare_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession: ...
+    def assign_timer_station(self, race_session_id: str, checkpoint_number: int, device_id: str) -> None: ...
     def get_or_create_active_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def get_race_session(self, race_session_id: str) -> RaceSession | None: ...
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
@@ -316,6 +317,7 @@ class RaceRepository(Protocol):
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
     def invalidate_split_event(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, *, require_latest: bool = False) -> SplitEvent: ...
+    def invalidate_timer_pack_event(self, split_event_id: str, race_session_id: str, checkpoint_number: int, device_id: str, corrected_by: str) -> SplitEvent: ...
     def correct_split_athlete(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, new_athlete_id: str, corrected_by: str, request_id: str) -> list[SplitEvent]: ...
     def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent: ...
     def list_recent_split_events(self, race_session_id: str, *, limit: int = 10) -> list[SplitEvent]: ...
@@ -339,6 +341,7 @@ class InMemoryRaceRepository:
         self.race_sessions: dict[str, RaceSession] = {}
         self.split_events: dict[str, SplitEvent] = {}
         self.race_session_checkpoints: dict[tuple[str, int], RaceSessionCheckpoint] = {}
+        self.timer_station_assignments: dict[tuple[str, str], int] = {}
         self.race_athlete_outcomes: dict[tuple[str, str], RaceAthleteOutcome] = {}
         self.result_events: dict[str, ResultEvent] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
@@ -720,6 +723,17 @@ class InMemoryRaceRepository:
             self.create_race_session_checkpoints(session.id, checkpoints)
             return session
 
+    def assign_timer_station(self, race_session_id: str, checkpoint_number: int, device_id: str) -> None:
+        session = self.get_race_session(race_session_id)
+        if session is None or session.status not in {"ready", "running", "paused"}:
+            raise RepositoryError("Race session is not available for station assignment.")
+        if checkpoint_number not in {
+            checkpoint.checkpoint_sequence
+            for checkpoint in self.list_race_session_checkpoints(race_session_id)
+        }:
+            raise RepositoryError("Checkpoint does not belong to this race session.")
+        self.timer_station_assignments[(race_session_id, device_id)] = checkpoint_number
+
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         return self.race_sessions.get(race_session_id)
 
@@ -1038,6 +1052,19 @@ class InMemoryRaceRepository:
         """Atomically validate and invalidate one exact session event."""
         with self._race_session_lock:
             return self._invalidate_split_event_locked(split_event_id, race_session_id, athlete_id, checkpoint_number, corrected_by, require_latest)
+
+    def invalidate_timer_pack_event(self, split_event_id: str, race_session_id: str, checkpoint_number: int, device_id: str, corrected_by: str) -> SplitEvent:
+        event = self._require_split_event(split_event_id)
+        if self.timer_station_assignments.get((race_session_id, device_id)) != checkpoint_number:
+            raise RepositoryError("Timer is not assigned to this checkpoint.")
+        if event.race_session_id != race_session_id or event.checkpoint_number != checkpoint_number:
+            raise RepositoryError("Pack Mode event does not belong to this station session.")
+        if event.capture_mode != "pack" or event.device_id != device_id:
+            raise RepositoryError("Timer can undo only its own Pack Mode event.")
+        return self.invalidate_split_event(
+            event.id, event.race_session_id, event.athlete_id,
+            checkpoint_number, corrected_by,
+        )
 
     def _invalidate_split_event_locked(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, require_latest: bool) -> SplitEvent:
         session = self.get_race_session(race_session_id)
@@ -2218,6 +2245,16 @@ class SupabaseRaceRepository:
         row = data[0] if isinstance(data, list) else data
         return _race_session_from_row(row)
 
+    def assign_timer_station(self, race_session_id: str, checkpoint_number: int, device_id: str) -> None:
+        self._execute(
+            self.client.rpc("assign_timer_station", {
+                "p_session_id": race_session_id,
+                "p_checkpoint_number": checkpoint_number,
+                "p_device_id": device_id,
+            }),
+            "Could not assign the timer station.",
+        )
+
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         row = self._single(self.client.table("race_sessions").select("*").eq("id", race_session_id), "Could not load race session.")
         return _race_session_from_row(row) if row else None
@@ -2510,6 +2547,24 @@ class SupabaseRaceRepository:
         rows = getattr(result, "data", [])
         row = rows[0] if isinstance(rows, list) and rows else rows
         if not row: raise RepositoryError("The selected split was not corrected.")
+        return _split_event_from_row(row)
+
+    def invalidate_timer_pack_event(self, split_event_id: str, race_session_id: str, checkpoint_number: int, device_id: str, corrected_by: str) -> SplitEvent:
+        try:
+            result = self.client.rpc("invalidate_timer_pack_event", {
+                "p_event_id": split_event_id,
+                "p_session_id": race_session_id,
+                "p_checkpoint_number": checkpoint_number,
+                "p_device_id": device_id,
+                "p_corrected_by": corrected_by or None,
+            }).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError("Timer could not undo the selected Pack Mode split.", diagnostic=_safe_repository_diagnostic(exc)) from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row:
+            raise RepositoryError("The selected Pack Mode split was not corrected.")
         return _split_event_from_row(row)
 
     def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent:

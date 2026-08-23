@@ -912,6 +912,10 @@ their existing persisted readiness and manual-start workflow.
 Apply `supabase/migrations/029_prepare_race_session.sql` so timer accounts can create the
 shared Ready session and checkpoint snapshot without starting the clock or receiving direct
 race-session write permission.
+Apply `supabase/migrations/030_timer_pack_undo.sql` to bind each timer device to its selected
+session checkpoint. This enables synchronized **Undo Last Tap** only for that device's own
+Pack Mode event and appends a `split_voided` audit event; it grants no direct split updates,
+manual result editing, or access to the coach/admin correction RPC.
 
 ## Athlete Progression
 

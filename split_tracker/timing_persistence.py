@@ -501,16 +501,28 @@ def persist_undo_split(session_state, split: SplitRecord) -> SplitEvent | None:
 def persist_event_correction(session_state, event: SplitEvent, *, require_latest: bool = False) -> SplitEvent:
     """Invalidate one exact persisted event, then replay authoritative history."""
     repository: RaceRepository | None = session_state.repository
-    race_session_id = session_state.get("active_race_session_id")
+    race_session_id = event.race_session_id
     if repository is None or not race_session_id:
         raise RepositoryError("No shared race session is connected.")
     session = repository.get_race_session(race_session_id)
     if session is None or session.race_id != session_state.get("selected_race_id"):
         raise RepositoryError("The selected race and race session no longer match.")
-    corrected = repository.invalidate_split_event(
-        event.id, race_session_id, event.athlete_id, event.checkpoint_number,
-        session_state.get("timer_name", ""), require_latest=require_latest,
-    )
+    identity = session_state.get("app_identity")
+    if getattr(identity, "is_timer", False):
+        checkpoint_number = session_state.get("timer_station_checkpoint")
+        device_id = session_state.get("pack_device_id")
+        if checkpoint_number != event.checkpoint_number or not device_id:
+            raise RepositoryError("Timer can undo only its assigned station event.")
+        corrected = repository.invalidate_timer_pack_event(
+            event.id, race_session_id, checkpoint_number, device_id,
+            session_state.get("timer_name", ""),
+        )
+    else:
+        corrected = repository.invalidate_split_event(
+            event.id, race_session_id, event.athlete_id, event.checkpoint_number,
+            session_state.get("timer_name", ""), require_latest=require_latest,
+        )
+    session_state.active_race_session_id = race_session_id
     synchronize_shared_timing(session_state)
     return corrected
 

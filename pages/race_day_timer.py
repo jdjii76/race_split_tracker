@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import streamlit as st
+from uuid import uuid4
 
 from split_tracker.branding import render_school_header
 from split_tracker.auth import sign_out
@@ -38,6 +39,10 @@ def _select_station(option: TimerRaceOption, checkpoint_number: int) -> None:
     st.session_state.meet_config.checkpoints = list(option.checkpoints)
     session = option.session or st.session_state.repository.prepare_race_session(
         option.race.id, list(option.checkpoints)
+    )
+    st.session_state.setdefault("pack_device_id", str(uuid4()))
+    st.session_state.repository.assign_timer_station(
+        session.id, checkpoint_number, st.session_state.pack_device_id
     )
     st.session_state.active_race_session_id = session.id
     st.session_state.timing_restored_for_race_id = None

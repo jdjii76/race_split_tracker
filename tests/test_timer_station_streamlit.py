@@ -61,6 +61,7 @@ def test_station_selection_prepares_a_ready_session_without_starting_it():
     ).read_text(encoding="utf-8")
 
     assert "prepare_race_session" in source
+    assert "assign_timer_station" in source
     assert "st.session_state.active_race_session_id = session.id" in source
 
 

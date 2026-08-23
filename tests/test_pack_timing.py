@@ -148,6 +148,10 @@ def test_pack_undo_void_ack_restores_uncaptured_card_without_deleting_history():
     assert "void_ids" in source
     assert "x.state='cancelled'" in source
     assert "undo_synced:" in source
+    undo = source[source.index("function undo"):source.index("function render")]
+    assert "e.state='undo_pending'" in undo
+    assert undo.index("persist()") < undo.index("render()") < undo.index("emit('undo_synced:")
+    assert "!['cancelled','undo_pending'].includes(e.state)" in source
 
 
 def setup_repo():
@@ -191,6 +195,46 @@ def test_pack_event_uses_append_only_void():
     repo,race,session,athletes,start=setup_repo(); event=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"coach")[0]
     void=repo.invalidate_split_event(event.id,session.id,event.athlete_id,1,"coach")
     assert void.event_type=="split_voided" and len(repo.list_all_split_events(session.id))==2 and repo.list_active_split_events(session.id)==[]
+
+
+def test_timer_undo_own_pack_event_is_append_only_and_station_scoped():
+    repo,race,session,athletes,start=setup_repo()
+    repo.assign_timer_station(session.id,1,"device-a")
+    event=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"Mile 1 timer")[0]
+
+    void=repo.invalidate_timer_pack_event(event.id,session.id,1,"device-a","Mile 1 timer")
+
+    history=repo.list_all_split_events(session.id)
+    assert [item.id for item in history][0] == event.id
+    assert void.event_type == "split_voided" and void.target_event_id == event.id
+    assert len(history) == 2 and repo.list_active_split_events(session.id) == []
+
+
+def test_timer_cannot_undo_another_station_or_device_event():
+    repo,race,session,athletes,start=setup_repo()
+    repo.race_session_checkpoints.clear()
+    repo.create_race_session_checkpoints(session.id,[Checkpoint(1,"Mile 1",1609),Checkpoint(2,"Mile 2",3218)])
+    payload=batch(session,athletes[:1],start)
+    payload[0]["checkpoint_number"]=2; payload[0]["device_id"]="device-b"
+    event=normalize_pack_batch(repo,race.id,session.id,2,payload,"Mile 2 timer")[0]
+    repo.assign_timer_station(session.id,1,"device-a")
+
+    with pytest.raises(RepositoryError,match="assigned"):
+        repo.invalidate_timer_pack_event(event.id,session.id,2,"device-a","Mile 1 timer")
+    with pytest.raises(RepositoryError,match="assigned|own|belong"):
+        repo.invalidate_timer_pack_event(event.id,session.id,1,"device-a","Mile 1 timer")
+    assert repo.list_active_split_events(session.id) == [event]
+
+
+def test_timer_cannot_undo_pack_event_after_completion():
+    repo,race,session,athletes,start=setup_repo()
+    repo.assign_timer_station(session.id,1,"device-a")
+    event=normalize_pack_batch(repo,race.id,session.id,1,batch(session,athletes[:1],start),"timer")[0]
+    repo.update_race_session(RaceSession(**{**session.__dict__,"status":"completed"}))
+
+    with pytest.raises(RepositoryError,match="completed|Reopen"):
+        repo.invalidate_timer_pack_event(event.id,session.id,1,"device-a","timer")
+    assert repo.list_active_split_events(session.id) == [event]
 
 
 def test_two_timer_stations_capture_independent_batches_in_one_session():
