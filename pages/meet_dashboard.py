@@ -144,8 +144,6 @@ def render() -> None:
     st.divider()
     _section(meet, "🟠 AWAITING REVIEW", awaiting_review)
     st.divider()
-    _section(meet, "🟠 AWAITING REVIEW", awaiting_review)
-    st.divider()
     _section(meet, "COMPLETED", completed)
 
     if not summaries:

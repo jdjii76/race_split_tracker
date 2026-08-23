@@ -4,13 +4,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_race_management_saves_optional_scheduled_start():
+def test_scheduled_start_fields_are_editable_in_create_and_edit_forms():
     source = (ROOT / "pages/meet_management.py").read_text(encoding="utf-8")
+    creation = source[source.index('with st.form(f"add_race_'):source.index("if not races:")]
+    editing_start = source.index('with st.form(f"edit_race_')
+    editing = source[editing_start:source.index('if c1.button("Open in Race Setup"', editing_start)]
 
-    assert 'st.checkbox("Schedule a race start")' in source
-    assert '"Scheduled start date (UTC)"' in source
-    assert '"Scheduled start time (UTC)"' in source
-    assert "scheduled_start=scheduled_start" in source
+    for form_source in (creation, editing):
+        assert "Schedule a race start" in form_source
+        assert "Scheduled start date (UTC)" in form_source
+        assert "Scheduled start time (UTC)" in form_source
+        assert "disabled=not" not in form_source
+
+
+def test_scheduled_start_checkbox_controls_create_and_update_persistence():
+    source = (ROOT / "pages/meet_management.py").read_text(encoding="utf-8")
+    creation = source[source.index('with st.form(f"add_race_'):source.index("if not races:")]
+    editing_start = source.index('with st.form(f"edit_race_')
+    editing = source[editing_start:source.index('if c1.button("Open in Race Setup"', editing_start)]
+
+    assert "datetime.combine(scheduled_date, scheduled_time, tzinfo=timezone.utc)" in creation
+    assert "if scheduled_enabled else None" in creation
+    assert "scheduled_start=scheduled_start" in creation
+    assert "datetime.combine(race_start_date, race_start_time, tzinfo=timezone.utc)" in editing
+    assert "if schedule_race else None" in editing
+    assert "scheduled_start=scheduled_start" in editing
 
 
 def test_timer_station_buttons_obey_computed_readiness():
