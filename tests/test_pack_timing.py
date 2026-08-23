@@ -52,6 +52,7 @@ def test_pack_grid_defaults_to_expected_order_and_uses_unified_stable_cards():
     assert "Previous Split:" in render
     assert "formatElapsed(a.arrival_time)" in render
     assert "Missing ${a.missing_label}" in render
+    assert "Latest: ${a.latest_checkpoint_label}" in render
     assert "Stable Roster" in render
     assert "Expected Arrival Order" in render
     assert "displayMode='expected'" in source
@@ -92,6 +93,26 @@ def test_expected_arrival_order_uses_stable_roster_to_break_ties():
     ordered = ordered_expected_arrival_states(states, metadata)
 
     assert [state.athlete.athlete_id for state in ordered] == ["first", "second", "missing"]
+
+
+def test_expected_arrival_reports_missing_previous_and_latest_later_checkpoint():
+    checkpoints = [
+        Checkpoint(1, "Mile 1", 1609),
+        Checkpoint(2, "Mile 2", 3218),
+        Checkpoint(3, "Finish", 5000, True),
+    ]
+    state = SimpleNamespace(
+        athlete=SimpleNamespace(athlete_id="runner"),
+        splits=(SimpleNamespace(checkpoint_number=2, cumulative_time_seconds=765.0),),
+    )
+
+    metadata = expected_arrival_metadata([state], checkpoints, 2)["runner"]
+
+    assert metadata["arrival_time"] is None
+    assert metadata["missing_previous"] is True
+    assert metadata["missing_label"] == "Mile 1"
+    assert metadata["latest_checkpoint_label"] == "Mile 2"
+    assert metadata["latest_checkpoint_time"] == 765.0
 
 
 def test_expected_arrival_order_is_snapshotted_and_capture_does_not_resort():

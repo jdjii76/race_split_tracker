@@ -897,6 +897,10 @@ and athletes missing the previous split remain selectable at the end with a visi
 The order is snapshotted when the component loads and remains fixed through captures,
 synchronization, and rerenders. Timers can switch to **Stable Roster** at any time; both modes
 use the same name, optional bib, captured timestamp, and synchronization card treatment.
+Missing intermediate checkpoints do not discard later captures: each split remains attached
+to its persisted checkpoint, and Expected Arrival cards identify both the missing previous
+checkpoint and the athlete's latest available checkpoint. Coaches can fill the missing split
+later through the existing append-only correction workflow.
 
 ## Athlete Progression
 

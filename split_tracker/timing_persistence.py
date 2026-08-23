@@ -276,17 +276,23 @@ def rebuild_splits_from_events(
     events: list[SplitEvent],
     athletes: list[Athlete],
     config: MeetConfig,
-    use_event_checkpoint_identity: bool = False,
 ) -> list[SplitRecord]:
-    """Rebuild visible splits, optionally matching persisted checkpoint identity.
-
-    Live timing always enables identity matching against its session snapshot.
-    The positional default remains only for reconstruction of legacy sessions
-    whose historical events may reference checkpoint numbers no longer present.
-    """
+    """Rebuild visible splits using each event's persisted checkpoint identity."""
     athletes_by_id = {athlete.athlete_id: athlete for athlete in athletes}
     rebuilt_by_athlete: dict[str, list[SplitRecord]] = {}
-    ordered_events = sorted(events, key=lambda event: (event.event_order, event.recorded_at, event.id))
+    checkpoint_order = {
+        checkpoint.number: index for index, checkpoint in enumerate(config.checkpoints)
+    }
+    ordered_events = sorted(
+        events,
+        key=lambda event: (
+            event.athlete_id,
+            checkpoint_order.get(event.checkpoint_number, len(checkpoint_order)),
+            event.event_order,
+            event.recorded_at,
+            event.id,
+        ),
+    )
     for event in ordered_events:
         athlete = athletes_by_id.get(event.athlete_id) or Athlete(name=event.athlete_name or event.athlete_id, bib_number=event.bib_number, athlete_id=event.athlete_id)
         previous = rebuilt_by_athlete.setdefault(event.athlete_id, [])
@@ -298,7 +304,7 @@ def rebuild_splits_from_events(
             elapsed_seconds=event.elapsed_seconds,
             race_distance_meters=config.race_distance_meters,
             sequence=event.event_order,
-            checkpoint_number=event.checkpoint_number if use_event_checkpoint_identity else None,
+            checkpoint_number=event.checkpoint_number,
         )
         if split is not None:
             previous.append(split)
@@ -320,7 +326,6 @@ def refresh_splits_from_repository(session_state) -> None:
         events=events,
         athletes=session_state.athletes,
         config=session_state.meet_config,
-        use_event_checkpoint_identity=True,
     )
     session_state.split_sequence = max([event.event_order for event in repository.list_all_split_events(race_session_id)] or [0])
 

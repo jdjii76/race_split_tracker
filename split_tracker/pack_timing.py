@@ -29,11 +29,26 @@ def expected_arrival_metadata(
             ),
             None,
         )
+        latest_split = max(
+            state.splits,
+            key=lambda split: split.checkpoint_number,
+            default=None,
+        )
+        latest_checkpoint = next(
+            (
+                checkpoint
+                for checkpoint in ordered_checkpoints
+                if latest_split is not None and checkpoint.number == latest_split.checkpoint_number
+            ),
+            None,
+        )
         metadata[state.athlete.athlete_id] = {
             "arrival_time": prior_split.cumulative_time_seconds if prior_split else None,
             "missing_previous": previous is not None and prior_split is None,
             "missing_label": previous.label if previous is not None and prior_split is None else "",
             "previous_label": previous.label if previous is not None else "",
+            "latest_checkpoint_label": latest_checkpoint.label if latest_checkpoint else "",
+            "latest_checkpoint_time": latest_split.cumulative_time_seconds if latest_split else None,
             "roster": roster_index,
         }
     return metadata
