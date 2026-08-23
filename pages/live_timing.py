@@ -580,6 +580,16 @@ def _render_finish_controls(projection, clock) -> None:
 def render() -> None:
     """Render the existing controlled live-timing polling fragment."""
     st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
+    timer_mode = bool(
+        st.session_state.get("timer_mode")
+        and getattr(st.session_state.get("app_identity"), "is_timer", False)
+    )
+    station_number = st.session_state.get("timer_station_checkpoint") if timer_mode else None
+    if getattr(st.session_state.get("app_identity"), "is_timer", False) and station_number is None:
+        st.warning("Select a race and checkpoint before opening the timing screen.")
+        if st.button("Select Timing Station", type="primary", use_container_width=True):
+            st.switch_page(st.session_state.page_registry["race_day_timer"])
+        return
     st.session_state.last_fragment_rerun_at = datetime.now(timezone.utc)
     _restore_if_needed()
     # Poll the exact connected row even while the local clock is not_started.
@@ -598,6 +608,16 @@ def render() -> None:
         subtitle=f"{config.meet_name or 'Meet not selected'} • {status}",
         compact=True,
     )
+    if timer_mode:
+        checkpoint = next(
+            (item for item in config.checkpoints if item.number == station_number), None
+        )
+        station_label = checkpoint.label if checkpoint else "Unknown checkpoint"
+        st.success(f"**TIMING STATION: {station_label}**")
+        if st.button("Change Race / Checkpoint", use_container_width=True):
+            st.session_state.timer_station_checkpoint = None
+            st.session_state.timer_mode = False
+            st.switch_page(st.session_state.page_registry["race_day_timer"])
     repository_result = st.session_state.get("repository_result")
     if repository_result is not None and repository_result.is_temporary:
         st.error(
@@ -701,42 +721,43 @@ def render() -> None:
     shared_unavailable = (
         repository_result is not None and repository_result.is_temporary
     )
-    quick_start, quick_pause, quick_resume = st.columns(3)
-    if quick_start.button(
-        "Start Race",
-        use_container_width=True,
-        disabled=shared_unavailable
-        or not valid_setup
-        or clock.status == "running"
-        or clock.status == "ended",
-    ):
-        if _start_timing():
-            st.rerun()
-    if quick_pause.button(
-        "Pause", use_container_width=True, disabled=clock.status != "running"
-    ):
-        if _pause_timing():
-            st.rerun()
-    if quick_resume.button(
-        "Resume", use_container_width=True, disabled=clock.status != "paused"
-    ):
-        if _resume_timing():
-            st.rerun()
-
-    with st.expander("Race Controls", expanded=False):
-        timer_name = st.text_input(
-            "Timer / display name",
-            value=st.session_state.timer_name,
-            placeholder="e.g. Finish line tablet",
-        )
-        st.session_state.timer_name = timer_name.strip()
-        st.caption(f"Session: {connected_id} • Storage: {storage}")
-        c3 = st.container()
-        confirm_reset = c3.checkbox("Confirm reset")
-        if c3.button(
-            "Reset Race", use_container_width=True, disabled=not confirm_reset
+    if not timer_mode:
+        quick_start, quick_pause, quick_resume = st.columns(3)
+        if quick_start.button(
+            "Start Race",
+            use_container_width=True,
+            disabled=shared_unavailable
+            or not valid_setup
+            or clock.status == "running"
+            or clock.status == "ended",
         ):
-            _reset_timing()
+            if _start_timing():
+                st.rerun()
+        if quick_pause.button(
+            "Pause", use_container_width=True, disabled=clock.status != "running"
+        ):
+            if _pause_timing():
+                st.rerun()
+        if quick_resume.button(
+            "Resume", use_container_width=True, disabled=clock.status != "paused"
+        ):
+            if _resume_timing():
+                st.rerun()
+
+        with st.expander("Race Controls", expanded=False):
+            timer_name = st.text_input(
+                "Timer / display name",
+                value=st.session_state.timer_name,
+                placeholder="e.g. Finish line tablet",
+            )
+            st.session_state.timer_name = timer_name.strip()
+            st.caption(f"Session: {connected_id} • Storage: {storage}")
+            c3 = st.container()
+            confirm_reset = c3.checkbox("Confirm reset")
+            if c3.button(
+                "Reset Race", use_container_width=True, disabled=not confirm_reset
+            ):
+                _reset_timing()
 
     if st.session_state.message:
         st.info(st.session_state.message)
@@ -761,7 +782,7 @@ def render() -> None:
         )
 
     projection = st.session_state.get("projected_race_state")
-    pack_active = _render_pack_mode(projection, clock, shared_unavailable)
+    pack_active = False if timer_mode else _render_pack_mode(projection, clock, shared_unavailable)
     if pack_active:
         st.caption("Normal timing controls are temporarily hidden to prevent accidental duplicate taps. Exit Pack Mode to restore them.")
     search_col, order_col = st.columns([2, 1])
@@ -782,6 +803,13 @@ def render() -> None:
     matching = [
         item for item in all_projected if athlete_matches_search(item, search_value)
     ]
+    if timer_mode:
+        matching = [
+            item
+            for item in matching
+            if item.next_checkpoint is not None
+            and item.next_checkpoint.number == station_number
+        ]
     active_athletes, finished_athletes = partition_finished_athletes(matching)
     st.caption(f"{len(active_athletes)} active • {len(finished_athletes)} finished / DNF")
 
@@ -832,13 +860,18 @@ def render() -> None:
                     f"**{item.athlete.name}** • #{item.athlete.bib_number or '—'} • {'DNF' if item.outcome_status == 'dnf' else format_duration(latest.cumulative_time_seconds) if latest else 'Finished'}"
                 )
 
-    _render_timing_recovery(projection, clock)
-    _render_finish_controls(projection, clock)
+    if not timer_mode:
+        _render_timing_recovery(projection, clock)
+        _render_finish_controls(projection, clock)
 
-    if all_projected and all(item.finished for item in all_projected):
+    if not timer_mode and all_projected and all(item.finished for item in all_projected):
         st.success("Race complete: all athletes have reached the finish.")
         if st.button("Go to Results", use_container_width=True):
             st.switch_page(st.session_state.page_registry["results"])
+
+    if timer_mode:
+        st.caption("Runners appear when this is their next checkpoint. Recorded runners are removed automatically.")
+        return
 
     st.subheader("Live Split Board")
     filter_value = st.selectbox(
