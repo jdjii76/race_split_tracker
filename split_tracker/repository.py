@@ -151,6 +151,23 @@ class RaceAthleteOutcome:
 
 
 @dataclass(frozen=True)
+class ResultEvent:
+    """Append-only post-race result assertion; the chain head is canonical."""
+
+    race_session_id: str
+    athlete_id: str
+    status: str
+    source: str
+    id: str = field(default_factory=lambda: str(uuid4()))
+    finish_seconds: float | None = None
+    splits: dict[int, float] = field(default_factory=dict)
+    note: str = ""
+    supersedes_id: str | None = None
+    created_by: str = ""
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
 class SchoolSponsor:
     school_profile_id: str
     name: str
@@ -284,6 +301,8 @@ class RaceRepository(Protocol):
     def list_race_athlete_outcomes(self, race_session_id: str) -> list[RaceAthleteOutcome]: ...
     def set_race_athlete_dnf(self, race_session_id: str, athlete_id: str, recorded_by: str) -> RaceAthleteOutcome: ...
     def clear_race_athlete_dnf(self, race_session_id: str, athlete_id: str) -> bool: ...
+    def save_post_race_result(self, event: ResultEvent) -> ResultEvent: ...
+    def list_result_events(self, race_session_id: str, athlete_id: str | None = None) -> list[ResultEvent]: ...
     def update_race_session(self, session: RaceSession) -> RaceSession: ...
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]: ...
     def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]: ...
@@ -319,6 +338,7 @@ class InMemoryRaceRepository:
         self.split_events: dict[str, SplitEvent] = {}
         self.race_session_checkpoints: dict[tuple[str, int], RaceSessionCheckpoint] = {}
         self.race_athlete_outcomes: dict[tuple[str, str], RaceAthleteOutcome] = {}
+        self.result_events: dict[str, ResultEvent] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
@@ -794,6 +814,32 @@ class InMemoryRaceRepository:
             if session.status not in {"running", "paused"}: raise RepositoryError("Reopen the race before changing athlete outcomes.")
             return self.race_athlete_outcomes.pop((race_session_id, athlete_id), None) is not None
 
+    def list_result_events(self, race_session_id: str, athlete_id: str | None = None) -> list[ResultEvent]:
+        return sorted(
+            (event for event in self.result_events.values()
+             if event.race_session_id == race_session_id and (athlete_id is None or event.athlete_id == athlete_id)),
+            key=lambda event: (event.created_at, event.id),
+        )
+
+    def save_post_race_result(self, event: ResultEvent) -> ResultEvent:
+        """Append a result without changing the finalized race lifecycle."""
+        with self._race_session_lock:
+            session = self.get_race_session(event.race_session_id)
+            if session is None or session.status != "completed":
+                raise RepositoryError("Historical results can only be managed for a completed race.")
+            if event.athlete_id not in {a.athlete_id for a in self.list_race_athletes(session.race_id, include_inactive=True)}:
+                raise RepositoryError("Athlete does not belong to this race.")
+            _validate_result_event(event)
+            current = canonical_result_events(self.list_result_events(session.id)).get(event.athlete_id)
+            if current and event.supersedes_id != current.id:
+                raise RepositoryError("This result changed since it was loaded. Refresh and try again.")
+            if not current and event.supersedes_id:
+                raise RepositoryError("The superseded result is not current.")
+            saved = replace(event, finish_seconds=round(event.finish_seconds, 2) if event.finish_seconds else None,
+                            splits={int(k): round(float(v), 2) for k, v in event.splits.items()})
+            self.result_events[saved.id] = saved
+            return saved
+
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         return sorted([session for session in self.race_sessions.values() if session.race_id == race_id], key=lambda session: (session.created_at, session.id))
 
@@ -1097,15 +1143,18 @@ class InMemoryRaceRepository:
             self.race_session_checkpoints.pop(key)
         for key in [key for key in self.race_athlete_outcomes if key[0] == race_session_id]:
             self.race_athlete_outcomes.pop(key)
+        for event_id in [event.id for event in self.result_events.values() if event.race_session_id == race_session_id]:
+            self.result_events.pop(event_id)
         self.race_sessions.pop(race_session_id)
         return True
 
     def delete_all_timing_data(self) -> bool:
-        had_data = bool(self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes)
+        had_data = bool(self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes or self.result_events)
         self.split_events.clear()
         self.race_session_checkpoints.clear()
         self.race_sessions.clear()
         self.race_athlete_outcomes.clear()
+        self.result_events.clear()
         return had_data
 
     def delete_all_race_rosters(self) -> bool:
@@ -1114,10 +1163,11 @@ class InMemoryRaceRepository:
         return had_data
 
     def delete_all_application_test_data(self) -> bool:
-        had_data = bool(self.meets or self.races or self.athletes or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes)
+        had_data = bool(self.meets or self.races or self.athletes or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes or self.result_events)
         self.split_events.clear()
         self.race_session_checkpoints.clear()
         self.race_athlete_outcomes.clear()
+        self.result_events.clear()
         self.race_sessions.clear()
         self.race_athletes.clear()
         self.races.clear()
@@ -1416,6 +1466,47 @@ def _race_athlete_outcome_from_row(row: dict[str, Any]) -> RaceAthleteOutcome:
     )
 
 
+def _result_event_from_row(row: dict[str, Any]) -> ResultEvent:
+    raw_splits = row.get("splits") or {}
+    return ResultEvent(
+        id=str(row["id"]), race_session_id=str(row["race_session_id"]), athlete_id=str(row["athlete_id"]),
+        status=str(row["status"]), source=str(row["source"]),
+        finish_seconds=float(row["finish_seconds"]) if row.get("finish_seconds") is not None else None,
+        splits={int(key): float(value) for key, value in raw_splits.items()}, note=str(row.get("note") or ""),
+        supersedes_id=str(row["supersedes_id"]) if row.get("supersedes_id") else None,
+        created_by=str(row.get("created_by") or ""), created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+    )
+
+
+def canonical_result_events(events: list[ResultEvent]) -> dict[str, ResultEvent]:
+    """Resolve chain heads, independent of database return order."""
+    superseded = {event.supersedes_id for event in events if event.supersedes_id}
+    heads: dict[str, ResultEvent] = {}
+    for event in events:
+        if event.id in superseded:
+            continue
+        previous = heads.get(event.athlete_id)
+        if previous is None or (event.created_at, event.id) > (previous.created_at, previous.id):
+            heads[event.athlete_id] = event
+    return heads
+
+
+def _validate_result_event(event: ResultEvent) -> None:
+    if event.status not in {"finished", "dnf", "dns"}:
+        raise RepositoryError("Result status must be Finished, DNF, or DNS.")
+    if event.source not in {"live", "manual", "official", "imported"}:
+        raise RepositoryError("Result source is not supported.")
+    if event.status == "finished" and (event.finish_seconds is None or event.finish_seconds <= 0):
+        raise RepositoryError("A positive finish time is required for a finished athlete.")
+    if event.status != "finished" and event.finish_seconds is not None:
+        raise RepositoryError("DNF and DNS results cannot have a finish time.")
+    ordered = [float(value) for _, value in sorted(event.splits.items())]
+    if any(value <= 0 for value in ordered) or any(later <= earlier for earlier, later in zip(ordered, ordered[1:])):
+        raise RepositoryError("Split times must be positive and increase at every checkpoint.")
+    if event.finish_seconds and ordered and ordered[-1] > event.finish_seconds:
+        raise RepositoryError("A checkpoint split cannot be later than the finish time.")
+
+
 def _checkpoint_type_from_label(label: str) -> str:
     lowered = label.lower()
     if lowered == "finish":
@@ -1616,6 +1707,7 @@ class SupabaseRaceRepository:
             ("split_events", "id"),
             ("race_session_checkpoints", "id"),
             ("race_session_athlete_outcomes", "race_session_id"),
+            ("result_events", "id"),
             ("athletes", "id"),
             ("courses", "id"),
         )
@@ -2171,6 +2263,34 @@ class SupabaseRaceRepository:
             raise RepositoryError(str(exc)) from exc
         data = getattr(result, "data", False)
         return bool(data[0] if isinstance(data, list) and data else data)
+
+    def list_result_events(self, race_session_id: str, athlete_id: str | None = None) -> list[ResultEvent]:
+        query = self.client.table("result_events").select("*").eq("race_session_id", race_session_id)
+        if athlete_id is not None:
+            query = query.eq("athlete_id", athlete_id)
+        try:
+            result = query.order("created_at", desc=False).execute()
+        except Exception:
+            result = self._execute(self.client.rpc("get_public_result_events", {"p_session_id": race_session_id}), "Could not load current results.")
+        return [_result_event_from_row(row) for row in (getattr(result, "data", []) or [])]
+
+    def save_post_race_result(self, event: ResultEvent) -> ResultEvent:
+        _validate_result_event(event)
+        try:
+            result = self.client.rpc("append_post_race_result", {
+                "p_id": event.id, "p_session_id": event.race_session_id, "p_athlete_id": event.athlete_id,
+                "p_status": event.status, "p_finish_seconds": event.finish_seconds, "p_source": event.source,
+                "p_splits": {str(key): value for key, value in event.splits.items()}, "p_note": event.note or None,
+                "p_supersedes_id": event.supersedes_id,
+            }).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError(str(exc)) from exc
+        rows = getattr(result, "data", []) or []
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row:
+            raise RepositoryError("Could not save the historical result.")
+        return _result_event_from_row(row)
 
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]:
         result = self._execute(self.client.table("race_sessions").select("*").eq("race_id", race_id).order("created_at", desc=False), "Could not list race sessions.")

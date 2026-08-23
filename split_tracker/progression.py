@@ -7,6 +7,7 @@ from statistics import fmean, pstdev
 
 from split_tracker.models import Checkpoint
 from split_tracker.results import reconstruct_results
+from split_tracker.repository import canonical_result_events
 
 METERS_PER_MILE = 1609.344
 EVEN_RELATIVE_SPREAD = .03
@@ -95,16 +96,21 @@ def get_completed_results(repository, athlete_id=None):
         if athlete_id and not any(a.athlete_id == athlete_id for a in roster): continue
         cps=[Checkpoint(number=c.checkpoint_sequence,label=c.label,distance_meters=c.distance_meters,is_finish=c.is_finish) for c in repository.list_race_session_checkpoints(session.id)]
         events=repository.list_active_split_events(session.id)
+        managed=canonical_result_events(repository.list_result_events(session.id))
         rows=reconstruct_results(meet_name=meet.name,race_name=race.name,session=session,athletes=roster,checkpoints=cps,
-             race_distance_meters=race.distance_meters,events=events,outcomes=repository.list_race_athlete_outcomes(session.id))
+             race_distance_meters=race.distance_meters,events=events,outcomes=repository.list_race_athlete_outcomes(session.id),
+             result_events=repository.list_result_events(session.id))
         for row in rows:
             if athlete_id and row["Athlete ID"] != athlete_id: continue
-            athlete_splits=[]; previous=0.
+            athlete_splits=[]; previous=0.; managed_result=managed.get(str(row["Athlete ID"]))
             for cp in cps:
                 event=next((e for e in events if e.athlete_id==row["Athlete ID"] and e.checkpoint_number==cp.number),None)
-                if event:
-                    athlete_splits.append({"label":cp.label,"distance_meters":cp.distance_meters,"cumulative":event.elapsed_seconds,"segment":event.elapsed_seconds-previous})
-                    previous=event.elapsed_seconds
+                elapsed=(managed_result.splits.get(cp.number) if managed_result else None)
+                if managed_result and cp.is_finish and managed_result.finish_seconds is not None: elapsed=managed_result.finish_seconds
+                if elapsed is None and event: elapsed=event.elapsed_seconds
+                if elapsed is not None:
+                    athlete_splits.append({"label":cp.label,"distance_meters":cp.distance_meters,"cumulative":elapsed,"segment":elapsed-previous})
+                    previous=elapsed
             course=courses.get(race.course_id)
             output.append(AthleteResult(str(row["Athlete ID"]),session.id,race.id,race.name,meet.name,meet.meet_date,race.distance_meters,str(row["Status"]),row["Finish Time Seconds"],row["Overall Place"],race.course_id,course.course_name if course else "",tuple(athlete_splits),str(row["Athlete"]),str(row.get("Category/Group") or row.get("Team") or ""),str(row.get("Gender") or ""),race.race_category,race.name.lstrip().upper().startswith("TEST")))
     return sorted(output,key=lambda r:(r.race_date or date.min,r.session_id),reverse=True)
