@@ -37,3 +37,14 @@ def test_timer_defaults_to_pack_mode_and_preserves_individual_timing():
     assert '"Switch to Individual Timing"' in source
     assert '"Switch to Pack Mode"' in source
     assert "if timer_mode and st.session_state.get(\"timer_timing_mode\", \"pack\") == \"pack\":" in source
+
+
+def test_timer_pack_grid_receives_full_stable_roster_and_void_acknowledgements():
+    source = (
+        Path(__file__).resolve().parents[1] / "pages/live_timing.py"
+    ).read_text(encoding="utf-8")
+
+    assert "display_states = projection.athletes" in source
+    assert '"eligible":state.athlete.athlete_id in eligible_ids' in source
+    assert 'void_ids=st.session_state.get("pack_void_ids", [])' in source
+    assert "st.session_state.pack_void_ids=list" in source

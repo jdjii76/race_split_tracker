@@ -322,15 +322,19 @@ def _render_pack_mode(
     ack_ids = st.session_state.get("pack_ack_ids", [])
     athlete_rows=[]
     race_order={state.athlete.athlete_id:i for i,state in enumerate(ordered_race_board_athletes(projection))}
-    for i,state in enumerate(targets):
-        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"roster":i,"race":race_order[state.athlete.athlete_id]})
+    display_states = projection.athletes if station_number is not None and projection else targets
+    eligible_ids = {state.athlete.athlete_id for state in targets}
+    for i,state in enumerate(display_states):
+        parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"roster":i,"race":race_order[state.athlete.athlete_id],"eligible":state.athlete.athlete_id in eligible_ids})
     value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
-        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, key=f"pack:{session_id}:{checkpoint_number}")
+        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []
     action = value.get("action", "") if isinstance(value, dict) else ""
     if action.startswith("undo_synced:"):
         event_id=action.split(":",1)[1]; event=next((e for e in st.session_state.get("persisted_split_events",()) if (e.client_event_id or e.id)==event_id),None)
-        if event: _correct_event(event); st.rerun()
+        if event and _correct_event(event):
+            st.session_state.pack_void_ids=list({*st.session_state.get("pack_void_ids", []),event_id})
+            st.rerun()
     if events:
         try:
             saved=normalize_pack_batch(st.session_state.repository,st.session_state.selected_race_id,session_id,checkpoint_number,events,st.session_state.timer_name)

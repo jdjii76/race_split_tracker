@@ -33,6 +33,7 @@ def test_timer_timing_mode_defaults_to_pack():
     initialize_state(session)
 
     assert session.timer_timing_mode == "pack"
+    assert session.pack_void_ids == []
 
 
 def test_elapsed_seconds_running_and_paused():

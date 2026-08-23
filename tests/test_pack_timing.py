@@ -28,6 +28,33 @@ def test_browser_component_confirms_taps_before_sync_and_keeps_recent_undo_visib
     assert "Saved on device" in source and "Synchronized" in source
 
 
+def test_pack_grid_keeps_captured_athletes_in_stable_all_athletes_view():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+    render = source[source.index("function render"):source.index("addEventListener('message'")]
+
+    assert "byAthlete=new Map" in render
+    assert "All Athletes" in render
+    assert "Remaining Only" in render
+    assert "Captured Only" in render
+    assert "Live order" not in render
+    assert "!captured.has(a.id)" not in render
+    assert "event=byAthlete.get(a.id)" in render
+    assert "captured-at" in render
+    assert "✓ " in render
+    assert "${a.name}" in render
+    assert "${a.last.toUpperCase()}" not in render
+    assert "${a.bib? a.bib+'  ':''}${a.name}" in render
+    assert "First name" in render
+
+
+def test_pack_undo_void_ack_restores_uncaptured_card_without_deleting_history():
+    source = open("split_tracker/pack_component/frontend/index.html", encoding="utf-8").read()
+
+    assert "void_ids" in source
+    assert "x.state='cancelled'" in source
+    assert "undo_synced:" in source
+
+
 def setup_repo():
     repo=InMemoryRaceRepository(); meet=repo.create_meet(Meet(name="Pack")); race=repo.create_race(Race(meet_id=meet.id,name="5K",distance_meters=5000,status="running"))
     athletes=[Athlete(name=n,bib_number=str(i+1)) for i,n in enumerate(["Emma Smith","Ava Jones","Mia Miller","Ivy Davis","Zoe Clark"])]

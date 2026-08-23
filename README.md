@@ -25,6 +25,12 @@ three newest captures and their saved/synchronized state, and keeps **Undo Last
 Tap** within thumb reach. The durable localStorage queue, UUID event identities,
 offline retry, server validation, and append-only correction path are unchanged.
 Timers can switch to Individual Timing when runners are separated.
+The Pack grid defaults to **All Athletes** and keeps every card in a stable
+position after capture. Captured cards remain visible with a green check,
+timestamp, and synchronization state; undo restores the uncaptured appearance
+after the existing local cancellation or append-only server correction succeeds.
+Timer cards show each athlete as **First Name Last Name**, prefixed by the real
+bib number only when one is present.
 
 Completed races now include a coach-only **Manage Results** panel. Coaches can add
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
