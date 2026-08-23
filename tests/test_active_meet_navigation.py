@@ -28,6 +28,7 @@ def test_race_action_uses_session_status_as_source_of_truth():
     assert determine_race_primary_action("ready", "running") == ("Open Timing", "live_timing")
     assert determine_race_primary_action("running", "paused") == ("Open Timing", "live_timing")
     assert determine_race_primary_action("running", "completed") == ("View Results", "results")
+    assert determine_race_primary_action("running", "awaiting_review") == ("Review Results", "results")
 
 
 def test_dashboard_summaries_change_with_meet_and_handle_empty_meet():
@@ -67,6 +68,17 @@ def test_dashboard_classifies_not_started_running_and_finished():
     assert [item.category for item in summaries] == ["up_next", "running", "completed"]
     assert [item.display_status for item in summaries] == ["Not Started", "Running", "Finished"]
     assert [item.athlete_count for item in summaries] == [4, 5, 6]
+
+
+def test_dashboard_classifies_timing_complete_as_awaiting_review():
+    race = Race(id="review-race", meet_id="meet", name="Open", distance_meters=5000)
+    session = RaceSession(id="review-session", race_id=race.id, status="awaiting_review")
+
+    summary = build_race_dashboard_summaries([race], [session], {})[0]
+
+    assert summary.category == "awaiting_review"
+    assert summary.display_status == "Awaiting Review"
+    assert summary.action_label == "Review Results"
 
 
 def test_multiple_running_races_and_sessions_remain_isolated_by_race_uuid():

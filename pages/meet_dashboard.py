@@ -130,11 +130,14 @@ def render() -> None:
     running = [summary for summary in summaries if summary.category == "running"]
     up_next = [summary for summary in summaries if summary.category == "up_next"]
     completed = [summary for summary in summaries if summary.category == "completed"]
+    awaiting_review = [summary for summary in summaries if summary.category == "awaiting_review"]
     if len(running) > 1:
         st.info("Multiple races are running. Confirm the race name before recording splits.")
     _section(meet, "🔴 RUNNING NOW", running, emphasized=True)
     st.divider()
     _section(meet, "UP NEXT", up_next)
+    st.divider()
+    _section(meet, "🟠 AWAITING REVIEW", awaiting_review)
     st.divider()
     _section(meet, "COMPLETED", completed)
 
