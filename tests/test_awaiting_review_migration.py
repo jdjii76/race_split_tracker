@@ -21,7 +21,7 @@ def test_timing_complete_preserves_data_and_does_not_require_resolution():
     assert "race_session_athlete_outcomes" not in timing_function
 
 
-def test_timer_role_cannot_end_timing_or_manage_results():
+def test_timer_role_cannot_call_coach_lifecycle_or_manage_results():
     assert SQL.count("public.has_app_role(array['coach','admin'])") == 3
     assert "require_app_role(array['coach','admin'])" not in SQL
     assert "grant execute on function public.complete_race_timing(uuid) to authenticated" in SQL

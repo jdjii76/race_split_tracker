@@ -409,13 +409,13 @@ def persist_completion(session_state, *, now_perf: float | None = None, now_utc:
     return _persist_lifecycle_transition(session_state, "complete", now_perf=now_perf, now_utc=now_utc)
 
 
-def persist_timing_complete(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession:
+def persist_timing_complete(session_state, *, finish_checkpoint_number: int | None = None, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession:
     """Stop authoritative capture and enter post-race review."""
     repository: RaceRepository | None = session_state.repository
     race_session_id = session_state.get("active_race_session_id")
     if repository is None or not race_session_id:
         raise RepositoryError("No shared race session is connected.")
-    saved = repository.complete_race_timing(race_session_id)
+    saved = repository.complete_race_timing(race_session_id, finish_checkpoint_number)
     synchronize_shared_timing(session_state, now_perf=now_perf, now_utc=now_utc)
     return saved
 

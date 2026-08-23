@@ -62,3 +62,14 @@ def test_end_race_timing_requires_confirmation_and_stays_out_of_timer_mode():
     assert "Live capture will stop. Existing timing data will be preserved. Results can be verified and corrected later." in source
     assert "persist_timing_complete(st.session_state)" in source
     assert "if not timer_mode:" in source
+
+
+def test_finish_timer_gets_end_control_but_split_timers_do_not():
+    source = (
+        Path(__file__).resolve().parents[1] / "pages/live_timing.py"
+    ).read_text(encoding="utf-8")
+
+    assert "def _render_finish_timer_end_control(clock, checkpoint)" in source
+    assert "checkpoint is None or not checkpoint.is_finish" in source
+    assert "finish_checkpoint_number=checkpoint.number" in source
+    assert "_render_finish_timer_end_control(clock, checkpoint)" in source

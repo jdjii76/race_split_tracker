@@ -296,7 +296,7 @@ class RaceRepository(Protocol):
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None: ...
     def transition_race_session(self, race_session_id: str, action: str) -> RaceSession: ...
-    def complete_race_timing(self, race_session_id: str) -> RaceSession: ...
+    def complete_race_timing(self, race_session_id: str, finish_checkpoint_number: int | None = None) -> RaceSession: ...
     def finalize_race_session(self, race_session_id: str) -> RaceSession: ...
     def reopen_race_session(self, race_session_id: str) -> RaceSession: ...
     def list_race_athlete_outcomes(self, race_session_id: str) -> list[RaceAthleteOutcome]: ...
@@ -759,12 +759,17 @@ class InMemoryRaceRepository:
             self.race_sessions[saved.id] = saved
             return saved
 
-    def complete_race_timing(self, race_session_id: str) -> RaceSession:
+    def complete_race_timing(self, race_session_id: str, finish_checkpoint_number: int | None = None) -> RaceSession:
         """Stop capture without asserting that results are final."""
         with self._race_session_lock:
             session = self.get_race_session(race_session_id)
             if session is None:
                 raise RepositoryError("Race session not found.")
+            if finish_checkpoint_number is not None and not any(
+                checkpoint.checkpoint_sequence == finish_checkpoint_number and checkpoint.is_finish
+                for checkpoint in self.list_race_session_checkpoints(race_session_id)
+            ):
+                raise RepositoryError("Only the Finish Line timer can end race timing.")
             if session.status == "awaiting_review":
                 return session
             if session.status not in {"running", "paused"}:
@@ -2231,15 +2236,23 @@ class SupabaseRaceRepository:
             raise RepositoryError("Could not transition race session.")
         return _race_session_from_row(row)
 
-    def complete_race_timing(self, race_session_id: str) -> RaceSession:
+    def complete_race_timing(self, race_session_id: str, finish_checkpoint_number: int | None = None) -> RaceSession:
         try:
+            function_name = (
+                "complete_race_timing_at_finish"
+                if finish_checkpoint_number is not None
+                else "complete_race_timing"
+            )
+            parameters = {"p_session_id": race_session_id}
+            if finish_checkpoint_number is not None:
+                parameters["p_checkpoint_number"] = finish_checkpoint_number
             result = self.client.rpc(
-                "complete_race_timing", {"p_session_id": race_session_id}
+                function_name, parameters
             ).execute()
         except Exception as exc:
             _raise_authorization_error(exc)
             detail = str(exc).lower()
-            if any(term in detail for term in ("running or paused", "not found")):
+            if any(term in detail for term in ("running or paused", "finish line", "not found")):
                 raise RepositoryError(str(exc)) from exc
             logger.exception("Repository operation failed: Could not end race timing.")
             raise RepositoryError("Could not end race timing.") from exc

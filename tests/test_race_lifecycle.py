@@ -185,3 +185,19 @@ def test_awaiting_review_result_can_be_corrected_then_finalized():
 
     assert correction.status == "dns"
     assert completed.status == "completed"
+
+
+def test_only_finish_checkpoint_assignment_can_end_timing_as_timer():
+    repo, session = _running_repository()
+    repo.race_session_checkpoints.clear()
+    repo.create_race_session_checkpoints(
+        session.id,
+        [Checkpoint(1, "Mile 1", 1609), Checkpoint(2, "Finish", 5000, True)],
+    )
+
+    with pytest.raises(RepositoryError, match="Finish Line"):
+        repo.complete_race_timing(session.id, finish_checkpoint_number=1)
+
+    awaiting = repo.complete_race_timing(session.id, finish_checkpoint_number=2)
+
+    assert awaiting.status == "awaiting_review"

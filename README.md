@@ -41,7 +41,11 @@ Coaches and administrators can use **End Race Timing** to stop live capture
 without resolving every athlete. The session enters **AWAITING REVIEW**, retains
 all timing and audit events, and permits append-only result corrections before
 **Finalize & Publish Results** changes the persisted state to `completed`.
-Timer accounts cannot end timing or access result management.
+Timer accounts cannot access result management or finalization.
+The timer assigned to the persisted **Finish Line** checkpoint is the sole timer
+exception: that station can use **End Race Timing** to enter `awaiting_review`.
+Mile/checkpoint timers receive no lifecycle action, and all result correction and
+finalization permissions remain coach/admin-only.
 
 Completed races now include a coach-only **Manage Results** panel. Coaches can add
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official

@@ -596,6 +596,36 @@ def _render_finish_controls(projection, clock) -> None:
                 _show_persistence_error("End race timing", exc); st.error(str(exc))
 
 
+def _render_finish_timer_end_control(clock, checkpoint) -> None:
+    """Render the timer lifecycle action only for an assigned finish snapshot."""
+    if checkpoint is None or not checkpoint.is_finish or clock.status not in {"running", "paused"}:
+        return
+    st.markdown("### Finish Line Controls")
+    if st.button("End Race Timing", key="finish_timer_end_timing", type="primary", use_container_width=True):
+        st.session_state.finish_timer_end_confirmation = True
+    if not st.session_state.get("finish_timer_end_confirmation"):
+        return
+    with st.container(border=True):
+        st.markdown("### End race timing?")
+        st.write("Live capture will stop. Existing timing data will be preserved. Results can be verified and corrected later.")
+        cancel, confirm = st.columns(2)
+        if cancel.button("Keep Timing", key="cancel_finish_timer_end", use_container_width=True):
+            st.session_state.finish_timer_end_confirmation = False
+            st.rerun()
+        if confirm.button("End Race Timing", key="confirm_finish_timer_end", type="primary", use_container_width=True):
+            try:
+                persist_timing_complete(
+                    st.session_state,
+                    finish_checkpoint_number=checkpoint.number,
+                )
+                st.session_state.finish_timer_end_confirmation = False
+                st.session_state.message = "Race timing ended. Results are awaiting coach review."
+                st.rerun()
+            except Exception as exc:
+                _show_persistence_error("End race timing", exc)
+                st.error(str(exc))
+
+
 def render() -> None:
     """Render the existing controlled live-timing polling fragment."""
     st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
@@ -758,6 +788,8 @@ def render() -> None:
         ):
             if _start_timing():
                 st.rerun()
+    if timer_mode:
+        _render_finish_timer_end_control(clock, checkpoint)
     if not timer_mode:
         quick_start, quick_pause, quick_resume = st.columns(3)
         if quick_start.button(
