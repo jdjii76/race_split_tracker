@@ -142,6 +142,19 @@ class SplitEvent:
 
 
 @dataclass(frozen=True)
+class TimerStationHealth:
+    race_session_id: str
+    checkpoint_number: int
+    checkpoint_label: str
+    device_id: str
+    timer_user_id: str = ""
+    last_seen: datetime | None = None
+    last_capture_at: datetime | None = None
+    capture_count: int = 0
+    latest_athlete_name: str = ""
+
+
+@dataclass(frozen=True)
 class RaceAthleteOutcome:
     race_session_id: str
     athlete_id: str
@@ -293,6 +306,8 @@ class RaceRepository(Protocol):
     def create_started_race_session_with_checkpoints(self, session: RaceSession, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def prepare_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def assign_timer_station(self, race_session_id: str, checkpoint_number: int, device_id: str) -> None: ...
+    def heartbeat_timer_station(self, race_session_id: str, checkpoint_number: int, device_id: str) -> None: ...
+    def list_timer_station_health(self, race_session_id: str) -> list[TimerStationHealth]: ...
     def get_or_create_active_race_session(self, race_id: str, checkpoints: list[Checkpoint]) -> RaceSession: ...
     def get_race_session(self, race_session_id: str) -> RaceSession | None: ...
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
@@ -342,6 +357,7 @@ class InMemoryRaceRepository:
         self.split_events: dict[str, SplitEvent] = {}
         self.race_session_checkpoints: dict[tuple[str, int], RaceSessionCheckpoint] = {}
         self.timer_station_assignments: dict[tuple[str, str], int] = {}
+        self.timer_station_heartbeats: dict[tuple[str, str], datetime] = {}
         self.race_athlete_outcomes: dict[tuple[str, str], RaceAthleteOutcome] = {}
         self.result_events: dict[str, ResultEvent] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
@@ -733,6 +749,36 @@ class InMemoryRaceRepository:
         }:
             raise RepositoryError("Checkpoint does not belong to this race session.")
         self.timer_station_assignments[(race_session_id, device_id)] = checkpoint_number
+        self.timer_station_heartbeats[(race_session_id, device_id)] = utc_now()
+
+    def heartbeat_timer_station(self, race_session_id: str, checkpoint_number: int, device_id: str) -> None:
+        if self.timer_station_assignments.get((race_session_id, device_id)) != checkpoint_number:
+            raise RepositoryError("Timer is not assigned to this checkpoint.")
+        self.timer_station_heartbeats[(race_session_id, device_id)] = utc_now()
+
+    def list_timer_station_health(self, race_session_id: str) -> list[TimerStationHealth]:
+        checkpoints = {
+            item.checkpoint_sequence: item.label
+            for item in self.list_race_session_checkpoints(race_session_id)
+        }
+        rows = []
+        for (session_id, device_id), checkpoint_number in self.timer_station_assignments.items():
+            if session_id != race_session_id:
+                continue
+            captures = [
+                event for event in self.list_all_split_events(session_id)
+                if event.capture_mode == "pack" and event.device_id == device_id
+                and event.checkpoint_number == checkpoint_number
+                and event.event_type == "split_recorded"
+            ]
+            latest = max(captures, key=lambda event: event.received_at or event.recorded_at, default=None)
+            rows.append(TimerStationHealth(
+                session_id, checkpoint_number, checkpoints.get(checkpoint_number, f"Checkpoint {checkpoint_number}"),
+                device_id, last_seen=self.timer_station_heartbeats.get((session_id, device_id)),
+                last_capture_at=(latest.received_at or latest.recorded_at) if latest else None,
+                capture_count=len(captures), latest_athlete_name=latest.athlete_name if latest else "",
+            ))
+        return sorted(rows, key=lambda row: (row.checkpoint_number, row.device_id))
 
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         return self.race_sessions.get(race_session_id)
@@ -2254,6 +2300,33 @@ class SupabaseRaceRepository:
             }),
             "Could not assign the timer station.",
         )
+
+    def heartbeat_timer_station(self, race_session_id: str, checkpoint_number: int, device_id: str) -> None:
+        self._execute(
+            self.client.rpc("heartbeat_timer_station", {
+                "p_session_id": race_session_id,
+                "p_checkpoint_number": checkpoint_number,
+                "p_device_id": device_id,
+            }),
+            "Could not update timer station heartbeat.",
+        )
+
+    def list_timer_station_health(self, race_session_id: str) -> list[TimerStationHealth]:
+        result = self._execute(
+            self.client.rpc("list_timer_station_health", {"p_session_id": race_session_id}),
+            "Could not load timer station health.",
+        )
+        return [TimerStationHealth(
+            race_session_id=str(row["race_session_id"]),
+            checkpoint_number=int(row["checkpoint_number"]),
+            checkpoint_label=row.get("checkpoint_label") or "",
+            device_id=row.get("device_id") or "",
+            timer_user_id=str(row.get("timer_user_id") or ""),
+            last_seen=_parse_datetime(row.get("last_seen")),
+            last_capture_at=_parse_datetime(row.get("last_capture_at")),
+            capture_count=int(row.get("capture_count") or 0),
+            latest_athlete_name=row.get("latest_athlete_name") or "",
+        ) for row in (getattr(result, "data", []) or [])]
 
     def get_race_session(self, race_session_id: str) -> RaceSession | None:
         row = self._single(self.client.table("race_sessions").select("*").eq("id", race_session_id), "Could not load race session.")

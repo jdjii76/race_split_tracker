@@ -921,6 +921,14 @@ one-row-per-checkpoint unique index with a non-unique lookup index. RPC validati
 to enforce logical split rules while allowing the original, its `split_voided` audit row, and
 an optional replacement to coexist in append-only history.
 
+Apply `supabase/migrations/032_timer_station_health.sql` for the race-day station monitor.
+The migration stores only a throttled station heartbeat; capture totals, latest athlete, and
+last successful synchronization remain derived from existing append-only Pack events. Timer
+devices may heartbeat only an exact station assignment, have no direct table access, and
+cannot read the coach/admin monitor RPC. The Timer landing card summarizes the assigned race,
+station, roster, clock, and local synchronization state, while the Race Day coach dashboard
+classifies checked-in stations as Active, Waiting, or Offline.
+
 ## Athlete Progression
 
 Administrators can choose **Athletes → View Profile** to open the protected athlete profile, or use **Team Progress** for season-wide comparison. Profiles include archived athletes when opened from the archived roster filter and are not added to spectator routes.

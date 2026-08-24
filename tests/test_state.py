@@ -34,6 +34,8 @@ def test_timer_timing_mode_defaults_to_pack():
 
     assert session.timer_timing_mode == "pack"
     assert session.pack_void_ids == []
+    assert session.timer_station_last_heartbeat_at is None
+    assert session.timer_station_sync_status == "Waiting"
 
 
 def test_elapsed_seconds_running_and_paused():

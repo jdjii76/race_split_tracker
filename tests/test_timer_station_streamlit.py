@@ -65,6 +65,30 @@ def test_station_selection_prepares_a_ready_session_without_starting_it():
     assert "st.session_state.active_race_session_id = session.id" in source
 
 
+def test_timer_landing_has_assignment_status_card_and_open_timing_action():
+    source = (Path(__file__).resolve().parents[1] / "pages/race_day_timer.py").read_text()
+
+    assert 'st.metric("Status", option.status_label.upper())' in source
+    assert 'st.metric("Race clock"' in source
+    assert 'metric("Your Station"' in source
+    assert 'metric("Athletes"' in source
+    assert 'metric("Sync"' in source
+    assert 'st.button("Open Timing"' in source
+    assert "heartbeat_timer_station" in source
+
+
+def test_live_timer_heartbeat_is_throttled_and_coach_dashboard_monitors_stations():
+    live = (Path(__file__).resolve().parents[1] / "pages/live_timing.py").read_text()
+    dashboard = (Path(__file__).resolve().parents[1] / "pages/meet_dashboard.py").read_text()
+
+    assert "def _heartbeat_timer_station()" in live
+    assert "(now - previous).total_seconds() < 30" in live
+    assert "repository.heartbeat_timer_station" in live
+    assert 'st.subheader("Timing Stations")' in dashboard
+    assert "repository.list_timer_station_health" in dashboard
+    assert "station_connection_state" in dashboard
+
+
 def test_end_race_timing_requires_confirmation_and_stays_out_of_timer_mode():
     source = (
         Path(__file__).resolve().parents[1] / "pages/live_timing.py"

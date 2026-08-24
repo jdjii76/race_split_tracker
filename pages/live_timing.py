@@ -194,6 +194,32 @@ def _restore_if_needed() -> None:
         _show_persistence_error("Restore timing session", exc)
 
 
+def _heartbeat_timer_station() -> None:
+    """Refresh timer presence at most every 30 seconds."""
+    if not (
+        st.session_state.get("timer_mode")
+        and st.session_state.get("active_race_session_id")
+        and st.session_state.get("timer_station_checkpoint") is not None
+        and st.session_state.get("pack_device_id")
+    ):
+        return
+    now = datetime.now(timezone.utc)
+    previous = st.session_state.get("timer_station_last_heartbeat_at")
+    if previous is not None and (now - previous).total_seconds() < 30:
+        return
+    try:
+        st.session_state.repository.heartbeat_timer_station(
+            st.session_state.active_race_session_id,
+            st.session_state.timer_station_checkpoint,
+            st.session_state.pack_device_id,
+        )
+        st.session_state.timer_station_last_heartbeat_at = now
+        st.session_state.timer_station_sync_status = "Connected"
+    except Exception:
+        logger.exception("Timer station heartbeat failed")
+        st.session_state.timer_station_sync_status = "Connection problem"
+
+
 def _start_timing() -> bool:
     try:
         if _has_persisted_race():
@@ -652,6 +678,8 @@ def render() -> None:
     skip_poll = st.session_state.pop("skip_next_live_poll", False)
     if st.session_state.get("active_race_session_id") and not skip_poll:
         poll_shared_timing(st.session_state)
+    if timer_mode:
+        _heartbeat_timer_station()
     config = st.session_state.meet_config
     clock = st.session_state.race_clock
     valid_setup = setup_is_valid(st.session_state)
