@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import streamlit as st
+from datetime import datetime, timezone
 
 from split_tracker.branding import render_school_header
 from split_tracker.config import load_public_app_url
@@ -9,6 +10,7 @@ from split_tracker.formatting import format_distance
 from split_tracker.navigation import RaceDashboardSummary, dashboard_navigation_ids, get_meet_race_summaries
 from split_tracker.spectator import spectator_url
 from split_tracker.state import load_race_into_setup
+from split_tracker.station_health import activity_age_label, station_connection_state
 
 
 def _open_race(meet, summary: RaceDashboardSummary) -> None:
@@ -43,6 +45,8 @@ def _race_card(meet, summary: RaceDashboardSummary, *, emphasized: bool = False)
         metrics = st.columns(2)
         metrics[0].metric("Athletes", summary.athlete_count)
         metrics[1].metric("Status", summary.display_status)
+        if summary.race.scheduled_start is not None and summary.category in {"upcoming", "ready"}:
+            st.write(f"Scheduled {summary.race.scheduled_start.strftime('%-I:%M %p UTC')}")
         if summary.category == "running":
             st.write(_started_label(summary))
         if st.button(
@@ -80,6 +84,38 @@ def _section(meet, title: str, summaries: list[RaceDashboardSummary], *, emphasi
     for index, summary in enumerate(summaries):
         with columns[index % 2]:
             _race_card(meet, summary, emphasized=emphasized)
+
+
+def _station_monitor(repository, summaries: list[RaceDashboardSummary]) -> None:
+    active = [item for item in summaries if item.session and item.category in {"ready", "running"}]
+    if not active:
+        return
+    st.divider()
+    st.subheader("Timing Stations")
+    now = datetime.now(timezone.utc)
+    icons = {"Active": "🟢", "Waiting": "🟡", "Offline": "🔴"}
+    for summary in active:
+        try:
+            stations = repository.list_timer_station_health(summary.session.id)
+        except Exception as exc:
+            st.warning(f"Could not load station health for {summary.race.name}: {exc}")
+            continue
+        if not stations:
+            st.caption(f"{summary.race.name}: No timer stations have checked in.")
+            continue
+        st.write(f"**{summary.race.name}**")
+        columns = st.columns(2)
+        for index, station in enumerate(stations):
+            state = station_connection_state(station.last_seen, now=now)
+            with columns[index % 2].container(border=True):
+                st.markdown(f"**{station.checkpoint_label}**  {icons[state]} {state}")
+                st.caption(f"Device {station.device_id[:8]} • Timer {station.timer_user_id[:8]}")
+                st.write(f"Last activity: {activity_age_label(station.last_seen, now=now)}")
+                latest = station.latest_athlete_name or "No captures yet"
+                st.write(f"Last capture: {latest}")
+                st.caption(
+                    f"{station.capture_count} captures • Sync {activity_age_label(station.last_capture_at, now=now)}"
+                )
 
 
 def render() -> None:
@@ -128,15 +164,22 @@ def render() -> None:
         return
 
     running = [summary for summary in summaries if summary.category == "running"]
-    up_next = [summary for summary in summaries if summary.category == "up_next"]
+    upcoming = [summary for summary in summaries if summary.category == "upcoming"]
+    ready = [summary for summary in summaries if summary.category == "ready"]
     completed = [summary for summary in summaries if summary.category == "completed"]
+    awaiting_review = [summary for summary in summaries if summary.category == "awaiting_review"]
     if len(running) > 1:
         st.info("Multiple races are running. Confirm the race name before recording splits.")
     _section(meet, "🔴 RUNNING NOW", running, emphasized=True)
     st.divider()
-    _section(meet, "UP NEXT", up_next)
+    _section(meet, "UPCOMING", upcoming)
+    st.divider()
+    _section(meet, "🟢 READY", ready)
+    st.divider()
+    _section(meet, "🟠 AWAITING REVIEW", awaiting_review)
     st.divider()
     _section(meet, "COMPLETED", completed)
+    _station_monitor(repository, summaries)
 
     if not summaries:
         st.info("This meet has no races yet. Add races in Meets & Races.")

@@ -1,0 +1,99 @@
+"""Pure selection helpers for the standalone race-day timer workflow."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+import re
+
+from split_tracker.calculations import generate_checkpoints
+from split_tracker.models import Checkpoint
+from split_tracker.repository import Meet, Race, RaceSession
+from split_tracker.race_readiness import computed_race_status
+from split_tracker.session_checkpoints import snapshots_to_checkpoints
+
+_MILE_STATION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*miles?\s*$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class TimerRaceOption:
+    meet: Meet
+    race: Race
+    session: RaceSession | None
+    checkpoints: tuple[Checkpoint, ...]
+    display_status: str
+
+    @property
+    def status_label(self) -> str:
+        return self.display_status
+
+    def station_is_open(self, checkpoint: Checkpoint) -> bool:
+        """Open the starter while upcoming and every station once race-ready."""
+        if self.display_status in {"Ready", "Running", "Paused"}:
+            return True
+        return self.display_status == "Upcoming" and checkpoint.is_finish
+
+
+def station_label(checkpoint: Checkpoint) -> str:
+    """Return volunteer-oriented wording for a timing station assignment."""
+    if checkpoint.is_finish or checkpoint.label.strip().casefold() == "finish":
+        return "Finish Line"
+    mile = _MILE_STATION_PATTERN.fullmatch(checkpoint.label)
+    if mile:
+        return f"Mile {mile.group(1)} Split"
+    return f"{checkpoint.label.strip()} Split"
+
+
+def race_is_available(
+    race: Race, session: RaceSession | None, *, now: datetime | None = None
+) -> bool:
+    """Return whether a race is relevant to an on-duty timer."""
+    status = computed_race_status(race, session, now=now)
+    return status in {"Ready", "Running", "Paused"} or (
+        status == "Upcoming" and race.scheduled_start is not None
+    )
+
+
+def configured_checkpoints(race: Race) -> tuple[Checkpoint, ...]:
+    return tuple(generate_checkpoints(
+        race_distance_meters=race.distance_meters,
+        mode=race.checkpoint_mode or "Standard laps",
+        interval_meters=400.0 if race.course_type == "Track" else 1609.344,
+    ))
+
+
+def build_timer_options(repository, *, now: datetime | None = None) -> list[TimerRaceOption]:
+    """Load timer-ready races without exposing setup or reporting concepts."""
+    options: list[TimerRaceOption] = []
+    for meet in repository.list_meets():
+        if meet.status not in {"draft", "active", "upcoming"}:
+            continue
+        races = [race for race in repository.list_races_for_meet(meet.id) if race.status != "archived"]
+        sessions = repository.list_race_sessions_for_races([race.id for race in races]) if races else []
+        by_race: dict[str, list[RaceSession]] = {}
+        for session in sessions:
+            by_race.setdefault(session.race_id, []).append(session)
+        for race in races:
+            race_sessions = sorted(
+                by_race.get(race.id, []), key=lambda item: (item.created_at, item.id)
+            )
+            relevant = [
+                item
+                for item in race_sessions
+                if item.status in {"ready", "running", "paused"}
+            ]
+            session = (relevant or race_sessions)[-1] if race_sessions else None
+            if not race_is_available(race, session, now=now):
+                continue
+            checkpoints = configured_checkpoints(race)
+            if session is not None:
+                snapshots = repository.list_race_session_checkpoints(session.id)
+                if snapshots:
+                    checkpoints = tuple(snapshots_to_checkpoints(snapshots))
+            options.append(TimerRaceOption(
+                meet,
+                race,
+                session,
+                checkpoints,
+                computed_race_status(race, session, now=now),
+            ))
+    return options
