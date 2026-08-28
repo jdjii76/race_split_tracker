@@ -34,6 +34,11 @@ grid acknowledges each tap in the browser before synchronization, shows the
 three newest captures and their saved/synchronized state, and keeps **Undo Last
 Tap** within thumb reach. The durable localStorage queue, UUID event identities,
 offline retry, server validation, and append-only correction path are unchanged.
+During a connection outage or synchronization error, Pack Mode displays a red
+offline warning, the exact locally queued count, and a warning not to close or
+refresh the page. Capture remains available. Reconnection automatically retries
+the same idempotent queue; **Sync Now** can request the same flush manually, and
+the browser warns before leaving while unsynchronized captures remain.
 Timers can switch to Individual Timing when runners are separated.
 The Pack grid defaults to **All Athletes** and keeps every card in a stable
 position after capture. Captured cards remain visible with a green check,

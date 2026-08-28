@@ -370,7 +370,7 @@ def _render_pack_mode(
     for state in browser_states:
         parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"race":race_order[state.athlete.athlete_id],"eligible":capture_allowed and (state.athlete.athlete_id in eligible_ids or station_number is not None and not state.finished and state.outcome_status != "dnf"),**arrival_metadata[state.athlete.athlete_id]})
     value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
-        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), key=f"pack:{session_id}:{checkpoint_number}")
+        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), sync_error=st.session_state.get("pack_sync_error", ""), key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []
     action = value.get("action", "") if isinstance(value, dict) else ""
     if action.startswith("undo_synced:"):
