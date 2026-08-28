@@ -1,4 +1,4 @@
-"""Pure selection helpers for the standalone race-day timer workflow."""
+"""Pure selection and capability helpers for race-day timing operators."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,6 +12,45 @@ from split_tracker.race_readiness import computed_race_status
 from split_tracker.session_checkpoints import snapshots_to_checkpoints
 
 _MILE_STATION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*miles?\s*$", re.IGNORECASE)
+
+
+def can_enter_race_day_timing_mode(identity) -> bool:
+    """Return whether an identity may opt into the temporary coach workflow."""
+    return bool(identity and identity.role in {"coach", "admin"})
+
+
+def is_race_day_timing_mode(session_state, identity) -> bool:
+    """Recognize the opt-in without changing or shadowing the database role."""
+    return bool(
+        can_enter_race_day_timing_mode(identity)
+        and session_state.get("race_day_timing_mode", False)
+    )
+
+
+def is_timing_operator(session_state, identity) -> bool:
+    """Recognize dedicated timers and opted-in coaches/admins."""
+    return bool(identity and (identity.is_timer or is_race_day_timing_mode(session_state, identity)))
+
+
+def enter_race_day_timing_mode(session_state, identity) -> bool:
+    """Enter the session-scoped mode while preserving the authenticated role."""
+    if not can_enter_race_day_timing_mode(identity):
+        return False
+    session_state["race_day_timing_mode"] = True
+    return True
+
+
+def change_timing_station(session_state) -> None:
+    """Clear only the station assignment, retaining coach Timing Mode."""
+    session_state["timer_station_checkpoint"] = None
+    session_state["timer_mode"] = False
+    session_state["timer_station_last_heartbeat_at"] = None
+
+
+def exit_race_day_timing_mode(session_state) -> None:
+    """Return a coach/admin to their dashboard without touching authentication."""
+    session_state["race_day_timing_mode"] = False
+    change_timing_station(session_state)
 
 
 @dataclass(frozen=True)
