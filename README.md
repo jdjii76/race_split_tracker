@@ -39,6 +39,10 @@ offline warning, the exact locally queued count, and a warning not to close or
 refresh the page. Capture remains available. Reconnection automatically retries
 the same idempotent queue; **Sync Now** can request the same flush manually, and
 the browser warns before leaving while unsynchronized captures remain.
+Retries also run when the component reconnects, becomes visible, regains focus,
+or is recreated. If a recreated Streamlit session assigns a new device ID, the
+component recovers pending events for the same race session and checkpoint by
+their original event UUIDs before retrying them.
 Timers can switch to Individual Timing when runners are separated.
 The Pack grid defaults to **All Athletes** and keeps every card in a stable
 position after capture. Captured cards remain visible with a green check,

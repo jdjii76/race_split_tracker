@@ -30,9 +30,29 @@ def test_retry_recovery_sync_now_and_unload_warning_reuse_same_queue():
     assert "Connection restored — synchronizing..." in FRONTEND
     assert "Synchronized · ${pending} queued · ${synced} synchronized" in FRONTEND
     assert "emit('sync_now')" in FRONTEND
-    assert "setInterval(()=>{if(navigator.onLine&&queue.some" in FRONTEND
+    assert "setInterval(retryQueued,3000)" in FRONTEND
+    assert "emit('component_ready')" in FRONTEND
+    assert "addEventListener('focus',retryQueued)" in FRONTEND
+    assert "addEventListener('pageshow',retryQueued)" in FRONTEND
     assert "addEventListener('beforeunload'" in FRONTEND
     assert "queue.some(x=>['pending','failed'].includes(x.state))" in FRONTEND
+
+
+def test_component_recreation_recovers_queue_across_device_id_change():
+    restore = FRONTEND.split("function restoreQueue()", 1)[1].split("function resize()", 1)[0]
+    assert "args.race_session_id" in restore
+    assert "args.checkpoint_number" in restore
+    assert "args.device_id" not in restore
+    assert "merged.set(event.client_event_id,event)" in restore
+    assert "persist()" in restore
+    assert "if(source!==key)localStorage.removeItem(source)" in restore
+    assert "restoreQueue()" in FRONTEND.split("addEventListener('message'", 1)[1]
+
+
+def test_retry_does_not_depend_on_navigator_online_event():
+    retry = FRONTEND.split("function retryQueued()", 1)[1].split("addEventListener('online'", 1)[0]
+    assert "navigator.onLine" not in retry
+    assert "emit('reconnect_retry')" in retry
 
 
 def test_local_undo_cancels_before_emit_and_synced_undo_uses_correction_action():
