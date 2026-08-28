@@ -26,6 +26,7 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("timer_name", "")
     session_state.setdefault("timer_station_checkpoint", None)
     session_state.setdefault("timer_mode", False)
+    session_state.setdefault("race_day_timing_mode", False)
     session_state.setdefault("timer_timing_mode", "pack")
     session_state.setdefault("pack_void_ids", [])
     session_state.setdefault("timer_station_last_heartbeat_at", None)

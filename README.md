@@ -20,6 +20,15 @@ The timer role can read race-day meet, race, roster, session, checkpoint, and
 split data and can insert authoritative split events. It cannot edit meet/race
 setup or control the race lifecycle through table policies.
 
+Coach and admin accounts can choose **Time a Checkpoint** from Race Day to use
+this same station selection, Pack Mode, synchronization, heartbeat, correction,
+and Finish Line start workflow. The choice and station are browser-session state
+only; **Change Station** keeps Timing Mode active and **Exit Timing Mode** returns
+to the Coach Dashboard without changing the account's persisted role. Apply
+`supabase/migrations/033_coach_race_day_timing_mode.sql` so these identities can
+call the existing station RPCs while their canonical checkpoint and event
+validation remains in force.
+
 Timer stations open directly in **Pack Mode** once selected. The compact capture
 grid acknowledges each tap in the browser before synchronization, shows the
 three newest captures and their saved/synchronized state, and keeps **Undo Last
