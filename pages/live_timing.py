@@ -33,7 +33,10 @@ from split_tracker.timing_persistence import (
     start_and_synchronize_shared_timing,
 )
 from split_tracker.timing_recovery import active_events_for_athlete, latest_active_event, recent_timing_activity
-from split_tracker.timer_mode import station_label
+from split_tracker.timer_mode import (
+    change_timing_station, exit_race_day_timing_mode, is_race_day_timing_mode,
+    is_timing_operator, station_label,
+)
 from split_tracker.pack_component import pack_capture
 from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch, ordered_expected_arrival_states, pack_capture_allowed
 from split_tracker.state import (
@@ -367,7 +370,7 @@ def _render_pack_mode(
     for state in browser_states:
         parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"race":race_order[state.athlete.athlete_id],"eligible":capture_allowed and (state.athlete.athlete_id in eligible_ids or station_number is not None and not state.finished and state.outcome_status != "dnf"),**arrival_metadata[state.athlete.athlete_id]})
     value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
-        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), key=f"pack:{session_id}:{checkpoint_number}")
+        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), sync_error=st.session_state.get("pack_sync_error", ""), key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []
     action = value.get("action", "") if isinstance(value, dict) else ""
     if action.startswith("undo_synced:"):
@@ -661,12 +664,11 @@ def _render_finish_timer_end_control(clock, checkpoint) -> None:
 def render() -> None:
     """Render the existing controlled live-timing polling fragment."""
     st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
-    timer_mode = bool(
-        st.session_state.get("timer_mode")
-        and getattr(st.session_state.get("app_identity"), "is_timer", False)
-    )
+    identity = st.session_state.get("app_identity")
+    coach_timing_mode = is_race_day_timing_mode(st.session_state, identity)
+    timer_mode = bool(st.session_state.get("timer_mode") and is_timing_operator(st.session_state, identity))
     station_number = st.session_state.get("timer_station_checkpoint") if timer_mode else None
-    if getattr(st.session_state.get("app_identity"), "is_timer", False) and station_number is None:
+    if is_timing_operator(st.session_state, identity) and station_number is None:
         st.warning("Select a race and checkpoint before opening the timing screen.")
         if st.button("Select Timing Station", type="primary", use_container_width=True):
             st.switch_page(st.session_state.page_registry["race_day_timer"])
@@ -700,10 +702,13 @@ def render() -> None:
         )
         station_name = station_label(checkpoint) if checkpoint else "Unknown checkpoint"
         st.success(f"**TIMING STATION: {station_name}**")
-        if st.button("Change Race / Checkpoint", use_container_width=True):
-            st.session_state.timer_station_checkpoint = None
-            st.session_state.timer_mode = False
+        control_columns = st.columns(2) if coach_timing_mode else [st]
+        if control_columns[0].button("Change Station", use_container_width=True):
+            change_timing_station(st.session_state)
             st.switch_page(st.session_state.page_registry["race_day_timer"])
+        if coach_timing_mode and control_columns[1].button("Exit Timing Mode", use_container_width=True):
+            exit_race_day_timing_mode(st.session_state)
+            st.switch_page(st.session_state.page_registry["meet_dashboard"])
     repository_result = st.session_state.get("repository_result")
     if repository_result is not None and repository_result.is_temporary:
         st.error(

@@ -11,6 +11,7 @@ from split_tracker.navigation import RaceDashboardSummary, dashboard_navigation_
 from split_tracker.spectator import spectator_url
 from split_tracker.state import load_race_into_setup
 from split_tracker.station_health import activity_age_label, station_connection_state
+from split_tracker.timer_mode import enter_race_day_timing_mode
 
 
 def _open_race(meet, summary: RaceDashboardSummary) -> None:
@@ -109,7 +110,7 @@ def _station_monitor(repository, summaries: list[RaceDashboardSummary]) -> None:
             state = station_connection_state(station.last_seen, now=now)
             with columns[index % 2].container(border=True):
                 st.markdown(f"**{station.checkpoint_label}**  {icons[state]} {state}")
-                st.caption(f"Device {station.device_id[:8]} • Timer {station.timer_user_id[:8]}")
+                st.caption(f"Device {station.device_id[:8]} • Operator {station.timer_user_id[:8]}")
                 st.write(f"Last activity: {activity_age_label(station.last_seen, now=now)}")
                 latest = station.latest_athlete_name or "No captures yet"
                 st.write(f"Last capture: {latest}")
@@ -152,6 +153,17 @@ def render() -> None:
         return
 
     render_school_header(profile, "Race Day", subtitle=meet.name)
+    st.subheader("Choose your Race Day workspace")
+    dashboard_choice, timing_choice = st.columns(2)
+    with dashboard_choice.container(border=True):
+        st.markdown("### Coach Dashboard")
+        st.caption("Manage races, monitor stations, recover mistakes, and review results.")
+    with timing_choice.container(border=True):
+        st.markdown("### Time a Checkpoint")
+        st.caption("Use the streamlined race-day station workflow on this device.")
+        if st.button("Time a Checkpoint", type="primary", use_container_width=True):
+            if enter_race_day_timing_mode(st.session_state, st.session_state.app_identity):
+                st.switch_page(st.session_state.page_registry["race_day_timer"])
     heading, refresh = st.columns([4, 1], vertical_alignment="center")
     heading.header(f"{profile.short_name or 'KMHS'} Race Day")
     if refresh.button("Refresh", use_container_width=True):
