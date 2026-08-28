@@ -10,6 +10,7 @@ from split_tracker.auth import current_identity, sign_out
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
 from split_tracker.navigation import resolve_active_meet_id
+from split_tracker.timer_mode import is_race_day_timing_mode
 from split_tracker.repository import create_repository
 from split_tracker.state import initialize_persistence_state, initialize_state
 
@@ -57,7 +58,8 @@ if not spectator_mode and authenticated and st.session_state.repository is not N
             del st.query_params["meet"]
     except Exception:
         pass
-if not spectator_mode and authenticated:
+coach_timing_active = is_race_day_timing_mode(st.session_state, identity)
+if not spectator_mode and authenticated and not coach_timing_active:
     with st.sidebar:
         render_school_sidebar_brand(school_profile)
         st.caption(f"Signed in as {identity.email} • {identity.role.title()}")
@@ -177,7 +179,7 @@ st.session_state.page_registry = {
     "race_day_timer": RACE_DAY_TIMER_PAGE,
 }
 
-race_day_pages = [MEET_DASHBOARD_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE]
+race_day_pages = [MEET_DASHBOARD_PAGE, RACE_DAY_TIMER_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE]
 settings_pages = []
 if identity and identity.is_admin:
     race_day_pages.insert(1, ATHLETES_PAGE)
@@ -196,6 +198,8 @@ if spectator_mode:
     navigation = st.navigation([SPECTATOR_PAGE], position="hidden")
 elif timer_authenticated:
     navigation = st.navigation([RACE_DAY_TIMER_PAGE, LIVE_TIMING_PAGE], position="hidden")
+elif coach_timing_active:
+    navigation = st.navigation([MEET_DASHBOARD_PAGE, RACE_DAY_TIMER_PAGE, LIVE_TIMING_PAGE], position="hidden")
 elif not authenticated:
     navigation = st.navigation([COACH_LOGIN_PAGE], position="hidden")
 else:

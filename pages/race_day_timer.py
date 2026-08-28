@@ -8,7 +8,11 @@ from split_tracker.branding import render_school_header
 from split_tracker.auth import sign_out
 from split_tracker.formatting import format_distance, format_duration
 from split_tracker.state import load_race_into_setup
-from split_tracker.timer_mode import TimerRaceOption, build_timer_options, configured_checkpoints, station_label
+from split_tracker.timer_mode import (
+    TimerRaceOption, build_timer_options, configured_checkpoints,
+    exit_race_day_timing_mode, is_race_day_timing_mode, is_timing_operator,
+    station_label,
+)
 from split_tracker.timing_persistence import persisted_elapsed_seconds
 from split_tracker.race_readiness import computed_race_status
 from split_tracker.session_checkpoints import snapshots_to_checkpoints
@@ -121,6 +125,11 @@ def _current_timer_option(repository, options: list[TimerRaceOption]) -> TimerRa
 
 
 def render() -> None:
+    identity = st.session_state.get("app_identity")
+    coach_timing_mode = is_race_day_timing_mode(st.session_state, identity)
+    if not is_timing_operator(st.session_state, identity):
+        st.error("Race Day Timing is available only to timer, coach, and admin accounts.")
+        return
     st.markdown(_STATION_BUTTON_CSS, unsafe_allow_html=True)
     render_school_header(
         st.session_state.school_profile,
@@ -129,7 +138,10 @@ def render() -> None:
         compact=True,
     )
     st.caption("Select the station where you will record runners. The Finish Line timer also starts the race.")
-    if st.button("Sign Out", use_container_width=True):
+    if coach_timing_mode and st.button("Exit Timing Mode", use_container_width=True):
+        exit_race_day_timing_mode(st.session_state)
+        st.switch_page(st.session_state.page_registry["meet_dashboard"])
+    if not coach_timing_mode and st.button("Sign Out", use_container_width=True):
         client = getattr(st.session_state.get("repository"), "client", None)
         if client is not None:
             sign_out(client)
