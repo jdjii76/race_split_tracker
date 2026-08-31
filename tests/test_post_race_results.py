@@ -5,7 +5,7 @@ import pytest
 from split_tracker.formatting import parse_time_to_seconds
 from split_tracker.models import Athlete, Checkpoint
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, RepositoryError, ResultEvent, SplitEvent
-from split_tracker.results import reconstruct_results
+from split_tracker.results import normalize_manual_checkpoint_times, reconstruct_results
 
 
 def completed_repo():
@@ -50,6 +50,35 @@ def test_result_validation_and_chronology():
     repo,_,_,athlete,session,_=completed_repo()
     with pytest.raises(RepositoryError): repo.save_post_race_result(ResultEvent(session.id,athlete.athlete_id,"finished","manual"))
     with pytest.raises(RepositoryError): repo.save_post_race_result(ResultEvent(session.id,athlete.athlete_id,"finished","manual",finish_seconds=100,splits={1:80,2:70}))
+
+
+@pytest.mark.parametrize("segments", [
+    {1: 390, 2: 375, 3: 365},  # negative splits
+    {1: 370, 2: 380, 3: 390},  # positive splits
+    {1: 380, 2: 380, 3: 380},  # even splits
+])
+def test_manual_segment_durations_are_converted_to_valid_cumulative_times(segments):
+    cumulative = normalize_manual_checkpoint_times(segments, entry_type="segment", finish_seconds=1160)
+    assert cumulative == {1: segments[1], 2: segments[1] + segments[2], 3: sum(segments.values())}
+
+    repo, _, _, athlete, session, _ = completed_repo()
+    saved = repo.save_post_race_result(ResultEvent(
+        session.id, athlete.athlete_id, "finished", "manual", finish_seconds=1160, splits=cumulative
+    ))
+    assert saved.splits == cumulative
+
+
+def test_manual_cumulative_times_and_finish_chronology_are_validated():
+    assert normalize_manual_checkpoint_times(
+        {1: 390, 2: 765, 3: 1130}, entry_type="cumulative", finish_seconds=1150
+    ) == {1: 390, 2: 765, 3: 1130}
+
+    with pytest.raises(ValueError, match="must increase"):
+        normalize_manual_checkpoint_times({1: 390, 2: 380}, entry_type="cumulative", finish_seconds=1150)
+    with pytest.raises(ValueError, match="Finish time must be after"):
+        normalize_manual_checkpoint_times({1: 390, 2: 765, 3: 1130}, entry_type="cumulative", finish_seconds=1120)
+    with pytest.raises(ValueError, match="must be positive"):
+        normalize_manual_checkpoint_times({1: 390, 2: 0}, entry_type="segment", finish_seconds=1150)
 
 
 def test_forgiving_duration_formats():

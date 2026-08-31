@@ -69,6 +69,10 @@ Completed races now include a coach-only **Manage Results** panel. Coaches can a
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
 corrections. Corrections become the single result used by history, PR, scoring,
 public results, and exports while prior timing/result events remain auditable.
+Optional checkpoint times can be entered as cumulative elapsed race-clock times
+or as individual segment durations. Cumulative values must increase in race
+order, while segment durations need only be positive, so negative splits are
+accepted and converted to cumulative times without changing stored history.
 
 The app opens on **Race Day** whenever a valid active meet is available. The
 touch-friendly dashboard groups persisted races into Running Now, Up Next, and
