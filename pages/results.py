@@ -9,7 +9,7 @@ from split_tracker.branding import branded_export_filename, render_school_header
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.formatting import format_distance, format_duration, parse_time_to_seconds
 from split_tracker.repository import RaceRepository, RepositoryError, ResultEvent, canonical_result_events
-from split_tracker.results import build_team_summary, filter_results, printable_results_html, reconstruct_results, results_to_frame, session_label, summarize_sessions
+from split_tracker.results import build_team_summary, filter_results, normalize_manual_checkpoint_times, printable_results_html, reconstruct_results, results_to_frame, session_label, summarize_sessions
 from split_tracker.spectator import spectator_url
 from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.state import cleanup_after_session_delete
@@ -87,6 +87,16 @@ def _manage_results(repository, session, athletes, checkpoints, rows, result_eve
     source = st.selectbox("Result source", ["Manual", "Official"], key=f"manage_source_{session.id}_{athlete.athlete_id}")
     entered_splits = {}
     with st.expander("Optional checkpoint times"):
+        entry_label = st.radio(
+            "Checkpoint time format",
+            ["Cumulative elapsed times", "Segment durations"],
+            horizontal=True,
+            key=f"manage_cp_format_{session.id}_{athlete.athlete_id}",
+        )
+        if entry_label == "Cumulative elapsed times":
+            st.caption("Enter elapsed race-clock times. Each entered checkpoint must be later than the preceding one.")
+        else:
+            st.caption("Enter each segment's duration. Faster later segments are valid; entered durations are added in race order.")
         for checkpoint in checkpoints:
             if not checkpoint.is_finish:
                 value = st.text_input(checkpoint.label, key=f"manage_cp_{session.id}_{athlete.athlete_id}_{checkpoint.number}")
@@ -104,12 +114,17 @@ def _manage_results(repository, session, athletes, checkpoints, rows, result_eve
             st.error("Each checkpoint time must be a positive duration such as 6:32.")
         else:
             try:
+                parsed_splits = normalize_manual_checkpoint_times(
+                    parsed_splits,
+                    entry_type="cumulative" if entry_label == "Cumulative elapsed times" else "segment",
+                    finish_seconds=finish,
+                )
                 repository.save_post_race_result(ResultEvent(session.id, athlete.athlete_id, status.lower(), source.lower(),
                     finish_seconds=finish, splits=parsed_splits, note=note.strip(), supersedes_id=existing.id if existing else None,
                     created_by=getattr(st.session_state.get("app_identity"), "user_id", "")))
                 st.success("Result saved. Final results, history, PRs, and public results now use it.")
                 st.rerun()
-            except RepositoryError as exc: st.error(str(exc))
+            except (RepositoryError, ValueError) as exc: st.error(str(exc))
     history = [event for event in result_events if event.athlete_id == athlete.athlete_id]
     if history:
         with st.expander("Result History"):

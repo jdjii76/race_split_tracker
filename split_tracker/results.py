@@ -16,6 +16,39 @@ from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.timing_persistence import persisted_elapsed_seconds, rebuild_splits_from_events
 
 
+def normalize_manual_checkpoint_times(
+    checkpoint_times: dict[int, float],
+    *,
+    entry_type: str,
+    finish_seconds: float | None,
+) -> dict[int, float]:
+    """Return canonical cumulative checkpoint times from manual result input.
+
+    Result events persist cumulative elapsed times.  The manual form may also
+    accept per-segment durations, which are converted at this boundary so the
+    repository and database continue to receive their canonical representation.
+    """
+    if entry_type not in {"cumulative", "segment"}:
+        raise ValueError("Checkpoint time entry type is not supported.")
+
+    cumulative: dict[int, float] = {}
+    previous = 0.0
+    for checkpoint_number, raw_value in sorted(checkpoint_times.items()):
+        value = float(raw_value)
+        if value <= 0:
+            raise ValueError("Checkpoint times must be positive.")
+        if entry_type == "segment":
+            value += previous
+        elif value <= previous:
+            raise ValueError("Cumulative checkpoint times must increase in race order.")
+        cumulative[int(checkpoint_number)] = value
+        previous = value
+
+    if finish_seconds is not None and cumulative and finish_seconds <= previous:
+        raise ValueError("Finish time must be after the preceding checkpoint.")
+    return cumulative
+
+
 @dataclass(frozen=True)
 class SessionSummary:
     """Display summary for one persisted race timing session."""
