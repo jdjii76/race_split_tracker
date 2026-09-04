@@ -1,16 +1,19 @@
 """Read-only spectator resolution, projection, isolation, and security tests."""
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 from split_tracker.models import Athlete, Checkpoint
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, SplitEvent
 from split_tracker.spectator import (
     ReadOnlySpectatorRepository,
     SpectatorAthleteRow,
+    _public_session,
     load_spectator_race,
     spectator_status,
+    spectator_elapsed_seconds,
     spectator_url,
 )
-from pages.spectator import _athlete_card_html
+from pages.spectator import _athlete_card_html, _race_clock_html
 
 
 def _fixture():
@@ -113,6 +116,48 @@ def test_statuses_and_reopened_session_follow_authoritative_lifecycle():
     assert spectator_status(replace(RaceSession(race_id="race", status="completed"), status="paused")) == "Paused"
 
 
+def test_spectator_clock_uses_authoritative_running_and_frozen_elapsed_time():
+    now = datetime(2026, 9, 4, 18, 22, tzinfo=timezone.utc)
+    running = RaceSession(
+        race_id="race", status="running", started_at=now - timedelta(seconds=42),
+        elapsed_offset_seconds=1080,
+    )
+    assert spectator_elapsed_seconds(running, now=now) == 1122
+    for status in ("paused", "awaiting_review", "completed"):
+        frozen = replace(running, status=status, elapsed_offset_seconds=1122)
+        assert spectator_elapsed_seconds(frozen, now=now + timedelta(hours=1)) == 1122
+
+
+def test_public_session_retains_canonical_timing_timestamps_after_reopen():
+    session = _public_session({
+        "id": "session", "race_id": "race", "status": "running",
+        "started_at": "2026-09-04T18:04:17Z", "paused_at": None,
+        "ended_at": None, "elapsed_offset_seconds": 600,
+    })
+    now = datetime(2026, 9, 4, 18, 6, 19, tzinfo=timezone.utc)
+    assert session.started_at == datetime(2026, 9, 4, 18, 4, 17, tzinfo=timezone.utc)
+    assert spectator_elapsed_seconds(session, now=now) == 722
+
+
+def test_spectator_clock_ticks_in_browser_without_polling_or_writes():
+    start = datetime(2026, 9, 4, 18, 4, 17, tzinfo=timezone.utc)
+    html = _race_clock_html(
+        RaceSession(race_id="race", status="running", started_at=start),
+        now=start + timedelta(minutes=18, seconds=42),
+    )
+    assert '"elapsed": 1122.0' in html
+    assert "performance.now()" in html and "setInterval(renderClock, 250)" in html
+    assert "Started ${started}" in html
+    assert "fetch(" not in html and "supabase" not in html.lower()
+
+
+def test_spectator_clock_labels_ready_and_paused_lifecycle_states():
+    assert "Race has not started" in _race_clock_html(None)
+    paused = RaceSession(race_id="race", status="paused", elapsed_offset_seconds=75)
+    html = _race_clock_html(paused)
+    assert '"status": "Paused"' in html and '"running": false' in html
+
+
 def test_finished_view_reuses_results_ranking_and_places_dnf_last():
     repo, race_a, _, session_a, _ = _fixture()
     second = Athlete("Avery", athlete_id="c")
@@ -134,6 +179,7 @@ def test_spectator_page_is_display_only_and_polls_at_five_seconds():
     assert "st.button" not in source and "st.form" not in source
     assert "record_shared_split" not in source and "finalize_race_session" not in source
     assert "st.fragment(run_every=5)" in source
+    assert "components.html(_race_clock_html(view.session)" in source
 
 
 def test_spectator_uses_public_views_after_security_hardening():
