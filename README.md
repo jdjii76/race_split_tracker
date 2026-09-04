@@ -527,7 +527,11 @@ metadata, athlete notes, and contact or administrative data are not rendered.
 
 Active and paused spectator views refresh every five seconds and query only the
 target race, resolved session, roster, checkpoint snapshot, active events, and
-session outcomes. Migration `017` limits anonymous access to privacy-safe public
+session outcomes. A prominent spectator race clock uses the session's persisted
+start timestamp, lifecycle status, and elapsed offset. While running, it advances
+locally in each browser between those existing five-second reads; paused,
+awaiting-review, and completed clocks remain frozen, with no per-second database
+writes or reads. Migration `017` limits anonymous access to privacy-safe public
 views and public school branding. Anonymous users receive no protected-table
 writes and no mutation RPC execution.
 

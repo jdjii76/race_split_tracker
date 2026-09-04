@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import urlencode
 from typing import Protocol
 
@@ -11,6 +12,7 @@ from split_tracker.models import Athlete, Checkpoint
 from split_tracker.projection import ProjectedRaceState, ordered_race_board_athletes, project_race_state
 from split_tracker.repository import Meet, Race, RaceAthleteOutcome, RaceSession, RaceSessionCheckpoint, SchoolSponsor, SplitEvent
 from split_tracker.results import reconstruct_results
+from split_tracker.timing_persistence import persisted_elapsed_seconds
 
 
 class SpectatorReadRepository(Protocol):
@@ -134,7 +136,31 @@ def _public_race(row: dict) -> Race:
 
 
 def _public_session(row: dict) -> RaceSession:
-    return RaceSession(id=str(row["id"]), race_id=str(row["race_id"]), status=row.get("status") or "ready", elapsed_offset_seconds=float(row.get("elapsed_offset_seconds") or 0))
+    return RaceSession(
+        id=str(row["id"]),
+        race_id=str(row["race_id"]),
+        status=row.get("status") or "ready",
+        started_at=_public_datetime(row.get("started_at")),
+        paused_at=_public_datetime(row.get("paused_at")),
+        ended_at=_public_datetime(row.get("ended_at")),
+        elapsed_offset_seconds=float(row.get("elapsed_offset_seconds") or 0),
+    )
+
+
+def _public_datetime(value: object) -> datetime | None:
+    """Parse PostgREST timestamps retained by the spectator-safe session view."""
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def spectator_elapsed_seconds(session: RaceSession | None, *, now: datetime | None = None) -> float:
+    """Project the public clock from the canonical persisted session timing fields."""
+    if session is None or session.status == "ready":
+        return 0.0
+    return persisted_elapsed_seconds(session, now)
 
 
 @dataclass(frozen=True)
