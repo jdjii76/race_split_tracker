@@ -63,3 +63,16 @@ def test_race_setup_user_facing_labels_are_consistent():
     assert 'button("Open in Race Setup"' in management_source
     assert "Complete Race Setup before starting the race." in live_source
     assert "Add athletes on the Race Setup page" in live_source
+
+
+def test_change_meet_uses_searchable_scrollable_button_list():
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    switcher = app_source.split('if st.session_state.get("show_meet_switcher") and meets:', 1)[1].split(
+        "MEET_DASHBOARD_PAGE", 1
+    )[0]
+
+    assert 'st.text_input(' in switcher and 'placeholder="Search meets..."' in switcher
+    assert "st.container(height=320, border=True)" in switcher
+    assert "for meet in visible_meets:" in switcher
+    assert 'key=f"change_meet:{meet.id}"' in switcher
+    assert "st.selectbox(" not in switcher

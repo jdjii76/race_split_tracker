@@ -78,10 +78,13 @@ The app opens on **Race Day** whenever a valid active meet is available. The
 touch-friendly dashboard groups persisted races into Running Now, Up Next, and
 Completed, with direct Open Timing, Open Race, and View Results actions. It
 refreshes from Supabase every five seconds and uses batched session and roster
-count reads, so concurrent races remain isolated by race and session UUID. Race
-names beginning with `TEST` receive a display-only test indicator. Use the
-compact sidebar control to change meets; the selection is also stored in the
-page query parameters so it can be restored after a browser refresh. Meet, race,
+count reads, so concurrent races remain isolated by race and session UUID. The
+sidebar's **Change Meet** control provides a searchable, internally
+scrollable list that preserves the established meet order, marks the current
+meet, and keeps every eligible meet available on desktop and mobile.
+Race names beginning with `TEST` receive a display-only test indicator. The
+meet selection is also stored in the page query parameters so it can be restored
+after a browser refresh. Meet, race,
 roster, and checkpoint administration remains under **Meets & Races** and
 **Race Setup**.
 
@@ -527,7 +530,11 @@ metadata, athlete notes, and contact or administrative data are not rendered.
 
 Active and paused spectator views refresh every five seconds and query only the
 target race, resolved session, roster, checkpoint snapshot, active events, and
-session outcomes. Migration `017` limits anonymous access to privacy-safe public
+session outcomes. A prominent spectator race clock uses the session's persisted
+start timestamp, lifecycle status, and elapsed offset. While running, it advances
+locally in each browser between those existing five-second reads; paused,
+awaiting-review, and completed clocks remain frozen, with no per-second database
+writes or reads. Migration `017` limits anonymous access to privacy-safe public
 views and public school branding. Anonymous users receive no protected-table
 writes and no mutation RPC execution.
 

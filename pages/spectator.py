@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+import json
 import logging
 
 import pandas as pd
@@ -11,10 +12,71 @@ import streamlit.components.v1 as components
 
 from split_tracker.branding import render_school_header
 from split_tracker.formatting import format_distance
-from split_tracker.spectator import load_spectator_race, spectator_repository
+from split_tracker.spectator import load_spectator_race, spectator_elapsed_seconds, spectator_repository
 from split_tracker.sponsors import sponsor_carousel_html
 
 logger = logging.getLogger(__name__)
+
+
+def _race_clock_html(session, *, now: datetime | None = None) -> str:
+    """Build a browser-only ticking clock anchored to authoritative session timing."""
+    current = now or datetime.now(timezone.utc)
+    status = session.status if session else "ready"
+    payload = json.dumps({
+        "elapsed": spectator_elapsed_seconds(session, now=current),
+        "running": status == "running",
+        "status": {
+            "paused": "Paused",
+            "awaiting_review": "Awaiting Review",
+            "completed": "Completed",
+            "cancelled": "Completed",
+        }.get(status, ""),
+        "startedAt": session.started_at.isoformat() if session and session.started_at else None,
+    })
+    return f"""
+    <div class="race-clock" role="timer" aria-live="off">
+      <div class="clock-label">Race Time</div>
+      <div id="race-time" class="clock-time">--:--</div>
+      <div id="clock-state" class="clock-state"></div>
+      <div id="started-at" class="started-at"></div>
+    </div>
+    <style>
+      body{{margin:0;color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:CanvasText;background:transparent}}
+      .race-clock{{box-sizing:border-box;text-align:center;border:1px solid rgba(128,128,128,.35);border-radius:14px;padding:12px 16px;background:rgba(128,128,128,.08)}}
+      .clock-label{{font-size:16px;font-weight:750}}
+      .clock-time{{font-size:46px;line-height:1.08;font-weight:850;font-variant-numeric:tabular-nums;letter-spacing:.02em}}
+      .clock-state{{font-size:15px;font-weight:750;margin-top:2px}}
+      .started-at{{font-size:13px;opacity:.72;margin-top:4px}}
+    </style>
+    <script>
+      const clock = {payload};
+      const loadedAt = performance.now();
+      const timeNode = document.getElementById("race-time");
+      function formatElapsed(value) {{
+        const total = Math.max(0, Math.floor(value));
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const seconds = total % 60;
+        return hours ? `${{hours}}:${{String(minutes).padStart(2,"0")}}:${{String(seconds).padStart(2,"0")}}`
+                     : `${{minutes}}:${{String(seconds).padStart(2,"0")}}`;
+      }}
+      function renderClock() {{
+        const elapsed = clock.elapsed + (clock.running ? (performance.now() - loadedAt) / 1000 : 0);
+        timeNode.textContent = formatElapsed(elapsed);
+      }}
+      document.getElementById("clock-state").textContent = clock.status;
+      if (clock.startedAt) {{
+        const started = new Date(clock.startedAt).toLocaleTimeString([], {{hour:"numeric",minute:"2-digit",second:"2-digit"}});
+        document.getElementById("started-at").textContent = `Started ${{started}}`;
+      }}
+      if (!clock.running && !clock.startedAt) {{
+        document.querySelector(".clock-label").textContent = "Race has not started";
+        timeNode.style.display = "none";
+      }}
+      renderClock();
+      if (clock.running) setInterval(renderClock, 250);
+    </script>
+    """
 
 
 def _athlete_card_html(index: int, athlete) -> str:
@@ -86,6 +148,7 @@ def _render_race(public_repository, profile, race_id, session_id) -> None:
     st.header(f"{view.race.name} • {format_distance(view.race.distance_meters)}")
     public_status = "FINAL" if view.session and view.session.status == "completed" else "LIVE"
     st.markdown(f"## {public_status}")
+    components.html(_race_clock_html(view.session), height=150, scrolling=False)
     st.caption(f"Last updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
 
     if view.session is None:
