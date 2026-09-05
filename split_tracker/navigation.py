@@ -25,6 +25,24 @@ def resolve_active_meet_id(saved_id: str | None, meets: list[Meet]) -> str | Non
     relevant = [meet for meet in available.values() if meet.status in {"active", "upcoming"}]
     return relevant[0].id if len(relevant) == 1 else None
 
+
+def filter_meets_for_switcher(meets: list[Meet], search: str) -> list[Meet]:
+    """Filter the meet switcher without changing repository-provided ordering."""
+    query = search.strip().casefold()
+    if not query:
+        return list(meets)
+    return [
+        meet for meet in meets
+        if query in " ".join((meet.name, meet.location, meet.season)).casefold()
+    ]
+
+
+def meet_switcher_label(meet: Meet, *, current: bool = False) -> str:
+    """Build a compact, tap-friendly meet row label."""
+    date_label = f"{meet.meet_date.strftime('%b')} {meet.meet_date.day}" if meet.meet_date else "Date TBD"
+    return f"{'✓ ' if current else ''}{meet.name} — {date_label}"
+
+
 def determine_race_primary_action(
     race_status: str,
     session_status: str | None = None,

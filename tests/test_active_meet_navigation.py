@@ -6,8 +6,10 @@ from split_tracker.navigation import (
     build_race_dashboard_summaries,
     dashboard_navigation_ids,
     determine_race_primary_action,
+    filter_meets_for_switcher,
     get_meet_race_summaries,
     is_test_race,
+    meet_switcher_label,
     resolve_active_meet_id,
 )
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession
@@ -22,6 +24,21 @@ def test_active_meet_is_restored_and_invalid_id_is_cleared():
 def test_only_relevant_meet_is_selected_automatically():
     upcoming = Meet(name="Saturday", status="upcoming")
     assert resolve_active_meet_id(None, [Meet(name="Draft"), upcoming]) == upcoming.id
+
+
+def test_meet_switcher_keeps_all_meets_and_repository_order():
+    meets = [Meet(name=f"Meet {number:02d}", location="Marietta") for number in range(25)]
+
+    assert filter_meets_for_switcher(meets, "") == meets
+    assert filter_meets_for_switcher(meets, "meet 24") == [meets[24]]
+    assert filter_meets_for_switcher(meets, "marietta") == meets
+
+
+def test_meet_switcher_marks_current_meet_and_formats_date():
+    meet = Meet(name="Cobb County Championships", meet_date=datetime(2026, 9, 3).date())
+
+    assert meet_switcher_label(meet) == "Cobb County Championships — Sep 3"
+    assert meet_switcher_label(meet, current=True) == "✓ Cobb County Championships — Sep 3"
 
 
 def test_race_action_uses_session_status_as_source_of_truth():

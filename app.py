@@ -9,7 +9,7 @@ from pages import athlete_profile, athletes, coach_analytics, coach_login, live_
 from split_tracker.auth import current_identity, sign_out
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
-from split_tracker.navigation import resolve_active_meet_id
+from split_tracker.navigation import filter_meets_for_switcher, meet_switcher_label, resolve_active_meet_id
 from split_tracker.timer_mode import is_race_day_timing_mode
 from split_tracker.repository import create_repository
 from split_tracker.state import initialize_persistence_state, initialize_state
@@ -94,17 +94,27 @@ if not spectator_mode and authenticated and not coach_timing_active:
             if st.button("Change Meet", use_container_width=True):
                 st.session_state.show_meet_switcher = not st.session_state.get("show_meet_switcher", False)
             if st.session_state.get("show_meet_switcher") and meets:
-                ids = [meet.id for meet in meets]
-                selected = st.selectbox(
-                    "Choose meet", ids, index=ids.index(active.id) if active else 0,
-                    format_func=lambda meet_id: next(meet.name for meet in meets if meet.id == meet_id),
+                st.caption("Choose a meet. The current meet is marked ✓.")
+                meet_search = st.text_input(
+                    "Search meets", placeholder="Search meets...", key="meet_switcher_search"
                 )
-                if selected != st.session_state.active_meet_id:
-                    st.session_state.active_meet_id = selected
-                    st.session_state.selected_meet_id = selected
-                    st.query_params["meet"] = selected
-                    st.session_state.show_meet_switcher = False
-                    st.rerun()
+                visible_meets = filter_meets_for_switcher(meets, meet_search)
+                with st.container(height=320, border=True):
+                    if not visible_meets:
+                        st.caption("No meets match that search.")
+                    for meet in visible_meets:
+                        is_current = meet.id == st.session_state.active_meet_id
+                        if st.button(
+                            meet_switcher_label(meet, current=is_current),
+                            key=f"change_meet:{meet.id}",
+                            type="primary" if is_current else "secondary",
+                            use_container_width=True,
+                        ):
+                            st.session_state.active_meet_id = meet.id
+                            st.session_state.selected_meet_id = meet.id
+                            st.query_params["meet"] = meet.id
+                            st.session_state.show_meet_switcher = False
+                            st.rerun()
 MEET_DASHBOARD_PAGE = st.Page(
     meet_dashboard.render,
     title="Race Day",
