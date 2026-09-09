@@ -1,5 +1,15 @@
 # Race Split Tracker
 
+## Race Day roster changes
+
+Coaches and administrators can use **Edit Roster** on any open Race Day card to
+search the permanent roster, add an athlete, remove an athlete with no recorded
+race activity, or move that same athlete record to another open race in the meet.
+Running races accept safe late additions without backfilling splits or restarting
+timing. Once an athlete has timing or result history, participation changes must be
+resolved through **Manage Results**. Timer-only and spectator accounts cannot open
+the roster editor.
+
 ## Race Day Timer Mode
 
 Provision the shared volunteer account with the `timer` role after applying
@@ -69,6 +79,15 @@ Completed races now include a coach-only **Manage Results** panel. Coaches can a
 missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
 corrections. Corrections become the single result used by history, PR, scoring,
 public results, and exports while prior timing/result events remain auditable.
+After applying `supabase/migrations/034_result_reassignment.sql`, coaches and
+administrators can also use **Reassign Athlete** to attribute an entire session
+performance to a different active permanent athlete. The workflow previews the
+preserved timing, requires confirmation and a reason, rejects destination
+conflicts, adds the existing destination athlete to the race when necessary, and
+records an append-only audit entry. Published projections, analytics, and athlete
+history use the corrected identity without rewriting split UUIDs, timestamps,
+values, or device provenance. The original athlete may then be explicitly marked
+DNS through the existing append-only result workflow.
 Optional checkpoint times can be entered as cumulative elapsed race-clock times
 or as individual segment durations. Cumulative values must increase in race
 order, while segment durations need only be positive, so negative splits are

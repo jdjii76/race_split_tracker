@@ -9,6 +9,7 @@ from split_tracker.branding import branded_export_filename, render_school_header
 from split_tracker.calculations import generate_checkpoints
 from split_tracker.formatting import format_distance, format_duration, parse_time_to_seconds
 from split_tracker.repository import RaceRepository, RepositoryError, ResultEvent, canonical_result_events
+from split_tracker.result_reassignment import DEFAULT_REASON, preview_reassignment, reassign_result
 from split_tracker.results import build_team_summary, filter_results, normalize_manual_checkpoint_times, printable_results_html, reconstruct_results, results_to_frame, session_label, summarize_sessions
 from split_tracker.spectator import spectator_url
 from split_tracker.session_checkpoints import get_session_checkpoints
@@ -81,6 +82,42 @@ def _manage_results(repository, session, athletes, checkpoints, rows, result_eve
     existing = current.get(athlete.athlete_id)
     row = by_id[athlete.athlete_id]
     st.markdown(f"**Recorded Result:** {row['Status']} — {row['Final Time']} ({row['Source']})")
+    with st.expander("Reassign Athlete"):
+        st.warning("This changes who receives this race performance. Permanent athlete records and original timing events are not edited.")
+        search = st.text_input("Search active permanent roster", key=f"reassign_search_{session.id}_{athlete.athlete_id}")
+        destinations = [item for item in repository.list_athletes(search=search or None)
+                        if item.id != athlete.athlete_id]
+        destination = st.selectbox(
+            "Athlete who actually ran", destinations,
+            format_func=lambda item: f"#{item.athlete_number} {item.display_name}" if item.athlete_number else item.display_name,
+            key=f"reassign_destination_{session.id}_{athlete.athlete_id}",
+        ) if destinations else None
+        if destination:
+            try:
+                preview = preview_reassignment(repository, session.id, athlete.athlete_id, destination.id)
+                st.markdown(f"### Confirm result reassignment\n**{preview.source_name} → {preview.destination_name}**")
+                source_events = [event for event in split_events if event.athlete_id == athlete.athlete_id]
+                for event in source_events:
+                    st.write(f"{event.checkpoint_label or f'Checkpoint {event.checkpoint_number}'} — {format_duration(event.elapsed_seconds)}")
+                st.caption(f"{preview.timing_event_count} timing events{' and a finish result' if preview.has_finish else ''} will be reassigned. Original timestamps and device provenance will be preserved.")
+                if preview.destination_will_be_added:
+                    st.info(f"{preview.destination_name} will be added to this race roster using the existing permanent athlete record.")
+                reason = st.text_input("Correction reason", value=DEFAULT_REASON,
+                                       key=f"reassign_reason_{session.id}_{athlete.athlete_id}")
+                confirmed = st.checkbox(
+                    "I confirm this athlete attribution correction.",
+                    key=f"reassign_confirm_{session.id}_{athlete.athlete_id}",
+                )
+                if st.button("Confirm Reassignment", type="primary", use_container_width=True,
+                             disabled=not confirmed or not reason.strip(),
+                             key=f"reassign_save_{session.id}_{athlete.athlete_id}"):
+                    reassign_result(repository, session.id, athlete.athlete_id, destination.id, reason,
+                                    st.session_state.get("app_identity"))
+                    st.session_state.reassignment_dns_offer = (session.id, athlete.athlete_id, athlete.name)
+                    st.success(f"Result reassigned to {destination.display_name}. Original timing history was preserved.")
+                    st.rerun()
+            except RepositoryError as exc:
+                st.error(str(exc))
     status = st.selectbox("Result status", ["Finished", "DNF", "DNS"], key=f"manage_status_{session.id}_{athlete.athlete_id}")
     finish_text = st.text_input("New finish time", placeholder="22:15.4", disabled=status != "Finished",
                                 key=f"manage_finish_{session.id}_{athlete.athlete_id}")
@@ -136,6 +173,27 @@ def _manage_results(repository, session, athletes, checkpoints, rows, result_eve
                                 any(cp.is_finish and cp.number == event.checkpoint_number for cp in checkpoints)), None)
             if live_finish:
                 st.write(f"**Original live timing event** — {format_duration(live_finish.elapsed_seconds)} — preserved in split-event history")
+    reassignments = repository.list_result_reassignments(session.id)
+    if reassignments:
+        names = {item.id: item.display_name for item in repository.list_athletes(include_archived=True)}
+        with st.expander("Reassignment Audit History"):
+            for correction in reversed(reassignments):
+                st.write(f"**{correction.created_at:%b %d, %Y %H:%M} — Result reassigned**")
+                st.write(f"{names.get(correction.original_athlete_id, correction.original_athlete_id)} → {names.get(correction.destination_athlete_id, correction.destination_athlete_id)}")
+                st.caption(f"Reason: {correction.reason} • By: {correction.performed_by} • Source: {correction.source}")
+    offer = st.session_state.get("reassignment_dns_offer")
+    if offer and offer[0] == session.id:
+        st.info(f"{offer[2]} no longer has timing data for this race. Mark DNS?")
+        if st.button("Mark original athlete DNS", key=f"reassign_dns_{offer[1]}", use_container_width=True):
+            source_existing = canonical_result_events(repository.list_result_events(session.id)).get(offer[1])
+            repository.save_post_race_result(ResultEvent(
+                session.id, offer[1], "dns", "manual", note="DNS confirmed after result reassignment",
+                supersedes_id=source_existing.id if source_existing else None,
+                created_by=getattr(st.session_state.get("app_identity"), "user_id", ""),
+            ))
+            st.session_state.reassignment_dns_offer = None
+            st.success("Original athlete marked DNS in append-only result history.")
+            st.rerun()
 
 
 def render() -> None:
@@ -228,12 +286,15 @@ def render() -> None:
         events = repository.list_active_split_events(session.id)
         outcomes = repository.list_race_athlete_outcomes(session.id)
         result_events = repository.list_result_events(session.id)
+        result_reassignments = repository.list_result_reassignments(session.id)
     except RepositoryError as exc:
         st.error(f"Could not load split events: {exc}")
         return
 
     if checkpoint_result.source == "legacy_fallback":
         st.warning("This legacy race session has no persisted checkpoint snapshot, so results use the current generated race checkpoints as an isolated fallback.")
+    if session.status == "completed" and result_reassignments:
+        st.warning(f"Published results changed after finalization: {len(result_reassignments)} athlete reassignment correction(s) are recorded in the audit history.")
 
     rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events, outcomes=outcomes, result_events=result_events)
     if not rows:

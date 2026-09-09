@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 from dataclasses import replace
 
-from pages import athlete_profile, athletes, coach_analytics, coach_login, live_timing, meet_dashboard, meet_management, meet_setup, race_day_timer, results, school_branding, spectator, team_progress
+from pages import athlete_profile, athletes, coach_analytics, coach_login, live_timing, meet_dashboard, meet_management, meet_setup, race_day_roster, race_day_timer, results, school_branding, spectator, team_progress
 from split_tracker.auth import current_identity, sign_out
 from split_tracker.branding import apply_school_theme, load_school_profile, render_school_sidebar_brand
 from split_tracker.branding_service import load_cached_profile
@@ -174,6 +174,12 @@ RACE_DAY_TIMER_PAGE = st.Page(
     icon="⏱️",
     url_path="race-day-timer",
 )
+RACE_DAY_ROSTER_PAGE = st.Page(
+    race_day_roster.render,
+    title="Race Day Roster",
+    icon="👥",
+    url_path="race-day-roster",
+)
 
 st.session_state.page_registry = {
     "meet_dashboard": MEET_DASHBOARD_PAGE,
@@ -187,9 +193,10 @@ st.session_state.page_registry = {
     "coach_analytics": COACH_ANALYTICS_PAGE,
     "spectator": SPECTATOR_PAGE,
     "race_day_timer": RACE_DAY_TIMER_PAGE,
+    "race_day_roster": RACE_DAY_ROSTER_PAGE,
 }
 
-race_day_pages = [MEET_DASHBOARD_PAGE, RACE_DAY_TIMER_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE]
+race_day_pages = [MEET_DASHBOARD_PAGE, RACE_DAY_ROSTER_PAGE, RACE_DAY_TIMER_PAGE, LIVE_TIMING_PAGE, RESULTS_PAGE]
 settings_pages = []
 if identity and identity.is_admin:
     race_day_pages.insert(1, ATHLETES_PAGE)
