@@ -6,6 +6,7 @@ from datetime import date
 from statistics import fmean
 from typing import Iterable
 
+from split_tracker.models import Checkpoint
 from split_tracker.progression import AthleteResult, METERS_PER_MILE
 
 DISTANCE_TOLERANCE_METERS = .5
@@ -29,6 +30,107 @@ class PaceProfile:
     def change(self) -> float:
         """Positive is a fade; negative is a negative split."""
         return self.late_pace - self.early_pace
+
+
+@dataclass(frozen=True)
+class TeamPosition:
+    """KMHS-only ordinal ranks for one athlete in one canonical result projection."""
+
+    result: AthleteResult
+    checkpoint_ranks: tuple[int | None, ...]
+    finish_rank: int | None
+    net_change: int | None
+
+
+def _athlete_order(result: AthleteResult) -> tuple[str, str, str]:
+    parts = result.athlete_name.strip().split()
+    return ((parts[-1] if parts else "").casefold(),
+            (" ".join(parts[:-1]) if len(parts) > 1 else result.athlete_name).casefold(),
+            result.athlete_id)
+
+
+def _valid_elapsed(result: AthleteResult, checkpoint: Checkpoint) -> float | None:
+    split = next((item for item in result.splits
+                  if item.get("label") == checkpoint.label
+                  and abs(float(item.get("distance_meters", -1)) - checkpoint.distance_meters) < DISTANCE_TOLERANCE_METERS), None)
+    if split is None:
+        return None
+    value = split.get("cumulative")
+    return float(value) if value is not None and float(value) > 0 else None
+
+
+def compute_team_checkpoint_ranks(
+    results: Iterable[AthleteResult], checkpoints: Iterable[Checkpoint]
+) -> dict[str, tuple[int | None, ...]]:
+    """Rank valid canonical splits using stable ordinal KMHS-only ordering."""
+    rows, checkpoints = list(results), list(checkpoints)
+    ranks = {row.athlete_id: [None] * len(checkpoints) for row in rows}
+    for index, checkpoint in enumerate(checkpoints):
+        if checkpoint.is_finish:
+            continue
+        eligible = [(elapsed, row) for row in rows if (elapsed := _valid_elapsed(row, checkpoint)) is not None]
+        eligible.sort(key=lambda item: (item[0], *_athlete_order(item[1])))
+        for rank, (_, row) in enumerate(eligible, 1):
+            ranks[row.athlete_id][index] = rank
+    return {athlete_id: tuple(values) for athlete_id, values in ranks.items()}
+
+
+def compute_team_position_change(
+    results: Iterable[AthleteResult], checkpoints: Iterable[Checkpoint]
+) -> list[TeamPosition]:
+    """Build checkpoint, finish, and net KMHS position changes from canonical results."""
+    rows, checkpoints = list(results), list(checkpoints)
+    checkpoint_ranks = compute_team_checkpoint_ranks(rows, checkpoints)
+    finishers = sorted((row for row in rows if row.status == "Finished" and row.finish_seconds is not None
+                        and row.finish_seconds > 0), key=lambda row: (row.finish_seconds, *_athlete_order(row)))
+    finish_ranks = {row.athlete_id: rank for rank, row in enumerate(finishers, 1)}
+    positions = []
+    for row in rows:
+        ranks = checkpoint_ranks[row.athlete_id]
+        finish_rank = finish_ranks.get(row.athlete_id)
+        earliest = next((rank for rank in ranks if rank is not None), None)
+        change = earliest - finish_rank if earliest is not None and finish_rank is not None else None
+        positions.append(TeamPosition(row, ranks, finish_rank, change))
+    return sorted(positions, key=lambda item: (
+        item.finish_rank is None,
+        item.finish_rank if item.finish_rank is not None else next((rank for rank in reversed(item.checkpoint_ranks) if rank is not None), 10**9),
+        *_athlete_order(item.result),
+    ))
+
+
+def build_team_position_insights(positions: Iterable[TeamPosition], checkpoints: Iterable[Checkpoint]) -> list[str]:
+    """Describe supported KMHS-relative movements; omit claims without enough data."""
+    rows, checkpoints = list(positions), list(checkpoints)
+    messages: list[str] = []
+    positive_rows = sorted((row for row in rows if row.net_change is not None and row.net_change > 0),
+                           key=lambda row: (-row.net_change, _athlete_order(row.result)))
+    positive = positive_rows[0] if positive_rows else None
+    negative = min((row for row in rows if row.net_change is not None and row.net_change < 0),
+                   key=lambda row: (row.net_change, _athlete_order(row.result)), default=None)
+    if positive:
+        start = positive.finish_rank + positive.net_change
+        messages.append(f"Biggest mover: {positive.result.athlete_name} moved from {start} to {positive.finish_rank} among KMHS runners (+{positive.net_change}).")
+    if negative:
+        start = negative.finish_rank + negative.net_change
+        messages.append(f"Largest drop: {negative.result.athlete_name} moved from {start} to {negative.finish_rank} among KMHS runners ({negative.net_change}).")
+    final_checkpoint = next((index for index in range(len(checkpoints)-1, -1, -1)
+                             if not checkpoints[index].is_finish), None)
+    late = ([(row.checkpoint_ranks[final_checkpoint], row) for row in rows
+             if row.checkpoint_ranks[final_checkpoint] is not None and row.finish_rank is not None]
+            if final_checkpoint is not None else [])
+    late_moves = [(prior-row.finish_rank, prior, row) for prior, row in late if prior-row.finish_rank > 0]
+    if late_moves:
+        gain, prior, row = sorted(late_moves, key=lambda item: (-item[0], _athlete_order(item[2].result)))[0]
+        messages.append(f"Strongest late move: {row.result.athlete_name} moved from {prior} to {row.finish_rank} among KMHS runners between {checkpoints[final_checkpoint].label} and Finish (+{gain}).")
+    stable = []
+    for row in rows:
+        values = [rank for rank in (*row.checkpoint_ranks, row.finish_rank) if rank is not None]
+        if len(values) >= 2:
+            stable.append((max(values)-min(values), row))
+    if stable:
+        spread, row = min(stable, key=lambda item: (item[0], _athlete_order(item[1].result)))
+        messages.append(f"Most stable: {row.result.athlete_name}'s KMHS rank varied by {spread} position{'s' if spread != 1 else ''}.")
+    return messages
 
 
 def same_distance(left: float, right: float) -> bool:

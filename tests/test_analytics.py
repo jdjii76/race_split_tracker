@@ -2,7 +2,8 @@ from datetime import date
 
 from split_tracker.analytics import (calculate_pace_profile, calculate_personal_records,
     calculate_segment_paces, calculate_team_pace_profile, calculate_team_spread,
-    calculate_team_top_n, calculate_top5_gaps, compare_team_races, find_previous_comparable_race)
+    calculate_team_top_n, calculate_top5_gaps, build_team_position_insights,
+    compare_team_races, compute_team_position_change, find_previous_comparable_race)
 from split_tracker.models import Athlete, Checkpoint
 from split_tracker.progression import AthleteResult, get_completed_results
 from split_tracker.repository import InMemoryRaceRepository, Meet, Race, RaceSession, SplitEvent
@@ -18,6 +19,60 @@ def splits(early=360, late=350, middle=370):
     return ({"distance_meters":1609.344,"cumulative":early,"segment":early},
             {"distance_meters":3218.688,"cumulative":early+middle,"segment":middle},
             {"distance_meters":5000,"cumulative":early+middle+late,"segment":late})
+
+
+POSITION_CHECKPOINTS = [Checkpoint(1, "Mile 1", 1609.344), Checkpoint(2, "Mile 2", 3218.688),
+                        Checkpoint(3, "Finish", 5000, True)]
+
+
+def position_result(name, first, second, finish, *, status="Finished", athlete=None):
+    values = (("Mile 1", 1609.344, first), ("Mile 2", 3218.688, second), ("Finish", 5000, finish))
+    split_rows = tuple({"label": label, "distance_meters": distance, "cumulative": value, "segment": value}
+                       for label, distance, value in values if value is not None)
+    return AthleteResult(
+        athlete or name.casefold().replace(" ", "-"), "s8", "race", "Race race", "Meet", date(2026, 8, 8),
+        5000, status, finish, 1, None, "", split_rows, name, "Varsity", "B", "BV", False)
+
+
+def test_team_position_normal_ranking_moves_drops_and_dynamic_columns():
+    rows = [position_result("Runner Six", 600, 1100, 1500), position_result("Runner Three", 500, 1000, 1600),
+            position_result("Runner One", 400, 900, 1400)]
+    positions = {row.result.athlete_name: row for row in compute_team_position_change(rows, POSITION_CHECKPOINTS)}
+    assert positions["Runner Six"].checkpoint_ranks == (3, 3, None)
+    assert positions["Runner Six"].finish_rank == 2 and positions["Runner Six"].net_change == 1
+    assert positions["Runner Three"].finish_rank == 3 and positions["Runner Three"].net_change == -1
+    assert len(positions["Runner One"].checkpoint_ranks) == len(POSITION_CHECKPOINTS)
+
+
+def test_team_position_six_to_three_and_two_to_five():
+    starts = [100, 200, 300, 400, 500, 600]
+    finishes = [1000, 1500, 1600, 1100, 1400, 1300]
+    rows = [position_result(f"Runner {i}", starts[i-1], None, finishes[i-1]) for i in range(1, 7)]
+    by_name = {item.result.athlete_name: item for item in compute_team_position_change(rows, POSITION_CHECKPOINTS)}
+    assert by_name["Runner 6"].finish_rank == 3 and by_name["Runner 6"].net_change == 3
+    assert by_name["Runner 2"].finish_rank == 5 and by_name["Runner 2"].net_change == -3
+
+
+def test_team_position_missing_dnf_dns_and_equal_times_are_deterministic():
+    rows = [position_result("Zoe Alpha", 400, None, 1000), position_result("Amy Beta", 400, 850, 1000),
+            position_result("Dnf Runner", 450, 900, None, status="DNF"),
+            position_result("Dns Runner", None, None, None, status="DNS")]
+    positions = compute_team_position_change(rows, POSITION_CHECKPOINTS)
+    by_name = {item.result.athlete_name: item for item in positions}
+    assert by_name["Zoe Alpha"].checkpoint_ranks == (1, None, None)
+    assert by_name["Amy Beta"].checkpoint_ranks[0] == 2  # last name is the equal-time tie-breaker
+    assert by_name["Zoe Alpha"].finish_rank == 1 and by_name["Amy Beta"].finish_rank == 2
+    assert by_name["Dnf Runner"].finish_rank is None and by_name["Dns Runner"].finish_rank is None
+
+
+def test_team_position_insights_insufficient_and_display_filter_keeps_full_ranks():
+    assert build_team_position_insights(compute_team_position_change(
+        [position_result("Only Runner", 400, None, None, status="DNF")], POSITION_CHECKPOINTS),
+        POSITION_CHECKPOINTS) == []
+    full = compute_team_position_change([position_result("Boy Runner", 400, 800, 1200),
+                                         position_result("Girl Runner", 410, 810, 1210)], POSITION_CHECKPOINTS)
+    displayed = [item for item in full if item.result.athlete_name == "Girl Runner"]
+    assert displayed[0].checkpoint_ranks[0] == 2 and displayed[0].finish_rank == 2
 
 
 def test_personal_records_same_distance_first_non_pr_and_dnf():
@@ -95,4 +150,8 @@ def test_completed_projection_uses_replacement_and_preserves_audit():
     repo.update_race_session(RaceSession(**{**session.__dict__,"status":"completed"}))
     projected=get_completed_results(repo,"runner")
     assert projected[0].finish_seconds==750
+    corrected_positions = compute_team_position_change(projected, [Checkpoint(1, "Mile 1", 1609.344),
+                                                                    Checkpoint(2, "Finish", 3200, True)])
+    assert corrected_positions[0].result.athlete_id == "runner"
+    assert corrected_positions[0].finish_rank == 1
     assert {original.id,replacement.id}.issubset({event.id for event in repo.list_all_split_events(session.id)})
