@@ -181,6 +181,20 @@ class ResultEvent:
 
 
 @dataclass(frozen=True)
+class ResultReassignment:
+    """Append-only audit record that projects one session performance to a new athlete."""
+
+    race_session_id: str
+    original_athlete_id: str
+    destination_athlete_id: str
+    reason: str
+    performed_by: str
+    id: str = field(default_factory=lambda: str(uuid4()))
+    source: str = "manage_results"
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
 class SchoolSponsor:
     school_profile_id: str
     name: str
@@ -321,6 +335,8 @@ class RaceRepository(Protocol):
     def clear_race_athlete_dnf(self, race_session_id: str, athlete_id: str) -> bool: ...
     def save_post_race_result(self, event: ResultEvent) -> ResultEvent: ...
     def list_result_events(self, race_session_id: str, athlete_id: str | None = None) -> list[ResultEvent]: ...
+    def list_result_reassignments(self, race_session_id: str) -> list[ResultReassignment]: ...
+    def reassign_race_result(self, reassignment: ResultReassignment) -> ResultReassignment: ...
     def update_race_session(self, session: RaceSession) -> RaceSession: ...
     def list_race_sessions_for_race(self, race_id: str) -> list[RaceSession]: ...
     def list_race_sessions_for_races(self, race_ids: list[str]) -> list[RaceSession]: ...
@@ -360,6 +376,7 @@ class InMemoryRaceRepository:
         self.timer_station_heartbeats: dict[tuple[str, str], datetime] = {}
         self.race_athlete_outcomes: dict[tuple[str, str], RaceAthleteOutcome] = {}
         self.result_events: dict[str, ResultEvent] = {}
+        self.result_reassignments: dict[str, ResultReassignment] = {}
         self.race_athletes: dict[tuple[str, str], Athlete] = {}
         self.school_profile: SchoolProfile | None = None
         self.athletes: dict[str, PermanentAthlete] = {}
@@ -902,10 +919,12 @@ class InMemoryRaceRepository:
             return saved
 
     def list_race_athlete_outcomes(self, race_session_id: str) -> list[RaceAthleteOutcome]:
-        return sorted(
+        outcomes = sorted(
             [item for (session_id, _), item in self.race_athlete_outcomes.items() if session_id == race_session_id],
             key=lambda item: (item.recorded_at, item.athlete_id),
         )
+        reassignments = self.list_result_reassignments(race_session_id)
+        return [replace(item, athlete_id=resolve_reassigned_athlete_at(item.athlete_id, item.recorded_at, reassignments)) for item in outcomes]
 
     def set_race_athlete_dnf(self, race_session_id: str, athlete_id: str, recorded_by: str) -> RaceAthleteOutcome:
         with self._race_session_lock:
@@ -929,11 +948,42 @@ class InMemoryRaceRepository:
             return self.race_athlete_outcomes.pop((race_session_id, athlete_id), None) is not None
 
     def list_result_events(self, race_session_id: str, athlete_id: str | None = None) -> list[ResultEvent]:
-        return sorted(
-            (event for event in self.result_events.values()
-             if event.race_session_id == race_session_id and (athlete_id is None or event.athlete_id == athlete_id)),
-            key=lambda event: (event.created_at, event.id),
-        )
+        reassignments = self.list_result_reassignments(race_session_id)
+        events = [replace(event, athlete_id=resolve_reassigned_athlete_at(event.athlete_id, event.created_at, reassignments))
+                  for event in self.result_events.values() if event.race_session_id == race_session_id]
+        return sorted((event for event in events if athlete_id is None or event.athlete_id == athlete_id),
+                      key=lambda event: (event.created_at, event.id))
+
+    def list_result_reassignments(self, race_session_id: str) -> list[ResultReassignment]:
+        return sorted((item for item in self.result_reassignments.values() if item.race_session_id == race_session_id),
+                      key=lambda item: (item.created_at, item.id))
+
+    def reassign_race_result(self, reassignment: ResultReassignment) -> ResultReassignment:
+        with self._race_session_lock:
+            session = self.get_race_session(reassignment.race_session_id)
+            if session is None or session.status not in {"awaiting_review", "completed"}:
+                raise RepositoryError("Results can only be reassigned after race timing ends.")
+            if not reassignment.reason.strip():
+                raise RepositoryError("A correction reason is required.")
+            permanent = self.get_athlete(reassignment.destination_athlete_id)
+            if permanent is None or permanent.status != "active":
+                raise RepositoryError("Select an active athlete from the permanent roster.")
+            source = reassignment.original_athlete_id
+            destination = reassignment.destination_athlete_id
+            if source == destination:
+                raise RepositoryError("Choose a different destination athlete.")
+            active = self.list_active_split_events(session.id)
+            results = canonical_result_events(self.list_result_events(session.id))
+            outcomes = self.list_race_athlete_outcomes(session.id)
+            if any(event.athlete_id == destination for event in active) or destination in results or any(item.athlete_id == destination for item in outcomes):
+                raise RepositoryError("The destination athlete already has timing or result data in this race. Resolve that conflict in Manage Results first.")
+            if not any(event.athlete_id == source for event in active) and source not in results and not any(item.athlete_id == source for item in outcomes):
+                raise RepositoryError("The source athlete has no performance to reassign.")
+            if destination not in self.list_race_athlete_ids(session.race_id):
+                self.replace_race_athletes_from_roster(session.race_id, [*self.list_race_athlete_ids(session.race_id), destination])
+            saved = replace(reassignment, reason=reassignment.reason.strip())
+            self.result_reassignments[saved.id] = saved
+            return saved
 
     def save_post_race_result(self, event: ResultEvent) -> ResultEvent:
         """Append a result without changing the finalized race lifecycle."""
@@ -1080,7 +1130,9 @@ class InMemoryRaceRepository:
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         events = self.list_all_split_events(race_session_id)
         inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
-        return [event for event in events if event.event_type not in {"split_voided", "pack_conflict"} and not event.is_deleted and event.id not in inactive]
+        active = [event for event in events if event.event_type not in {"split_voided", "pack_conflict"} and not event.is_deleted and event.id not in inactive]
+        reassignments = self.list_result_reassignments(race_session_id)
+        return [replace(event, athlete_id=resolve_reassigned_athlete_at(event.athlete_id, event.recorded_at, reassignments)) for event in active]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         return sorted(
@@ -1272,16 +1324,19 @@ class InMemoryRaceRepository:
             self.race_athlete_outcomes.pop(key)
         for event_id in [event.id for event in self.result_events.values() if event.race_session_id == race_session_id]:
             self.result_events.pop(event_id)
+        for correction_id in [item.id for item in self.result_reassignments.values() if item.race_session_id == race_session_id]:
+            self.result_reassignments.pop(correction_id)
         self.race_sessions.pop(race_session_id)
         return True
 
     def delete_all_timing_data(self) -> bool:
-        had_data = bool(self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes or self.result_events)
+        had_data = bool(self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes or self.result_events or self.result_reassignments)
         self.split_events.clear()
         self.race_session_checkpoints.clear()
         self.race_sessions.clear()
         self.race_athlete_outcomes.clear()
         self.result_events.clear()
+        self.result_reassignments.clear()
         return had_data
 
     def delete_all_race_rosters(self) -> bool:
@@ -1290,7 +1345,7 @@ class InMemoryRaceRepository:
         return had_data
 
     def delete_all_application_test_data(self) -> bool:
-        had_data = bool(self.meets or self.races or self.athletes or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes or self.result_events)
+        had_data = bool(self.meets or self.races or self.athletes or self.race_athletes or self.race_sessions or self.split_events or self.race_session_checkpoints or self.race_athlete_outcomes or self.result_events or self.result_reassignments)
         self.split_events.clear()
         self.race_session_checkpoints.clear()
         self.race_athlete_outcomes.clear()
@@ -1603,6 +1658,44 @@ def _result_event_from_row(row: dict[str, Any]) -> ResultEvent:
         supersedes_id=str(row["supersedes_id"]) if row.get("supersedes_id") else None,
         created_by=str(row.get("created_by") or ""), created_at=_parse_datetime(row.get("created_at")) or utc_now(),
     )
+
+
+def _result_reassignment_from_row(row: dict[str, Any]) -> ResultReassignment:
+    return ResultReassignment(
+        id=str(row["id"]), race_session_id=str(row["race_session_id"]),
+        original_athlete_id=str(row["original_athlete_id"]),
+        destination_athlete_id=str(row["destination_athlete_id"]),
+        reason=str(row.get("reason") or ""), performed_by=str(row.get("performed_by") or ""),
+        source=str(row.get("source") or "manage_results"),
+        created_at=_parse_datetime(row.get("created_at")) or utc_now(),
+    )
+
+
+def reassignment_map(reassignments: list[ResultReassignment]) -> dict[str, str]:
+    """Build the ordered session-only projection map from append-only audit rows."""
+    mapping: dict[str, str] = {}
+    for item in sorted(reassignments, key=lambda value: (value.created_at, value.id)):
+        mapping[item.original_athlete_id] = item.destination_athlete_id
+    return mapping
+
+
+def resolve_reassigned_athlete(athlete_id: str, mapping: dict[str, str]) -> str:
+    """Resolve chained corrections defensively without allowing a cycle to loop."""
+    seen: set[str] = set()
+    while athlete_id in mapping and athlete_id not in seen:
+        seen.add(athlete_id)
+        athlete_id = mapping[athlete_id]
+    return athlete_id
+
+
+def resolve_reassigned_athlete_at(
+    athlete_id: str, occurred_at: datetime, reassignments: list[ResultReassignment]
+) -> str:
+    """Project only records that existed when each append-only correction occurred."""
+    for item in sorted(reassignments, key=lambda value: (value.created_at, value.id)):
+        if occurred_at <= item.created_at and athlete_id == item.original_athlete_id:
+            athlete_id = item.destination_athlete_id
+    return athlete_id
 
 
 def canonical_result_events(events: list[ResultEvent]) -> dict[str, ResultEvent]:
@@ -2447,7 +2540,9 @@ class SupabaseRaceRepository:
             self.client.table("race_session_athlete_outcomes").select("*").eq("race_session_id", race_session_id).order("recorded_at", desc=False),
             "Could not load race athlete outcomes.",
         )
-        return [_race_athlete_outcome_from_row(row) for row in getattr(result, "data", [])]
+        reassignments = self.list_result_reassignments(race_session_id)
+        return [replace(item, athlete_id=resolve_reassigned_athlete_at(item.athlete_id, item.recorded_at, reassignments))
+                for item in (_race_athlete_outcome_from_row(row) for row in getattr(result, "data", []))]
 
     def set_race_athlete_dnf(self, race_session_id: str, athlete_id: str, recorded_by: str) -> RaceAthleteOutcome:
         try:
@@ -2476,13 +2571,39 @@ class SupabaseRaceRepository:
 
     def list_result_events(self, race_session_id: str, athlete_id: str | None = None) -> list[ResultEvent]:
         query = self.client.table("result_events").select("*").eq("race_session_id", race_session_id)
-        if athlete_id is not None:
-            query = query.eq("athlete_id", athlete_id)
         try:
             result = query.order("created_at", desc=False).execute()
         except Exception:
             result = self._execute(self.client.rpc("get_public_result_events", {"p_session_id": race_session_id}), "Could not load current results.")
-        return [_result_event_from_row(row) for row in (getattr(result, "data", []) or [])]
+        reassignments = self.list_result_reassignments(race_session_id)
+        parsed = [_result_event_from_row(row) for row in (getattr(result, "data", []) or [])]
+        events = [replace(event, athlete_id=resolve_reassigned_athlete_at(event.athlete_id, event.created_at, reassignments))
+                  for event in parsed]
+        return [event for event in events if athlete_id is None or event.athlete_id == athlete_id]
+
+    def list_result_reassignments(self, race_session_id: str) -> list[ResultReassignment]:
+        result = self._execute(
+            self.client.table("result_reassignments").select("*").eq("race_session_id", race_session_id).order("created_at", desc=False),
+            "Could not load result reassignment history.",
+        )
+        return [_result_reassignment_from_row(row) for row in (getattr(result, "data", []) or [])]
+
+    def reassign_race_result(self, reassignment: ResultReassignment) -> ResultReassignment:
+        try:
+            result = self.client.rpc("reassign_race_result", {
+                "p_id": reassignment.id, "p_session_id": reassignment.race_session_id,
+                "p_original_athlete_id": reassignment.original_athlete_id,
+                "p_destination_athlete_id": reassignment.destination_athlete_id,
+                "p_reason": reassignment.reason, "p_source": reassignment.source,
+            }).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError(str(exc)) from exc
+        rows = getattr(result, "data", []) or []
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row:
+            raise RepositoryError("Could not reassign this race result.")
+        return _result_reassignment_from_row(row)
 
     def save_post_race_result(self, event: ResultEvent) -> ResultEvent:
         _validate_result_event(event)
@@ -2584,7 +2705,9 @@ class SupabaseRaceRepository:
     def list_active_split_events(self, race_session_id: str) -> list[SplitEvent]:
         events = self.list_all_split_events(race_session_id)
         inactive = {event.target_event_id for event in events if event.event_type == "split_voided" and event.target_event_id}
-        return [event for event in events if event.event_type not in {"split_voided", "pack_conflict"} and not event.is_deleted and event.id not in inactive]
+        active = [event for event in events if event.event_type not in {"split_voided", "pack_conflict"} and not event.is_deleted and event.id not in inactive]
+        reassignments = self.list_result_reassignments(race_session_id)
+        return [replace(event, athlete_id=resolve_reassigned_athlete_at(event.athlete_id, event.recorded_at, reassignments)) for event in active]
 
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]:
         result = self._execute(self.client.table("split_events").select("*").eq("race_session_id", race_session_id).order("event_order", desc=False), "Could not list split events.")

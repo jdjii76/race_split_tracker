@@ -34,6 +34,7 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("race_day_roster_race_id", None)
     session_state.setdefault("race_day_roster_session_id", None)
     session_state.setdefault("race_day_move_athlete_id", None)
+    session_state.setdefault("reassignment_dns_offer", None)
     session_state.setdefault("last_sync_at", None)
     session_state.setdefault("storage_connected", False)
     session_state.setdefault("sync_error", "")
