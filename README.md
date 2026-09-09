@@ -1,5 +1,15 @@
 # Race Split Tracker
 
+## Race Day roster changes
+
+Coaches and administrators can use **Edit Roster** on any open Race Day card to
+search the permanent roster, add an athlete, remove an athlete with no recorded
+race activity, or move that same athlete record to another open race in the meet.
+Running races accept safe late additions without backfilling splits or restarting
+timing. Once an athlete has timing or result history, participation changes must be
+resolved through **Manage Results**. Timer-only and spectator accounts cannot open
+the roster editor.
+
 ## Race Day Timer Mode
 
 Provision the shared volunteer account with the `timer` role after applying

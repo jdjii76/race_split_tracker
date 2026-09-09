@@ -57,6 +57,14 @@ def _race_card(meet, summary: RaceDashboardSummary, *, emphasized: bool = False)
             use_container_width=True,
         ):
             _open_race(meet, summary)
+        if st.button(
+            "Edit Roster",
+            key=f"race_day_roster:{summary.race.id}",
+            use_container_width=True,
+        ):
+            st.session_state.race_day_roster_race_id = summary.race.id
+            st.session_state.race_day_roster_session_id = summary.session.id if summary.session else None
+            st.switch_page(st.session_state.page_registry["race_day_roster"])
         if summary.category == "completed" and st.button(
             "Coach Analytics", key=f"analytics:{summary.race.id}:{summary.session.id}", use_container_width=True
         ):
