@@ -6,10 +6,13 @@ import streamlit as st
 
 from split_tracker.analytics import (calculate_pace_profile, calculate_personal_records,
     calculate_team_top_n, calculate_team_spread, calculate_top5_gaps, calculate_team_pace_profile,
-    compare_team_races, find_previous_comparable_race, race_metrics)
+    build_team_position_insights, compare_team_races, compute_team_position_change,
+    find_previous_comparable_race, race_metrics)
 from split_tracker.branding import render_school_header
 from split_tracker.formatting import format_distance, format_duration, format_pace
+from split_tracker.models import Checkpoint
 from split_tracker.progression import get_completed_results
+from split_tracker.session_checkpoints import snapshots_to_checkpoints
 
 
 def _signed_duration(value):
@@ -56,6 +59,34 @@ def render():
     highlights[3].write(f"**First Finisher**\n\n{finishers[0].athlete_name} — {format_duration(finishers[0].finish_seconds)}" if finishers else "**First Finisher**\n\n—")
     pace=calculate_team_pace_profile(finishers)
     st.caption(f"Average early pace {format_pace(pace['early'])} • average late pace {format_pace(pace['late'])} • change {_signed_duration(pace['change'])}/mi • valid athletes {pace['valid']} of {pace['total']}")
+    st.subheader("Team Position Change")
+    st.caption("Ranks are relative to KMHS runners only and do not represent overall race placement.")
+    checkpoints = snapshots_to_checkpoints(repo.list_race_session_checkpoints(session.id))
+    if not checkpoints:
+        # Legacy completed sessions have no immutable configuration; canonical split labels
+        # are the safest available display definition and never cause interpolation.
+        split_definitions = {(str(split["label"]), float(split["distance_meters"]))
+                             for result in current for split in result.splits}
+        checkpoints = [Checkpoint(index, label, distance, distance == race.distance_meters)
+                       for index, (label, distance) in enumerate(sorted(split_definitions, key=lambda item: item[1]), 1)]
+    positions = compute_team_position_change(current, checkpoints)
+    filter_values = sorted({value for result in current for value in (result.gender, result.classification) if value})
+    display_filter = st.selectbox("Display athletes", ["All", *filter_values], key="team_position_filter") if filter_values else "All"
+    if display_filter != "All":
+        st.caption("This filter affects displayed athletes only; KMHS rank calculations still use the full eligible KMHS race roster.")
+    displayed = [item for item in positions if display_filter == "All" or display_filter in
+                 {item.result.gender, item.result.classification}]
+    for insight in build_team_position_insights(displayed, checkpoints):
+        st.write(insight)
+    position_table = []
+    for item in displayed:
+        row = {"Athlete": item.result.athlete_name}
+        row.update({checkpoint.label: item.checkpoint_ranks[index] or "—" for index, checkpoint in enumerate(checkpoints)
+                    if not checkpoint.is_finish})
+        row["Finish"] = item.finish_rank or "—"
+        row["Net Change"] = (f"+{item.net_change}" if item.net_change > 0 else str(item.net_change)) if item.net_change is not None else "—"
+        position_table.append(row)
+    st.dataframe(pd.DataFrame(position_table), hide_index=True, use_container_width=True)
     st.subheader("Varsity Top 7")
     st.caption("Eligibility is the selected race roster; Swing athletes retain their classification while ranking in the race they ran.")
     st.dataframe([{"Place":r.place or "—","Athlete":r.athlete_name,"Finish":format_duration(r.finish_seconds),"Team Rank":i} for i,r in enumerate(calculate_team_top_n(current),1)],hide_index=True,use_container_width=True)
