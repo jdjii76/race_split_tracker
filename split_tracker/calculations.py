@@ -2,8 +2,35 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
+from typing import TypeVar
+
+
+CheckpointKey = TypeVar("CheckpointKey")
+
+
+def derive_segment_splits(
+    cumulative_splits: Mapping[CheckpointKey, float | None],
+    checkpoint_order: Iterable[CheckpointKey],
+) -> dict[CheckpointKey, float | None]:
+    """Derive individual segment durations from canonical elapsed times.
+
+    A segment is available only when its own cumulative time and the immediately
+    preceding checkpoint's cumulative time are available.  This deliberately
+    avoids presenting a multi-segment interval as one checkpoint's split after
+    a missing checkpoint.  Invalid or non-increasing canonical values are left
+    untouched and produce an unavailable display value.
+    """
+    segments: dict[CheckpointKey, float | None] = {}
+    previous: float | None = 0.0
+    for key in checkpoint_order:
+        raw = cumulative_splits.get(key)
+        current = float(raw) if raw is not None else None
+        segment = current - previous if current is not None and previous is not None else None
+        segments[key] = segment if segment is not None and segment > 0 else None
+        previous = current
+    return segments
 
 from split_tracker.formatting import METERS_PER_MILE, format_distance, parse_distance_to_meters
 from split_tracker.models import Athlete, Checkpoint, SplitRecord

@@ -329,7 +329,8 @@ def render() -> None:
             _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events)
 
     st.subheader("Final Results" if summary.status == "completed" else "Provisional Results")
-    final_columns = [column for column in ("Place", "Athlete", "Final Time", "Average Pace", "Split Times", "Status")]
+    st.caption("Split shows the time for that segment. Elapsed shows total race time at the checkpoint.")
+    final_columns = [column for column in ("Place", "Athlete", "Final Time", "Average Pace", "Segment Splits", "Status")]
     st.dataframe(results_to_frame(rows)[final_columns], hide_index=True, use_container_width=True)
     scope = st.radio("Result scope", ["Overall", "Gender", "Team", "Group/category", "Status"], horizontal=True)
     gender = team = category = status = None

@@ -13,6 +13,7 @@ from split_tracker.formatting import format_distance, format_duration, format_pa
 from split_tracker.models import Checkpoint
 from split_tracker.progression import get_completed_results
 from split_tracker.session_checkpoints import snapshots_to_checkpoints
+from split_tracker.calculations import derive_segment_splits
 
 
 def _signed_duration(value):
@@ -105,6 +106,7 @@ def render():
             rows.append({"Metric":labels[item['metric']],"Previous":formatter(item['previous']),"Current":formatter(item['current']),"Change":_signed_duration(item['change']) if not count else (_signed_duration(item['change']) if item['change'] is not None else '—')})
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
     st.subheader("Athlete Analysis")
+    st.caption("Split shows the time for that segment. Elapsed shows total race time at the checkpoint.")
     record_by_id={record.result.athlete_id:record for record in records}; previous_by_id={r.athlete_id:r for r in (previous or [])}
     table=[]
     for rank,result in enumerate(finishers,1):
@@ -113,3 +115,12 @@ def render():
     for result in current:
         if result not in finishers: table.append({"Team Rank":"—","Athlete":result.athlete_name,"Classification":result.classification or "—","Finish":"—","Average Pace":"—","Previous Best":"—","PR":"No","PR Improvement":"—","Early Pace":"—","Late Pace":"—","Pace Change":"—","Previous Race":"—","Change vs Previous":"—","Status":result.status})
     st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
+    detail = st.selectbox("Athlete split detail", current, format_func=lambda item: item.athlete_name)
+    cumulative = {str(split["label"]): split.get("cumulative") for split in detail.splits}
+    ordered_labels = [checkpoint.label for checkpoint in checkpoints]
+    segments = derive_segment_splits(cumulative, ordered_labels)
+    st.dataframe(pd.DataFrame([
+        {"Checkpoint": label, "Split": format_duration(segments[label]),
+         "Elapsed": format_duration(cumulative.get(label))}
+        for label in ordered_labels
+    ]), hide_index=True, use_container_width=True)

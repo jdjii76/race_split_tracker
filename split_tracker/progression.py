@@ -8,6 +8,7 @@ from statistics import fmean, pstdev
 from split_tracker.models import Checkpoint
 from split_tracker.results import reconstruct_results
 from split_tracker.repository import canonical_result_events
+from split_tracker.calculations import derive_segment_splits
 
 METERS_PER_MILE = 1609.344
 EVEN_RELATIVE_SPREAD = .03
@@ -102,15 +103,23 @@ def get_completed_results(repository, athlete_id=None):
              result_events=repository.list_result_events(session.id))
         for row in rows:
             if athlete_id and row["Athlete ID"] != athlete_id: continue
-            athlete_splits=[]; previous=0.; managed_result=managed.get(str(row["Athlete ID"]))
+            athlete_splits=[]
+            # Reconstructed rows already reflect official/manual corrections,
+            # invalidations, and result reassignments. Use their numeric source
+            # values below rather than deriving analytics from raw events.
+            managed_result=managed.get(str(row["Athlete ID"]))
+            numeric_cumulative = {}
             for cp in cps:
                 event=next((e for e in events if e.athlete_id==row["Athlete ID"] and e.checkpoint_number==cp.number),None)
                 elapsed=(managed_result.splits.get(cp.number) if managed_result else None)
                 if managed_result and cp.is_finish and managed_result.finish_seconds is not None: elapsed=managed_result.finish_seconds
                 if elapsed is None and event: elapsed=event.elapsed_seconds
-                if elapsed is not None:
-                    athlete_splits.append({"label":cp.label,"distance_meters":cp.distance_meters,"cumulative":elapsed,"segment":elapsed-previous})
-                    previous=elapsed
+                numeric_cumulative[cp.number] = elapsed
+            segments = derive_segment_splits(numeric_cumulative, (cp.number for cp in cps))
+            for cp in cps:
+                elapsed = numeric_cumulative[cp.number]
+                athlete_splits.append({"label":cp.label,"distance_meters":cp.distance_meters,
+                                       "cumulative":elapsed,"segment":segments[cp.number]})
             course=courses.get(race.course_id)
             output.append(AthleteResult(str(row["Athlete ID"]),session.id,race.id,race.name,meet.name,meet.meet_date,race.distance_meters,str(row["Status"]),row["Finish Time Seconds"],row["Overall Place"],race.course_id,course.course_name if course else "",tuple(athlete_splits),str(row["Athlete"]),str(row.get("Category/Group") or row.get("Team") or ""),str(row.get("Gender") or ""),race.race_category,race.name.lstrip().upper().startswith("TEST")))
     return sorted(output,key=lambda r:(r.race_date or date.min,r.session_id),reverse=True)
