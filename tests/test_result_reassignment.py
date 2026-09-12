@@ -14,6 +14,7 @@ from split_tracker.repository import (
 )
 from split_tracker.result_reassignment import preview_reassignment, reassign_result
 from split_tracker.results import reconstruct_results
+from split_tracker.split_invalidation import remove_split_from_results
 
 
 COACH = AppIdentity("coach-user", "coach@example.com", "coach")
@@ -92,6 +93,8 @@ def test_complete_reassignment_preserves_records_and_projects_destination():
     )
     by_id = {row["Athlete ID"]: row for row in rows}
     assert by_id[michael.id]["Finish Time Seconds"] == 1182.3
+    assert by_id[michael.id]["Mile 1 Split"] == "6:12.40"
+    assert by_id[michael.id]["Finish Split"] == "13:29.90"
     assert by_id[john.id]["Finish Time Seconds"] is None
 
 
@@ -111,6 +114,19 @@ def test_reassignment_is_session_specific_and_progression_uses_destination():
     assert [item.session_id for item in michael_history] == [session.id]
     assert other.id in [item.session_id for item in john_history]
     assert session.id not in [item.session_id for item in john_history if item.finish_seconds is not None]
+
+
+def test_reassigned_destination_can_remove_canonical_checkpoint_split():
+    repo, _, _, session, john, michael, *_ = performance_fixture()
+    reassign_result(repo, session.id, john.id, michael.id, "Substitution", ADMIN)
+    projected = repo.list_active_split_events(session.id)
+    mile_one = next(event for event in projected if event.checkpoint_number == 1)
+
+    remove_split_from_results(repo, mile_one, "Unofficial reassigned split", ADMIN)
+
+    assert all(event.checkpoint_number != 1 for event in repo.list_active_split_events(session.id))
+    original = next(event for event in repo.list_all_split_events(session.id) if event.id == mile_one.id)
+    assert original.athlete_id == john.id and not original.is_deleted
 
 
 def test_destination_conflict_is_rejected_without_partial_changes():
