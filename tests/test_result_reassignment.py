@@ -92,6 +92,8 @@ def test_complete_reassignment_preserves_records_and_projects_destination():
     )
     by_id = {row["Athlete ID"]: row for row in rows}
     assert by_id[michael.id]["Finish Time Seconds"] == 1182.3
+    assert by_id[michael.id]["Mile 1 Split"] == "6:12.40"
+    assert by_id[michael.id]["Finish Split"] == "13:29.90"
     assert by_id[john.id]["Finish Time Seconds"] is None
 
 
