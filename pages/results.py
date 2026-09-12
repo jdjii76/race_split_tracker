@@ -13,6 +13,7 @@ from split_tracker.result_reassignment import DEFAULT_REASON, preview_reassignme
 from split_tracker.results import build_team_summary, filter_results, normalize_manual_checkpoint_times, printable_results_html, reconstruct_results, results_to_frame, session_label, summarize_sessions
 from split_tracker.spectator import spectator_url
 from split_tracker.session_checkpoints import get_session_checkpoints
+from split_tracker.split_invalidation import remove_split_from_results
 from split_tracker.state import cleanup_after_session_delete
 
 
@@ -68,7 +69,7 @@ def _filter_options(rows: list[dict[str, object]], key: str) -> list[str]:
     return ["All", *values]
 
 
-def _manage_results(repository, session, athletes, checkpoints, rows, result_events, split_events) -> None:
+def _manage_results(repository, session, athletes, checkpoints, rows, result_events, split_events, all_split_events) -> None:
     """Render the narrow post-timing result editor."""
     st.subheader("Manage Results")
     st.caption("Add a missed result or append a correction. Earlier values remain in Result History.")
@@ -82,6 +83,52 @@ def _manage_results(repository, session, athletes, checkpoints, rows, result_eve
     existing = current.get(athlete.athlete_id)
     row = by_id[athlete.athlete_id]
     st.markdown(f"**Recorded Result:** {row['Status']} — {row['Final Time']} ({row['Source']})")
+    checkpoint_by_number = {checkpoint.number: checkpoint for checkpoint in checkpoints}
+    removable_events = [event for event in split_events
+                        if event.athlete_id == athlete.athlete_id
+                        and event.checkpoint_label.strip().casefold() != "finish"
+                        and not (checkpoint_by_number.get(event.checkpoint_number)
+                                 and checkpoint_by_number[event.checkpoint_number].is_finish)
+                        and not (existing and event.checkpoint_number in existing.splits)]
+    with st.expander("Checkpoint Results"):
+        st.caption("Remove an inaccurate checkpoint from canonical results while preserving the original capture in audit history.")
+        if not removable_events:
+            st.info("This athlete has no removable timing checkpoint splits. Finish results and official/manual checkpoint values must be corrected through Manage Results.")
+        else:
+            event = st.selectbox(
+                "Recorded checkpoint",
+                removable_events,
+                format_func=lambda item: f"{item.checkpoint_label} • Elapsed {format_duration(item.elapsed_seconds)}",
+                key=f"remove_split_event_{session.id}_{athlete.athlete_id}",
+            )
+            reason = st.text_input(
+                "Correction reason (required)",
+                placeholder="Unofficial checkpoint split",
+                key=f"remove_split_reason_{session.id}_{athlete.athlete_id}_{event.id}",
+            )
+            st.markdown(
+                f"**Preview**  \nAthlete: {athlete.name}  \nCheckpoint: {event.checkpoint_label}  "
+                f"\nCurrent elapsed: {format_duration(event.elapsed_seconds)}  \nAction: Remove Split from Results  "
+                f"\nReason: {reason.strip() or '—'}"
+            )
+            st.caption(f"After removal, {event.checkpoint_label} will show — and downstream segment analytics may become unavailable.")
+            if session.status == "completed":
+                st.warning("This race is finalized and published. Removing this split will immediately change published results and analytics.")
+            confirmed = st.checkbox(
+                "I confirm this checkpoint should be removed from canonical results.",
+                key=f"remove_split_confirm_{session.id}_{athlete.athlete_id}_{event.id}",
+            )
+            if st.button(
+                "Remove Split from Results", type="primary", use_container_width=True,
+                disabled=not confirmed or not reason.strip(),
+                key=f"remove_split_{session.id}_{athlete.athlete_id}_{event.id}",
+            ):
+                try:
+                    remove_split_from_results(repository, event, reason, st.session_state.get("app_identity"))
+                    st.success(f"{event.checkpoint_label} was removed from canonical results. The original capture remains in audit history.")
+                    st.rerun()
+                except RepositoryError as exc:
+                    st.error(str(exc))
     with st.expander("Reassign Athlete"):
         st.warning("This changes who receives this race performance. Permanent athlete records and original timing events are not edited.")
         search = st.text_input("Search active permanent roster", key=f"reassign_search_{session.id}_{athlete.athlete_id}")
@@ -173,6 +220,18 @@ def _manage_results(repository, session, athletes, checkpoints, rows, result_eve
                                 any(cp.is_finish and cp.number == event.checkpoint_number for cp in checkpoints)), None)
             if live_finish:
                 st.write(f"**Original live timing event** — {format_duration(live_finish.elapsed_seconds)} — preserved in split-event history")
+    audit_athlete_ids = {athlete.athlete_id, *(item.original_athlete_id for item in repository.list_result_reassignments(session.id)
+                                              if item.destination_athlete_id == athlete.athlete_id)}
+    voided_events = [event for event in all_split_events if event.event_type == "split_voided"
+                     and event.correction_type == "removed_from_results"
+                     and event.athlete_id in audit_athlete_ids]
+    if voided_events:
+        with st.expander("Checkpoint Correction Audit History"):
+            originals = {event.id: event for event in all_split_events}
+            for correction in reversed(voided_events):
+                original = originals.get(correction.target_event_id)
+                st.write(f"**{correction.recorded_at:%-I:%M %p} — {correction.checkpoint_label} removed from results by {correction.corrected_by or 'Coach'}**")
+                st.caption(f"Reason: {correction.reason} • Original event: {correction.target_event_id or '—'} • Original elapsed: {format_duration(original.elapsed_seconds) if original else '—'}")
     reassignments = repository.list_result_reassignments(session.id)
     if reassignments:
         names = {item.id: item.display_name for item in repository.list_athletes(include_archived=True)}
@@ -284,6 +343,7 @@ def render() -> None:
             return
         checkpoint_result = get_session_checkpoints(repository, session, checkpoints)
         events = repository.list_active_split_events(session.id)
+        all_events = repository.list_all_split_events(session.id)
         outcomes = repository.list_race_athlete_outcomes(session.id)
         result_events = repository.list_result_events(session.id)
         result_reassignments = repository.list_result_reassignments(session.id)
@@ -318,7 +378,7 @@ def render() -> None:
             except RepositoryError as exc:
                 st.error(f"Results could not be finalized: {exc}")
         with st.expander("Manage Results", expanded=bool(st.session_state.get("manage_results_open"))):
-            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events)
+            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events, all_events)
     elif summary.status == "completed":
         st.success("FINAL RESULTS — Published to the parent page and retained in race history.")
         if st.button("Open Coach Analytics", type="primary", use_container_width=True):
@@ -326,7 +386,7 @@ def render() -> None:
             st.session_state.analytics_session_id = session.id
             st.switch_page(st.session_state.page_registry["coach_analytics"])
         with st.expander("Manage Results", expanded=bool(st.session_state.get("manage_results_open"))):
-            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events)
+            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events, all_events)
 
     st.subheader("Final Results" if summary.status == "completed" else "Provisional Results")
     st.caption("Split shows the time for that segment. Elapsed shows total race time at the checkpoint.")
