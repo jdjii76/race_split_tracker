@@ -118,7 +118,7 @@ def get_completed_results(repository, athlete_id=None):
             segments = derive_segment_splits(numeric_cumulative, (cp.number for cp in cps))
             for cp in cps:
                 elapsed = numeric_cumulative[cp.number]
-                athlete_splits.append({"label":cp.label,"distance_meters":cp.distance_meters,
+                athlete_splits.append({"checkpoint_number":cp.number,"label":cp.label,"distance_meters":cp.distance_meters,
                                        "cumulative":elapsed,"segment":segments[cp.number]})
             course=courses.get(race.course_id)
             output.append(AthleteResult(str(row["Athlete ID"]),session.id,race.id,race.name,meet.name,meet.meet_date,race.distance_meters,str(row["Status"]),row["Finish Time Seconds"],row["Overall Place"],race.course_id,course.course_name if course else "",tuple(athlete_splits),str(row["Athlete"]),str(row.get("Category/Group") or row.get("Team") or ""),str(row.get("Gender") or ""),race.race_category,race.name.lstrip().upper().startswith("TEST")))

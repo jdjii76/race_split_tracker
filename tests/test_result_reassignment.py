@@ -6,11 +6,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from split_tracker.auth import AppIdentity
+from split_tracker.calculations import derive_gap_estimates
 from split_tracker.models import Athlete, Checkpoint, PermanentAthlete
 from split_tracker.progression import get_completed_results
 from split_tracker.repository import (
     InMemoryRaceRepository, Meet, Race, RaceSession, RaceSessionCheckpoint,
-    RepositoryError, ResultEvent, SplitEvent,
+    RepositoryError, ResultEvent, SplitEvent, canonical_result_events,
 )
 from split_tracker.result_reassignment import preview_reassignment, reassign_result
 from split_tracker.results import reconstruct_results
@@ -119,6 +120,11 @@ def test_reassignment_is_session_specific_and_progression_uses_destination():
 def test_reassigned_destination_can_remove_canonical_checkpoint_split():
     repo, _, _, session, john, michael, *_ = performance_fixture()
     reassign_result(repo, session.id, john.id, michael.id, "Substitution", ADMIN)
+    managed = canonical_result_events(repo.list_result_events(session.id))[michael.id]
+    repo.save_post_race_result(ResultEvent(
+        session.id, michael.id, "finished", "official", finish_seconds=managed.finish_seconds,
+        supersedes_id=managed.id, note="Finish-only official result",
+    ))
     projected = repo.list_active_split_events(session.id)
     mile_one = next(event for event in projected if event.checkpoint_number == 1)
 
@@ -127,6 +133,13 @@ def test_reassigned_destination_can_remove_canonical_checkpoint_split():
     assert all(event.checkpoint_number != 1 for event in repo.list_active_split_events(session.id))
     original = next(event for event in repo.list_all_split_events(session.id) if event.id == mile_one.id)
     assert original.athlete_id == john.id and not original.is_deleted
+    projected_result = get_completed_results(repo, michael.id)[0]
+    checkpoints = [Checkpoint(1, "Mile 1", 1609.344), Checkpoint(2, "Finish", 5000, True)]
+    cumulative = {index + 1: split["cumulative"] for index, split in enumerate(projected_result.splits)}
+    estimates = derive_gap_estimates(checkpoints, cumulative)
+    assert estimates.combined_intervals[0].from_checkpoint == "Start"
+    assert estimates.combined_intervals[0].to_checkpoint == "Finish"
+    assert sum(item.value_seconds for item in estimates.estimated_segments) == pytest.approx(1182.3)
 
 
 def test_destination_conflict_is_rejected_without_partial_changes():

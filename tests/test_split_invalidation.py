@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from split_tracker.analytics import compute_team_checkpoint_ranks
+from split_tracker.analytics import calculate_personal_records, calculate_segment_paces, compute_team_checkpoint_ranks
+from split_tracker.calculations import derive_gap_estimates
 from split_tracker.auth import AppIdentity
 from split_tracker.models import Athlete, Checkpoint
 from split_tracker.progression import get_completed_results
@@ -80,6 +81,14 @@ def test_remove_split_is_append_only_and_updates_every_canonical_projection():
     assert mile_three["cumulative"] is None and mile_three["segment"] is None
     ranks = compute_team_checkpoint_ranks(projected, checkpoints)
     assert ranks["ben"][2] is None and ranks["alex"][2] == 1
+    gaps = derive_gap_estimates(checkpoints, {checkpoint.number: next(
+        split["cumulative"] for split in ben_result.splits if split["label"] == checkpoint.label
+    ) for checkpoint in checkpoints})
+    assert gaps.combined_intervals[0].value_seconds == pytest.approx(1184 - 719)
+    assert sum(item.value_seconds for item in gaps.estimated_segments) == pytest.approx(1184 - 719)
+    # Estimates are a separate contract and never enter recorded pace or PR inputs.
+    assert len(calculate_segment_paces(ben_result)) == 2
+    assert calculate_personal_records([ben_result], [])[0].is_first
 
 
 def test_reason_role_duplicate_and_finish_safety():

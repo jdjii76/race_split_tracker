@@ -3,11 +3,46 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from math import isfinite
 from typing import TypeVar
+
+from split_tracker.formatting import METERS_PER_MILE, format_distance, parse_distance_to_meters
+from split_tracker.models import Athlete, Checkpoint, SplitRecord
 
 
 CheckpointKey = TypeVar("CheckpointKey")
+
+
+@dataclass(frozen=True)
+class CombinedInterval:
+    """Known elapsed interval spanning at least one unavailable checkpoint."""
+
+    from_checkpoint: str
+    to_checkpoint: str
+    value_seconds: float
+    missing_segment_count: int
+    estimation_unavailable_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class EstimatedSegment:
+    """Distance-proportional interpretation, explicitly not canonical timing."""
+
+    from_checkpoint: str
+    to_checkpoint: str
+    distance_meters: float
+    value_seconds: float
+    source_gap_start: str
+    source_gap_end: str
+    source_type: str = "estimated"
+    is_estimated: bool = True
+
+
+@dataclass(frozen=True)
+class GapEstimates:
+    combined_intervals: tuple[CombinedInterval, ...]
+    estimated_segments: tuple[EstimatedSegment, ...]
 
 
 def derive_segment_splits(
@@ -32,8 +67,72 @@ def derive_segment_splits(
         previous = current
     return segments
 
-from split_tracker.formatting import METERS_PER_MILE, format_distance, parse_distance_to_meters
-from split_tracker.models import Athlete, Checkpoint, SplitRecord
+
+def derive_gap_estimates(
+    checkpoints: Iterable[Checkpoint],
+    cumulative_values: Mapping[int, float | None],
+    *,
+    include_race_start: bool = True,
+) -> GapEstimates:
+    """Estimate only segments bounded by canonical cumulative observations.
+
+    The known combined interval remains distinct from its distance-proportional
+    estimates. Nothing returned by this helper is suitable for canonical rank,
+    result, or recorded-pace calculations.
+    """
+    ordered = list(checkpoints)
+    boundaries: list[tuple[int, str, float | None, float]] = []
+    if include_race_start:
+        boundaries.append((-1, "Start", 0.0, 0.0))
+    for index, checkpoint in enumerate(ordered):
+        raw = cumulative_values.get(checkpoint.number)
+        numeric = float(raw) if raw is not None else None
+        elapsed = numeric if numeric is not None and isfinite(numeric) and numeric > 0 else None
+        if elapsed is not None:
+            boundaries.append((index, checkpoint.label, checkpoint.distance_meters, elapsed))
+
+    combined: list[CombinedInterval] = []
+    estimated: list[EstimatedSegment] = []
+    for left, right in zip(boundaries, boundaries[1:]):
+        left_index, left_label, left_distance, left_elapsed = left
+        right_index, right_label, _, right_elapsed = right
+        if right_index - left_index <= 1:
+            continue
+        interval_seconds = right_elapsed - left_elapsed
+        if interval_seconds <= 0:
+            continue
+        span = ordered[left_index + 1:right_index + 1]
+        prior_distance = left_distance
+        segment_distances: list[float] = []
+        invalid_distance = prior_distance is None
+        for checkpoint in span:
+            distance = checkpoint.distance_meters
+            if (distance is None or prior_distance is None
+                    or not isfinite(float(distance)) or not isfinite(float(prior_distance))
+                    or float(distance) <= float(prior_distance)):
+                invalid_distance = True
+                break
+            segment_distances.append(float(distance) - float(prior_distance))
+            prior_distance = float(distance)
+        reason = "Checkpoint distances are unavailable or non-increasing." if invalid_distance else None
+        combined.append(CombinedInterval(
+            left_label, right_label, interval_seconds, len(span), reason,
+        ))
+        if invalid_distance:
+            continue
+        total_distance = sum(segment_distances)
+        allocated = 0.0
+        prior_label = left_label
+        for offset, (checkpoint, distance) in enumerate(zip(span, segment_distances)):
+            value = (interval_seconds - allocated if offset == len(span) - 1
+                     else interval_seconds * distance / total_distance)
+            estimated.append(EstimatedSegment(
+                prior_label, checkpoint.label, distance, value,
+                left_label, right_label,
+            ))
+            allocated += value
+            prior_label = checkpoint.label
+    return GapEstimates(tuple(combined), tuple(estimated))
 
 TRACK_DISTANCE_PRESETS = {
     "100 m": 100.0,
