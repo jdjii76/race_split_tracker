@@ -136,6 +136,7 @@ def test_missing_checkpoint_events_stay_in_their_persisted_result_columns():
 
     assert alex["400 m Cumulative"] == "—"
     assert alex["Finish Cumulative"] == "2:05.00"
+    assert alex["Finish Split"] == "—"
     assert alex["Status"] == "Finished"
 
 
@@ -153,6 +154,7 @@ def test_csv_export_contents_and_filters():
     assert "Creekside Invitational" in csv_text
     assert "Alex" in csv_text
     assert "Finish Time Seconds" not in csv_text
+    assert "400 m Split" in csv_text and "400 m Elapsed" in csv_text
     assert "2:05.00" in csv_text
 
 

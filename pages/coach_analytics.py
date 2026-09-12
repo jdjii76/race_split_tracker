@@ -13,6 +13,7 @@ from split_tracker.formatting import format_distance, format_duration, format_pa
 from split_tracker.models import Checkpoint
 from split_tracker.progression import get_completed_results
 from split_tracker.session_checkpoints import snapshots_to_checkpoints
+from split_tracker.calculations import derive_gap_estimates, derive_segment_splits
 
 
 def _signed_duration(value):
@@ -105,6 +106,7 @@ def render():
             rows.append({"Metric":labels[item['metric']],"Previous":formatter(item['previous']),"Current":formatter(item['current']),"Change":_signed_duration(item['change']) if not count else (_signed_duration(item['change']) if item['change'] is not None else '—')})
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
     st.subheader("Athlete Analysis")
+    st.caption("Recorded Split is official checkpoint data. Estimated splits are derived from known combined elapsed time and checkpoint distances; they are not recorded or official split times.")
     record_by_id={record.result.athlete_id:record for record in records}; previous_by_id={r.athlete_id:r for r in (previous or [])}
     table=[]
     for rank,result in enumerate(finishers,1):
@@ -113,3 +115,26 @@ def render():
     for result in current:
         if result not in finishers: table.append({"Team Rank":"—","Athlete":result.athlete_name,"Classification":result.classification or "—","Finish":"—","Average Pace":"—","Previous Best":"—","PR":"No","PR Improvement":"—","Early Pace":"—","Late Pace":"—","Pace Change":"—","Previous Race":"—","Change vs Previous":"—","Status":result.status})
     st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
+    detail = st.selectbox("Athlete split detail", current, format_func=lambda item: item.athlete_name)
+    split_by_number = {int(split["checkpoint_number"]): split for split in detail.splits
+                       if split.get("checkpoint_number") is not None}
+    split_by_label = {str(split["label"]): split for split in detail.splits}
+    cumulative = {checkpoint.number: split_by_number.get(
+        checkpoint.number, split_by_label.get(checkpoint.label, {})).get("cumulative")
+        for checkpoint in checkpoints}
+    segments = derive_segment_splits(cumulative, (checkpoint.number for checkpoint in checkpoints))
+    gaps = derive_gap_estimates(checkpoints, cumulative)
+    estimates = {segment.to_checkpoint: segment for segment in gaps.estimated_segments}
+    st.dataframe(pd.DataFrame([
+        {"Checkpoint": checkpoint.label,
+         "Recorded Split": format_duration(segments[checkpoint.number]),
+         "Estimated Split": f"~{format_duration(estimates[checkpoint.label].value_seconds)}" if checkpoint.label in estimates else "—",
+         "Elapsed": format_duration(cumulative.get(checkpoint.number))}
+        for checkpoint in checkpoints
+    ]), hide_index=True, use_container_width=True)
+    if gaps.combined_intervals:
+        st.markdown("**Combined Intervals**")
+        for interval in gaps.combined_intervals:
+            st.write(f"{interval.from_checkpoint} → {interval.to_checkpoint}: {format_duration(interval.value_seconds)}")
+            if interval.estimation_unavailable_reason:
+                st.caption(interval.estimation_unavailable_reason)
