@@ -324,7 +324,8 @@ def _render_pack_mode(
     capture_allowed = pack_capture_allowed(
         session_id, clock.status, shared_unavailable, st.session_state.timer_name
     )
-    st.markdown("### ⚡ PACK MODE")
+    capture_surface = st.session_state.get("timer_timing_mode", "pack")
+    st.markdown("### ⚡ PACK MODE" if capture_surface == "pack" else "### Individual Timing · Local-first")
     if not st.session_state.get("pack_mode_active"):
         st.caption("Rapid browser capture for runners arriving seconds apart. Normal timing remains available below.")
         if st.button("Enter Pack Mode", type="primary", use_container_width=True, disabled=not capture_allowed):
@@ -369,10 +370,29 @@ def _render_pack_mode(
     browser_states = ordered_expected_arrival_states(display_states, arrival_metadata)
     for state in browser_states:
         parts=state.athlete.name.strip().split(); athlete_rows.append({"id":state.athlete.athlete_id,"name":state.athlete.name,"first":" ".join(parts[:-1]),"last":parts[-1] if parts else state.athlete.name,"bib":state.athlete.bib_number,"team":state.athlete.team,"race":race_order[state.athlete.athlete_id],"eligible":capture_allowed and (state.athlete.athlete_id in eligible_ids or station_number is not None and not state.finished and state.outcome_status != "dnf"),**arrival_metadata[state.athlete.athlete_id]})
-    value = pack_capture(race_session_id=session_id, checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
-        athletes=athlete_rows, device_id=st.session_state.pack_device_id, server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids, void_ids=st.session_state.get("pack_void_ids", []), sync_error=st.session_state.get("pack_sync_error", ""), key=f"pack:{session_id}:{checkpoint_number}")
+    value = pack_capture(race_session_id=session_id, race_id=st.session_state.get("selected_race_id"),
+        checkpoint_number=checkpoint_number, checkpoint_label=station_label(cp),
+        athletes=athlete_rows, device_id=st.session_state.pack_device_id,
+        operator_type="dedicated_timer" if st.session_state.get("timer_mode") else "coach",
+        capture_type="finish" if cp.is_finish else capture_surface,
+        server_utc_ms=int(datetime.now(timezone.utc).timestamp()*1000), ack_ids=ack_ids,
+        void_ids=st.session_state.get("pack_void_ids", []), sync_error=st.session_state.get("pack_sync_error", ""),
+        consecutive_sync_failures=st.session_state.get("pack_sync_failures", 0),
+        last_successful_sync_at=(st.session_state.get("pack_last_sync_at").isoformat() if st.session_state.get("pack_last_sync_at") else None),
+        key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []
     action = value.get("action", "") if isinstance(value, dict) else ""
+    st.session_state.race_day_local_pending = int(value.get("pending_count", len(events))) if isinstance(value, dict) else len(events)
+    durable_device_id = value.get("device_id") if isinstance(value, dict) else None
+    if durable_device_id and durable_device_id != st.session_state.pack_device_id and station_number is not None:
+        # Formalize the browser-owned identity after the component's first mount.
+        try:
+            st.session_state.repository.assign_timer_station(session_id, checkpoint_number, durable_device_id)
+            st.session_state.pack_device_id = durable_device_id
+            st.session_state.timer_station_last_heartbeat_at = None
+            logger.info("Race Day durable device identity restored", extra={"race_session_id": session_id})
+        except Exception:
+            logger.exception("Durable Race Day device identity could not be registered")
     if action.startswith("undo_synced:"):
         event_id=action.split(":",1)[1]; event=next((e for e in st.session_state.get("persisted_split_events",()) if (e.client_event_id or e.id)==event_id),None)
         if event and _correct_event(event):
@@ -383,17 +403,24 @@ def _render_pack_mode(
             saved=normalize_pack_batch(st.session_state.repository,st.session_state.selected_race_id,session_id,checkpoint_number,events,st.session_state.timer_name)
             st.session_state.pack_ack_ids=list({*ack_ids,*(e.client_event_id or e.id for e in saved)})
             st.session_state.pack_last_sync_at=datetime.now(timezone.utc); st.session_state.pack_sync_error=""
+            st.session_state.pack_sync_failures=0
+            logger.info("Race Day queue synchronization succeeded", extra={"race_session_id": session_id, "event_count": len(saved)})
             poll_shared_timing(st.session_state)
         except Exception as exc:
             st.session_state.pack_sync_error=str(exc)
+            st.session_state.pack_sync_failures += 1
+            logger.warning("Race Day queue synchronization failed", extra={"race_session_id": session_id, "event_count": len(events)})
     if st.session_state.get("pack_sync_error"): st.warning(f"OFFLINE / synchronization delayed — events remain in browser storage. {st.session_state.pack_sync_error}")
     left,right=st.columns(2)
     if left.button("Retry synchronization",use_container_width=True): st.rerun()
-    if right.button("Switch to Individual Timing" if station_number is not None else "Exit Pack Mode",use_container_width=True):
+    if right.button(("Switch to Individual Timing" if capture_surface == "pack" else "Switch to Pack Mode") if station_number is not None else "Exit Pack Mode",use_container_width=True):
         if events: st.warning(f"{len(events)} captured splits are still waiting to synchronize. Exit preserves the durable browser queue.")
         else:
-            st.session_state.pack_mode_active=False
-            if station_number is not None: st.session_state.timer_timing_mode="individual"
+            if station_number is not None:
+                st.session_state.timer_timing_mode = "individual" if capture_surface == "pack" else "pack"
+                st.session_state.pack_mode_active = True
+            else:
+                st.session_state.pack_mode_active=False
             st.rerun()
     if st.session_state.get("debug_mode"):
         with st.expander("Pack diagnostics"): st.json({"device_id":st.session_state.pack_device_id,"submitted":len(events),"acknowledged":len(st.session_state.get("pack_ack_ids",[])),"latest_sync":str(st.session_state.get("pack_last_sync_at")),"sync_error":st.session_state.get("pack_sync_error","")})
@@ -897,7 +924,9 @@ def render() -> None:
             st.success("⚡ Pack Mode")
             if st.button("Switch to Individual Timing", key="timer_individual_mode", use_container_width=True):
                 st.session_state.timer_timing_mode = "individual"
-                st.session_state.pack_mode_active = False
+                # Individual mode uses the same durable capture service; only
+                # presentation changes. Never fall back to a server-first tap.
+                st.session_state.pack_mode_active = True
                 st.rerun()
         elif st.button("Switch to Pack Mode", key="timer_pack_mode", type="primary", use_container_width=True):
             st.session_state.timer_timing_mode = "pack"
@@ -908,8 +937,11 @@ def render() -> None:
         clock,
         shared_unavailable,
         station_number if timer_mode else None,
-    ) if not timer_mode or st.session_state.get("timer_timing_mode", "pack") == "pack" else False
-    if timer_mode and st.session_state.get("timer_timing_mode", "pack") == "pack":
+    )
+    # Compatibility note: previously this boundary was expressed as:
+    # if timer_mode and st.session_state.get("timer_timing_mode", "pack") == "pack":
+    # Both timer presentations now deliberately use the shared local-first queue.
+    if timer_mode:
         st.caption("Captures are saved on this device immediately and synchronize automatically.")
         return
     if pack_active:
