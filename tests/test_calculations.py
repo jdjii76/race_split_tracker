@@ -4,11 +4,27 @@ from split_tracker.calculations import (
     average_pace,
     athlete_finished,
     build_split_record,
+    derive_segment_splits,
     generate_checkpoints,
     race_distance_from_preset,
     segment_split,
     target_variance,
 )
+
+
+def test_derive_segment_splits_normal_precision_and_dynamic_counts():
+    assert derive_segment_splits({1: 360, 2: 740, 3: 1130}, [1, 2, 3]) == {1: 360, 2: 380, 3: 390}
+    derived = derive_segment_splits({1: 474.9, 2: 912.0, 3: 1362.0}, [1, 2, 3])
+    assert derived[1] == 474.9
+    assert round(derived[2], 10) == 437.1
+    assert derived[3] == 450.0
+    assert derive_segment_splits({1: 42.25}, [1]) == {1: 42.25}
+
+
+def test_derive_segment_splits_does_not_infer_across_missing_or_invalid_values():
+    assert derive_segment_splits({1: 360, 3: 1120}, [1, 2, 3]) == {1: 360, 2: None, 3: None}
+    assert derive_segment_splits({2: 740, 3: 1120}, [1, 2, 3]) == {1: None, 2: None, 3: 380}
+    assert derive_segment_splits({1: 360, 2: 350, 3: 1120}, [1, 2, 3]) == {1: 360, 2: None, 3: 770}
 from split_tracker.formatting import METERS_PER_MILE
 from split_tracker.models import Athlete
 

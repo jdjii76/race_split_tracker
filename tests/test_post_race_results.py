@@ -35,6 +35,27 @@ def test_manual_finish_and_multiple_official_corrections_are_canonical():
     assert unchanged.status=="completed" and unchanged.ended_at==session.ended_at
 
 
+def test_corrected_canonical_elapsed_values_drive_segment_split_display():
+    repo, meet, race, athlete, session, _ = completed_repo()
+    checkpoints = [Checkpoint(1, "Mile 1", 1609.344), Checkpoint(2, "Mile 2", 3218.688),
+                   Checkpoint(3, "Finish", 5000, True)]
+    first = repo.save_post_race_result(ResultEvent(
+        session.id, athlete.athlete_id, "finished", "manual",
+        finish_seconds=1130, splits={1: 360, 2: 750},
+    ))
+    repo.save_post_race_result(ResultEvent(
+        session.id, athlete.athlete_id, "finished", "official",
+        finish_seconds=1130, splits={1: 360, 2: 740}, supersedes_id=first.id,
+    ))
+
+    result = rows(repo, meet, race, athlete, session, checkpoints)[0]
+
+    assert result["Mile 1 Split"] == "6:00.00"
+    assert result["Mile 2 Split"] == "6:20.00"
+    assert result["Finish Split"] == "6:30.00"
+    assert result["Mile 2 Elapsed"] == "12:20.00"
+
+
 def test_manual_dnf_has_no_time_or_place():
     repo,meet,race,athlete,session,cps=completed_repo()
     repo.save_post_race_result(ResultEvent(session.id,athlete.athlete_id,"dnf","manual"))

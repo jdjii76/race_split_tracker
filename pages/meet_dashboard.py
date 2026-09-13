@@ -70,6 +70,9 @@ def _race_card(meet, summary: RaceDashboardSummary, *, emphasized: bool = False)
         ):
             st.session_state.analytics_race_id = summary.race.id
             st.session_state.analytics_session_id = summary.session.id
+            st.session_state.coach_analytics_meet_id = meet.id
+            st.session_state.coach_analytics_race_id = summary.race.id
+            st.session_state.coach_analytics_session_id = summary.session.id
             st.switch_page(st.session_state.page_registry["coach_analytics"])
         with st.expander("Share Live View"):
             public_url = spectator_url(
