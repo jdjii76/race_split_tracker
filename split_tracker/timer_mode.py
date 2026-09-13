@@ -14,6 +14,42 @@ from split_tracker.session_checkpoints import snapshots_to_checkpoints
 _MILE_STATION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*miles?\s*$", re.IGNORECASE)
 
 
+@dataclass(frozen=True)
+class TimingReadiness:
+    overall: str
+    network: str
+    local_queue: str
+    device: str
+    server: str
+    queued_count: int
+
+
+def timing_readiness(session_state, *, repository_available: bool) -> TimingReadiness:
+    """Summarize existing offline queue and connection signals for presentation."""
+    queued = max(0, int(session_state.get("pack_unsynced_count", 0) or 0))
+    device = "READY" if session_state.get("pack_device_id") else "ATTENTION"
+    local_queue = "READY"  # Pack Mode's existing localStorage queue is loaded in the browser component.
+    if session_state.get("pack_browser_online") is False or session_state.get("pack_sync_error") or session_state.get("sync_error"):
+        network = "OFFLINE"
+    elif session_state.get("storage_connected"):
+        network = "ONLINE"
+    else:
+        network = "SYNCING"
+    server = "READY" if repository_available else "ATTENTION"
+    overall = "READY" if local_queue == "READY" and device == "READY" else "ATTENTION"
+    return TimingReadiness(overall, network, local_queue, device, server, queued)
+
+
+def timing_sync_label(session_state) -> str:
+    """Return the compact status strip text without creating another queue model."""
+    state = timing_readiness(session_state, repository_available=bool(session_state.get("repository")))
+    if state.network == "OFFLINE":
+        return f"OFFLINE • {state.queued_count} SAVED LOCALLY"
+    if state.queued_count:
+        return f"SYNCING • {state.queued_count} QUEUED"
+    return f"{state.network} • 0 QUEUED"
+
+
 def can_enter_race_day_timing_mode(identity) -> bool:
     """Return whether an identity may opt into the temporary coach workflow."""
     return bool(identity and identity.role in {"coach", "admin"})
@@ -45,6 +81,8 @@ def change_timing_station(session_state) -> None:
     session_state["timer_station_checkpoint"] = None
     session_state["timer_mode"] = False
     session_state["timer_station_last_heartbeat_at"] = None
+    session_state["pending_timer_assignment"] = None
+    session_state["timer_station_change_requested"] = False
 
 
 def exit_race_day_timing_mode(session_state) -> None:

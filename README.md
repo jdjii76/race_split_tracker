@@ -12,6 +12,8 @@ the roster editor.
 
 ## Race Day Timer Mode
 
+The coach/admin **Race Day Mode** landing area presents large **Time a Checkpoint**, **Finish Line**, **Coach Dashboard**, and **Spectator View** actions beneath the current meet. Station selection includes a readiness summary for lifecycle, network/server state, durable browser queue, device identity, and known unsynced count before the operator explicitly locks the station. During timing, a sticky compact strip keeps the race, locked station, lifecycle/clock, and queue status visible. Changing a locked station requires confirmation, and **Recover Timing Data** reopens the existing Pack Mode/localStorage recovery path rather than creating another queue.
+
 Provision the shared volunteer account with the `timer` role after applying
 `supabase/migrations/024_race_day_timer_role.sql` and
 `supabase/migrations/025_timer_race_start.sql`, then apply
@@ -990,6 +992,14 @@ Team Progress uses existing gender and Varsity/JV/Swing team-division values. Ap
 ## Coach Post-Race Analytics
 
 **Coach Analytics** is a protected, read-only view available from a completed race card and from Final Results. It is authoritative only after **Finalize & Publish Results**. The dashboard derives finishers, distance-specific PRs, Top 7, 1–5 and 1–7 spreads, Top-5 compression, early/late pace, negative splits, late fades, and previous-race comparisons from finalized canonical results; it stores no analytics rows.
+
+The **Coach Analytics page** has independent **Meet** and **Race** selectors at the top for historical review; the shared sidebar retains only its normal Coach Analytics navigation link and Current Meet controls. The page includes non-archived meets with completed or awaiting-review sessions, scopes races to the selected meet, and retains the selection with dedicated analytics session-state IDs. Context links from Race Day and Results preselect their race; changing the analytics selection never changes Current Meet, the active timing session, station, checkpoint, or Pack Mode state. Awaiting-review races can be selected but continue to show the existing finalize-before-authoritative-analytics message.
+
+Coach-facing Final Results and Athlete Analysis show true segment **Split** values derived from canonical cumulative elapsed times. Athlete split detail also shows **Elapsed** beside each split, and CSV exports retain the existing cumulative columns while adding explicit elapsed columns. A missing checkpoint makes that checkpoint and the immediately following segment unavailable rather than combining multiple segments; no derived values are persisted.
+
+Coach Analytics additionally labels distance-proportional **Estimated Split** values when a missing checkpoint is bounded by two authoritative cumulative elapsed values. It displays the mathematically known **Combined Interval** separately. Estimates use configured checkpoint distances, remain separate from recorded split data, and are never used for ranks, Team Position Change, finish order, PR/course/season records, or recorded pace analytics. Estimates are UI-only and are not added to CSV or printable results.
+
+In **Results → Manage Results → Checkpoint Results**, a coach or admin can select an active non-finish timing checkpoint, enter a required reason, review the change, confirm **Remove Split from Results**, and leave the checkpoint unavailable in canonical results. The action appends a reasoned `split_voided` event: the original timestamp, elapsed time, UUID, and device provenance remain unchanged in checkpoint audit history. Finish results continue through the existing managed-result correction path. Completed races display a warning because this correction immediately updates published projections. Apply `supabase/migrations/035_remove_split_from_results.sql` to install the role-guarded, concurrency-safe post-race correction RPC.
 
 **Team Position Change** ranks only KMHS athletes with a valid cumulative split at each configured checkpoint, then ranks only valid finishers at Finish. Missing splits, DNS, and DNF are shown without a rank and are never estimated. Net change compares the earliest available checkpoint KMHS rank with the finish KMHS rank; positive values mean movement up within KMHS. Display filters use existing gender and classification metadata without recalculating the full-roster KMHS ranks. These ranks do not represent placement in the overall race.
 

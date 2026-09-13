@@ -140,13 +140,20 @@ def same_distance(left: float, right: float) -> bool:
 def calculate_segment_paces(result: AthleteResult) -> list[float]:
     """Normalize every positive, measurable checkpoint interval to seconds/mile."""
     paces: list[float] = []
-    previous_distance = previous_time = 0.0
+    previous_distance = 0.0
+    previous_elapsed = 0.0
     for split in sorted(result.splits, key=lambda item: float(item["distance_meters"])):
-        distance, elapsed = float(split["distance_meters"]), float(split["cumulative"])
-        distance_delta, time_delta = distance - previous_distance, elapsed - previous_time
-        if distance_delta > 0 and time_delta > 0:
-            paces.append(time_delta / (distance_delta / METERS_PER_MILE))
-        previous_distance, previous_time = distance, elapsed
+        distance = float(split["distance_meters"])
+        elapsed = split.get("cumulative")
+        segment = split.get("segment") if "segment" in split else (
+            float(elapsed) - previous_elapsed if elapsed is not None else None
+        )
+        distance_delta = distance - previous_distance
+        if distance_delta > 0 and segment is not None and float(segment) > 0:
+            paces.append(float(segment) / (distance_delta / METERS_PER_MILE))
+        previous_distance = distance
+        if elapsed is not None:
+            previous_elapsed = float(elapsed)
     return paces
 
 

@@ -348,6 +348,7 @@ class RaceRepository(Protocol):
     def list_all_split_events(self, race_session_id: str) -> list[SplitEvent]: ...
     def soft_delete_split_event(self, split_event_id: str) -> SplitEvent: ...
     def invalidate_split_event(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, corrected_by: str, *, require_latest: bool = False) -> SplitEvent: ...
+    def remove_split_from_results(self, split_event_id: str, race_session_id: str, checkpoint_number: int, reason: str, corrected_by: str, *, actor_role: str = "coach") -> SplitEvent: ...
     def invalidate_timer_pack_event(self, split_event_id: str, race_session_id: str, checkpoint_number: int, device_id: str, corrected_by: str) -> SplitEvent: ...
     def correct_split_athlete(self, split_event_id: str, race_session_id: str, athlete_id: str, checkpoint_number: int, new_athlete_id: str, corrected_by: str, request_id: str) -> list[SplitEvent]: ...
     def record_manual_split(self, race_session_id: str, athlete_id: str, checkpoint_number: int, elapsed_seconds: float, recorded_by: str, request_id: str) -> SplitEvent: ...
@@ -1150,6 +1151,41 @@ class InMemoryRaceRepository:
         """Atomically validate and invalidate one exact session event."""
         with self._race_session_lock:
             return self._invalidate_split_event_locked(split_event_id, race_session_id, athlete_id, checkpoint_number, corrected_by, require_latest)
+
+    def remove_split_from_results(self, split_event_id: str, race_session_id: str, checkpoint_number: int, reason: str, corrected_by: str, *, actor_role: str = "coach") -> SplitEvent:
+        """Append a reasoned post-race void without changing the captured event."""
+        if actor_role not in {"coach", "admin"}:
+            raise RepositoryError("Only a coach or admin can remove a split from results.")
+        if not reason.strip():
+            raise RepositoryError("A correction reason is required.")
+        with self._race_session_lock:
+            session = self.get_race_session(race_session_id)
+            if session is None or session.status not in {"awaiting_review", "completed"}:
+                raise RepositoryError("Splits can only be removed after race timing ends.")
+            event = self._require_split_event(split_event_id)
+            if event.race_session_id != race_session_id or event.checkpoint_number != checkpoint_number:
+                raise RepositoryError("Split correction no longer matches the selected race-session event.")
+            checkpoints = self.list_race_session_checkpoints(race_session_id)
+            if event.checkpoint_label.strip().casefold() == "finish" or any(
+                item.checkpoint_sequence == checkpoint_number and item.is_finish for item in checkpoints
+            ):
+                raise RepositoryError("Finish results must be corrected through Manage Results.")
+            if event.is_deleted or event.id not in {item.id for item in self.list_active_split_events(race_session_id)}:
+                raise RepositoryError("That split is no longer active. Refresh results and try again.")
+            corrected_at = utc_now()
+            voided = SplitEvent(
+                race_session_id=race_session_id, athlete_id=event.athlete_id,
+                athlete_name=event.athlete_name, bib_number=event.bib_number,
+                checkpoint_number=event.checkpoint_number, checkpoint_label=event.checkpoint_label,
+                elapsed_seconds=event.elapsed_seconds,
+                event_order=max([item.event_order for item in self.list_all_split_events(race_session_id)] or [0]) + 1,
+                recorded_by=corrected_by.strip(), recorded_at=corrected_at,
+                correction_type="removed_from_results", corrected_at=corrected_at,
+                corrected_by=corrected_by.strip(), event_type="split_voided",
+                target_event_id=event.id, reason=reason.strip(),
+            )
+            self.split_events[voided.id] = voided
+            return voided
 
     def invalidate_timer_pack_event(self, split_event_id: str, race_session_id: str, checkpoint_number: int, device_id: str, corrected_by: str) -> SplitEvent:
         event = self._require_split_event(split_event_id)
@@ -2743,6 +2779,28 @@ class SupabaseRaceRepository:
         rows = getattr(result, "data", [])
         row = rows[0] if isinstance(rows, list) and rows else rows
         if not row: raise RepositoryError("The selected split was not corrected.")
+        return _split_event_from_row(row)
+
+    def remove_split_from_results(self, split_event_id: str, race_session_id: str, checkpoint_number: int, reason: str, corrected_by: str, *, actor_role: str = "coach") -> SplitEvent:
+        try:
+            result = self.client.rpc("remove_split_from_results", {
+                "p_event_id": split_event_id,
+                "p_session_id": race_session_id,
+                "p_checkpoint_number": checkpoint_number,
+                "p_reason": reason,
+                "p_corrected_by": corrected_by or None,
+            }).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            detail = str(exc).lower()
+            if any(term in detail for term in ("reason is required", "no longer active", "no longer matches", "finish results", "after race timing")):
+                raise RepositoryError(str(exc)) from exc
+            logger.exception("Repository operation failed: Could not remove split from results.")
+            raise RepositoryError("Could not remove the selected split from results.") from exc
+        rows = getattr(result, "data", [])
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row:
+            raise RepositoryError("The selected split is no longer active. Refresh results and try again.")
         return _split_event_from_row(row)
 
     def invalidate_timer_pack_event(self, split_event_id: str, race_session_id: str, checkpoint_number: int, device_id: str, corrected_by: str) -> SplitEvent:

@@ -9,9 +9,9 @@ from split_tracker.auth import sign_out
 from split_tracker.formatting import format_distance, format_duration
 from split_tracker.state import load_race_into_setup
 from split_tracker.timer_mode import (
-    TimerRaceOption, build_timer_options, configured_checkpoints,
+    TimerRaceOption, build_timer_options, change_timing_station, configured_checkpoints,
     exit_race_day_timing_mode, is_race_day_timing_mode, is_timing_operator,
-    station_label,
+    station_label, timing_readiness,
 )
 from split_tracker.timing_persistence import persisted_elapsed_seconds
 from split_tracker.race_readiness import computed_race_status
@@ -57,6 +57,7 @@ def _select_station(option: TimerRaceOption, checkpoint_number: int) -> None:
     st.session_state.active_race_session_id = session.id
     st.session_state.timing_restored_for_race_id = None
     st.session_state.timer_station_checkpoint = checkpoint_number
+    st.session_state.timer_station_change_requested = False
     st.session_state.timer_mode = True
     st.session_state.timer_timing_mode = "pack"
     st.session_state.pack_mode_active = True
@@ -66,17 +67,43 @@ def _select_station(option: TimerRaceOption, checkpoint_number: int) -> None:
     st.switch_page(st.session_state.page_registry["live_timing"])
 
 
-def _selected_timer_card(options: list[TimerRaceOption]) -> None:
+def _readiness_panel(option: TimerRaceOption, checkpoint_number: int) -> None:
+    checkpoint = next(item for item in option.checkpoints if item.number == checkpoint_number)
+    st.session_state.setdefault("pack_device_id", str(uuid4()))
+    readiness = timing_readiness(st.session_state, repository_available=True)
+    with st.container(border=True):
+        st.subheader("Ready to Time?")
+        st.markdown(f"### {readiness.overall}")
+        st.write(f"**Meet:** {option.meet.name}")
+        st.write(f"**Race:** {option.race.name}")
+        st.write(f"**Station:** {station_label(checkpoint)}")
+        st.write(f"**Race status:** {option.status_label.upper()}")
+        columns = st.columns(2)
+        columns[0].metric("Network", readiness.network)
+        columns[1].metric("Server", readiness.server)
+        columns[0].metric("Local queue", readiness.local_queue)
+        columns[1].metric("Device", readiness.device)
+        st.caption(f"Unsynced captures known on this page: {readiness.queued_count}. Offline timing remains available through the durable browser queue.")
+        confirm, cancel = st.columns(2)
+        if confirm.button("Lock Station & Open Timing", type="primary", use_container_width=True):
+            st.session_state.pending_timer_assignment = None
+            _select_station(option, checkpoint_number)
+        if cancel.button("Cancel", use_container_width=True):
+            st.session_state.pending_timer_assignment = None
+            st.rerun()
+
+
+def _selected_timer_card(options: list[TimerRaceOption]) -> bool:
     race_id = st.session_state.get("selected_race_id")
     checkpoint_number = st.session_state.get("timer_station_checkpoint")
     option = next((item for item in options if item.race.id == race_id), None)
     if option is None or checkpoint_number is None:
-        return
+        return False
     checkpoint = next(
         (item for item in option.checkpoints if item.number == checkpoint_number), None
     )
     if checkpoint is None:
-        return
+        return False
     try:
         athlete_count = len(st.session_state.repository.list_race_athletes(option.race.id))
     except Exception:
@@ -98,7 +125,19 @@ def _selected_timer_card(options: list[TimerRaceOption]) -> None:
         columns[2].metric("Sync", sync_status)
         if st.button("Open Timing", type="primary", use_container_width=True):
             st.switch_page(st.session_state.page_registry["live_timing"])
-    st.subheader("Choose another station")
+        if st.button("Change Locked Station", use_container_width=True):
+            st.session_state.timer_station_change_requested = True
+        if st.session_state.get("timer_station_change_requested"):
+            st.warning("This station is locked. Confirm before selecting a different checkpoint.")
+            unlock, keep = st.columns(2)
+            if unlock.button("Unlock Station", type="primary", use_container_width=True):
+                st.session_state.timer_station_change_requested = False
+                change_timing_station(st.session_state)
+                st.rerun()
+            if keep.button("Keep Locked", use_container_width=True):
+                st.session_state.timer_station_change_requested = False
+                st.rerun()
+    return True
 
 
 def _current_timer_option(repository, options: list[TimerRaceOption]) -> TimerRaceOption | None:
@@ -165,7 +204,23 @@ def render() -> None:
         if st.button("Refresh", use_container_width=True):
             st.rerun()
         return
-    _selected_timer_card(display_options)
+    if _selected_timer_card(display_options):
+        return
+    current_intent = st.session_state.get("race_day_station_intent", "checkpoint")
+    selected_role = st.radio(
+        "Timing role", ["Checkpoint", "Finish Line"], horizontal=True,
+        index=1 if current_intent == "finish" else 0,
+        key="timer_station_role",
+    )
+    st.session_state.race_day_station_intent = "finish" if selected_role == "Finish Line" else "checkpoint"
+    pending = st.session_state.get("pending_timer_assignment")
+    if pending:
+        pending_option = next((item for item in display_options if item.race.id == pending[0]), None)
+        if pending_option and any(item.number == pending[1] for item in pending_option.checkpoints):
+            _readiness_panel(pending_option, pending[1])
+            return
+        st.session_state.pending_timer_assignment = None
+    intent = st.session_state.get("race_day_station_intent", "checkpoint")
     for option in options:
         with st.container(border=True):
             st.subheader(option.race.name)
@@ -179,6 +234,10 @@ def render() -> None:
             st.metric("Race status", option.status_label)
             st.markdown("**Select your timing station**")
             for checkpoint in option.checkpoints:
+                if intent == "finish" and not checkpoint.is_finish:
+                    continue
+                if intent == "checkpoint" and checkpoint.is_finish:
+                    continue
                 station_open = option.station_is_open(checkpoint)
                 if st.button(
                     station_label(checkpoint),
@@ -187,7 +246,8 @@ def render() -> None:
                     use_container_width=True,
                     disabled=not station_open,
                 ):
-                    _select_station(option, checkpoint.number)
+                    st.session_state.pending_timer_assignment = (option.race.id, checkpoint.number)
+                    st.rerun()
             if option.status_label == "Upcoming":
                 st.caption("Finish Line can prepare now. Split stations open five minutes before the scheduled start.")
             elif option.status_label == "Ready":

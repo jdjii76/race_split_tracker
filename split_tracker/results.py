@@ -8,7 +8,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from split_tracker.calculations import athlete_finished
+from split_tracker.calculations import athlete_finished, derive_segment_splits
 from split_tracker.formatting import format_duration, format_pace
 from split_tracker.models import Athlete, Checkpoint, SplitRecord
 from split_tracker.repository import RaceAthleteOutcome, RaceRepository, RaceSession, ResultEvent, SplitEvent, canonical_result_events
@@ -159,13 +159,21 @@ def reconstruct_results(
             "Place": None,
             "_Finish Event Order": finish_split.sequence if finish_split else None,
         }
+        cumulative_by_checkpoint: dict[int, float | None] = {}
         for checkpoint in checkpoints:
             matching = next((split for split in athlete_splits if split.checkpoint_number == checkpoint.number), None)
             managed_cumulative = managed.splits.get(checkpoint.number) if managed else None
             if managed and checkpoint.is_finish and managed.finish_seconds is not None:
                 managed_cumulative = managed.finish_seconds
-            row[f"{checkpoint.label} Split"] = format_duration(matching.segment_split_seconds if matching else None)
-            row[f"{checkpoint.label} Cumulative"] = format_duration(managed_cumulative if managed_cumulative is not None else (matching.cumulative_time_seconds if matching else None))
+            cumulative_by_checkpoint[checkpoint.number] = managed_cumulative if managed_cumulative is not None else (matching.cumulative_time_seconds if matching else None)
+        segment_by_checkpoint = derive_segment_splits(cumulative_by_checkpoint, (checkpoint.number for checkpoint in checkpoints))
+        for checkpoint in checkpoints:
+            elapsed = cumulative_by_checkpoint[checkpoint.number]
+            row[f"{checkpoint.label} Split"] = format_duration(segment_by_checkpoint[checkpoint.number])
+            # Keep the established Cumulative export header for compatibility,
+            # while offering the clearer Elapsed terminology to new consumers.
+            row[f"{checkpoint.label} Cumulative"] = format_duration(elapsed)
+            row[f"{checkpoint.label} Elapsed"] = format_duration(elapsed)
         if latest_split and not finish_split:
             row["Latest Checkpoint"] = latest_split.checkpoint_label
         else:
@@ -175,7 +183,8 @@ def reconstruct_results(
     _assign_places(rows, "Overall Place")
     for row in rows:
         row["Place"] = row["Overall Place"] if row["Status"] == "Finished" else "—"
-        row["Split Times"] = " / ".join(str(row[f"{checkpoint.label} Cumulative"]) for checkpoint in checkpoints)
+        row["Segment Splits"] = " / ".join(str(row[f"{checkpoint.label} Split"]) for checkpoint in checkpoints)
+        row["Split Times"] = row["Segment Splits"]
     _assign_group_places(rows, "Gender", "Gender Place")
     _assign_group_places(rows, "Category/Group", "Category Place")
     return sorted(rows, key=_result_sort_key)
@@ -225,7 +234,7 @@ def printable_results_html(meet_name: str, race_name: str, rows: list[dict[str, 
     return f"""<!doctype html><html><head><meta charset=\"utf-8\"><title>{escape(race_name)} Results</title>
 <style>body{{font-family:Arial,sans-serif;margin:2rem}}table{{border-collapse:collapse;width:100%}}th,td{{padding:.5rem;border-bottom:1px solid #bbb;text-align:left}}@media print{{button{{display:none}}}}</style></head>
 <body><button onclick=\"window.print()\">Print</button><h1>{escape(meet_name)}</h1><h2>{escape(race_name)} — Results</h2>
-<table><thead><tr><th>Place</th><th>Athlete</th><th>Finish</th><th>Average pace</th><th>Splits</th><th>Status</th></tr></thead><tbody>{body}</tbody></table></body></html>"""
+<table><thead><tr><th>Place</th><th>Athlete</th><th>Finish</th><th>Average pace</th><th>Segment splits</th><th>Status</th></tr></thead><tbody>{body}</tbody></table></body></html>"""
 
 
 def filter_results(
