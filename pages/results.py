@@ -15,6 +15,7 @@ from split_tracker.spectator import spectator_url
 from split_tracker.session_checkpoints import get_session_checkpoints
 from split_tracker.split_invalidation import remove_split_from_results
 from split_tracker.state import cleanup_after_session_delete
+from split_tracker.race_day_resilience import finalization_risks
 
 
 def _repo() -> RaceRepository | None:
@@ -364,12 +365,31 @@ def render() -> None:
     reviewing = summary.status == "awaiting_review"
     if reviewing:
         st.warning("RACE STATUS: AWAITING REVIEW — Live capture has stopped. Verify unresolved athletes and times before finalizing.")
+        try:
+            station_rows = repository.list_timer_station_health(session.id)
+        except RepositoryError:
+            station_rows = []
+        sync_risks = finalization_risks(
+            station_rows,
+            local_pending=int(st.session_state.get("race_day_local_pending", 0)),
+        )
+        if sync_risks:
+            st.error("Synchronization cannot be proven complete for every Race Day device.")
+            for risk in sync_risks:
+                st.write(f"**{risk.checkpoint_label} — {risk.state.title()}:** {risk.detail}")
+            finalize_override = st.checkbox(
+                "I reviewed these synchronization risks and still want to finalize.",
+                key=f"finalize_sync_override:{session.id}",
+            )
+        else:
+            st.info("This device has no known pending captures. Online station health is confirmed only as of each station's last report.")
+            finalize_override = True
         manage, correct, finalize = st.columns(3)
         if manage.button("Manage Results", use_container_width=True):
             st.session_state.manage_results_open = True
         if correct.button("Correct Results", use_container_width=True):
             st.session_state.manage_results_open = True
-        if finalize.button("Finalize & Publish Results", type="primary", use_container_width=True):
+        if finalize.button("Finalize & Publish Results", type="primary", use_container_width=True, disabled=not finalize_override):
             try:
                 repository.finalize_race_session(session.id)
                 st.session_state.results_review_session_id = None

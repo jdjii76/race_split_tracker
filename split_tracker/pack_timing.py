@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from split_tracker.repository import RaceRepository, RepositoryError, SplitEvent
+from split_tracker.race_day_resilience import deterministic_pending_events
 
 
 def pack_capture_allowed(
@@ -94,7 +95,7 @@ def normalize_pack_batch(repository: RaceRepository, race_id: str, session_id: s
         raise RepositoryError("Checkpoint does not belong to this race session.")
     athletes = {item.athlete_id for item in repository.list_race_athletes(race_id)}
     clean: list[dict[str, Any]] = []
-    for raw in payload[:100]:
+    for raw in deterministic_pending_events(payload[:100], session_id):
         required = {"client_event_id", "athlete_id", "race_session_id", "checkpoint_number", "captured_at", "capture_sequence", "device_id"}
         if not required.issubset(raw) or raw["race_session_id"] != session_id or int(raw["checkpoint_number"]) != checkpoint_number:
             raise RepositoryError("Pack event context does not match the active checkpoint.")
@@ -104,5 +105,11 @@ def normalize_pack_batch(repository: RaceRepository, race_id: str, session_id: s
         # Reject cross-race/stale/future browser storage rather than silently importing it.
         if session.started_at and captured < session.started_at.replace(tzinfo=session.started_at.tzinfo or timezone.utc):
             raise RepositoryError("Pack event predates this race start.")
-        clean.append({**raw, "captured_at": captured.isoformat()})
+        clean.append({
+            **raw,
+            "captured_at": captured.isoformat(),
+            # The existing RPC remains the single canonical write path.  The
+            # browser's richer queue metadata is intentionally not authoritative.
+            "capture_mode": str(raw.get("capture_type") or "pack"),
+        })
     return repository.record_pack_split_events(session_id, clean, recorded_by)
