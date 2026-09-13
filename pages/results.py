@@ -384,6 +384,9 @@ def render() -> None:
         if st.button("Open Coach Analytics", type="primary", use_container_width=True):
             st.session_state.analytics_race_id = race.id
             st.session_state.analytics_session_id = session.id
+            st.session_state.coach_analytics_meet_id = meet.id
+            st.session_state.coach_analytics_race_id = race.id
+            st.session_state.coach_analytics_session_id = session.id
             st.switch_page(st.session_state.page_registry["coach_analytics"])
         with st.expander("Manage Results", expanded=bool(st.session_state.get("manage_results_open"))):
             _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events, all_events)

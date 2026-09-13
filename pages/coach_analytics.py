@@ -9,6 +9,7 @@ from split_tracker.analytics import (calculate_pace_profile, calculate_personal_
     build_team_position_insights, compare_team_races, compute_team_position_change,
     find_previous_comparable_race, race_metrics)
 from split_tracker.branding import render_school_header
+from split_tracker.analytics_navigation import load_analytics_catalog, meet_label, resolve_analytics_option
 from split_tracker.formatting import format_distance, format_duration, format_pace
 from split_tracker.models import Checkpoint
 from split_tracker.progression import get_completed_results
@@ -27,20 +28,57 @@ def _open_results():
 
 def render():
     repo=st.session_state.repository
-    session_id=st.session_state.get("analytics_session_id") or st.query_params.get("analytics_session")
-    race_id=st.session_state.get("analytics_race_id") or st.query_params.get("analytics_race")
-    session=repo.get_race_session(session_id) if repo and session_id else None
-    race=repo.get_race(race_id) if repo and race_id else None
-    if not session or not race or session.race_id != race.id:
-        st.warning("Choose Coach Analytics from a completed race."); return
+    if repo is None:
+        st.warning("Persistent race history is unavailable."); return
+    try:
+        options = load_analytics_catalog(repo)
+    except Exception as exc:
+        st.error(f"Could not load Coach Analytics races: {exc}"); return
+    if not options:
+        st.info("No completed or review-ready races are available for Coach Analytics."); return
+    resolved = resolve_analytics_option(
+        options,
+        saved_meet_id=st.session_state.get("coach_analytics_meet_id"),
+        saved_race_id=st.session_state.get("coach_analytics_race_id"),
+        saved_session_id=st.session_state.get("coach_analytics_session_id"),
+        contextual_race_id=st.session_state.get("analytics_race_id") or st.query_params.get("analytics_race"),
+        contextual_session_id=st.session_state.get("analytics_session_id") or st.query_params.get("analytics_session"),
+        active_race_id=st.session_state.get("selected_race_id"),
+    )
+    meet_options = list(dict.fromkeys(item.meet.id for item in options))
+    meet_by_id = {item.meet.id: item.meet for item in options}
+    if st.session_state.get("coach_analytics_meet_id") not in meet_options:
+        st.session_state.coach_analytics_meet_id = resolved.meet.id
+    with st.sidebar:
+        st.subheader("Coach Analytics")
+        meet_id = st.selectbox("Meet", meet_options, format_func=lambda value: meet_label(meet_by_id[value]),
+                               key="coach_analytics_meet_id")
+        race_options = [item for item in options if item.meet.id == meet_id]
+        valid_race_ids = [item.race.id for item in race_options]
+        if st.session_state.get("coach_analytics_race_id") not in valid_race_ids:
+            fallback = resolved if resolved.meet.id == meet_id else next(
+                (item for item in race_options if item.session.status == "completed"), race_options[0])
+            st.session_state.coach_analytics_race_id = fallback.race.id
+        race_id = st.selectbox(
+            "Race", valid_race_ids,
+            format_func=lambda value: next(
+                f"{item.race.name} • {format_distance(item.race.distance_meters)} • {item.session.status.replace('_', ' ').title()}"
+                for item in race_options if item.race.id == value),
+            key="coach_analytics_race_id",
+        )
+    selected = next(item for item in race_options if item.race.id == race_id)
+    st.session_state.coach_analytics_session_id = selected.session.id
+    session, race, meet = selected.session, selected.race, selected.meet
+    if st.session_state.get("coach_analytics_rendered_session_id") != session.id:
+        st.session_state.pop("team_position_filter", None)
+        st.session_state.pop("coach_analytics_athlete_id", None)
+        st.session_state.coach_analytics_rendered_session_id = session.id
     if session.status != "completed":
-        st.warning("Analytics become authoritative after Finalize & Publish Results.")
+        render_school_header(st.session_state.school_profile,"Post-Race Analytics",subtitle=f"{meet.name} • {race.name}")
+        st.warning("This race is awaiting review. Analytics become authoritative after Finalize & Publish Results.")
         if st.button("Return to Results",use_container_width=True): _open_results()
         return
-    if race.name.lstrip().upper().startswith("TEST"):
-        st.info("Test races are excluded from authoritative Coach Analytics.")
-        return
-    meet=repo.get_meet(race.meet_id); history=get_completed_results(repo)
+    history=get_completed_results(repo)
     current=[result for result in history if result.session_id==session.id]
     if not current: st.info("No finalized results are available for this session."); return
     render_school_header(st.session_state.school_profile,"Post-Race Analytics",subtitle=f"{meet.name} • {race.name}")
@@ -115,7 +153,8 @@ def render():
     for result in current:
         if result not in finishers: table.append({"Team Rank":"—","Athlete":result.athlete_name,"Classification":result.classification or "—","Finish":"—","Average Pace":"—","Previous Best":"—","PR":"No","PR Improvement":"—","Early Pace":"—","Late Pace":"—","Pace Change":"—","Previous Race":"—","Change vs Previous":"—","Status":result.status})
     st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
-    detail = st.selectbox("Athlete split detail", current, format_func=lambda item: item.athlete_name)
+    detail = st.selectbox("Athlete split detail", current, format_func=lambda item: item.athlete_name,
+                          key="coach_analytics_athlete_id")
     split_by_number = {int(split["checkpoint_number"]): split for split in detail.splits
                        if split.get("checkpoint_number") is not None}
     split_by_label = {str(split["label"]): split for split in detail.splits}
