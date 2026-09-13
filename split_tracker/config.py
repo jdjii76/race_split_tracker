@@ -9,6 +9,8 @@ from typing import Mapping, Literal
 
 from streamlit.errors import StreamlitSecretNotFoundError
 
+DEFAULT_PUBLIC_APP_URL = "http://localhost:8501"
+
 ConfigSource = Literal["streamlit_secrets", "environment", "missing", "mixed"]
 
 
@@ -111,3 +113,15 @@ def load_supabase_config(
         source = "mixed"
 
     return SupabaseConfig(url=url, key=key, source=source)
+
+
+def load_public_app_url(
+    *, secrets: object | None = None, environ: Mapping[str, str] | None = None
+) -> str:
+    """Return the normalized public app origin, with a local-only fallback."""
+    env = os.environ if environ is None else environ
+    active_secrets = _current_streamlit_secrets() if secrets is None else secrets
+    configured = _strip(_mapping_get(active_secrets, "PUBLIC_APP_URL")) or _strip(
+        env.get("PUBLIC_APP_URL")
+    )
+    return (configured or DEFAULT_PUBLIC_APP_URL).rstrip("/")

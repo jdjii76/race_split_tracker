@@ -10,6 +10,7 @@ from split_tracker.repository import (
     InMemoryRaceRepository,
     Meet,
     Race,
+    RepositoryError,
     SupabaseRaceRepository,
     TemplateRace,
     create_repository,
@@ -193,7 +194,7 @@ def test_repository_factory_uses_supabase_when_configuration_and_client_are_avai
     assert not result.is_temporary
     assert result.storage_label == "Supabase"
     checked_tables = [call[1] for call in client.calls if call[0] == "select"]
-    assert checked_tables == ["meets", "races", "race_athletes", "race_sessions", "split_events", "race_session_checkpoints"]
+    assert checked_tables == ["spectator_meets", "spectator_races", "spectator_sessions", "spectator_roster", "spectator_checkpoints", "spectator_split_events", "spectator_outcomes", "spectator_sponsors"]
 
 
 def test_repository_factory_reports_missing_migration_health_check_failure(monkeypatch):
@@ -215,4 +216,25 @@ def test_repository_factory_reports_missing_migration_health_check_failure(monke
     assert result.repository is None
     assert result.storage_label == "Supabase unavailable"
     assert result.error is not None
-    assert "Apply the required migrations" in result.error
+    assert "Apply migrations through 018" in result.error
+
+
+def test_supabase_repository_error_exposes_sanitized_code_and_message():
+    class SupabaseFailure(Exception):
+        code = "23502"
+        message = "null value violates not-null constraint"
+        details = "Failing row contains identifiers only"
+
+    class Operation:
+        def execute(self):
+            raise SupabaseFailure("raw fallback")
+
+    repository = SupabaseRaceRepository(client=None)
+    try:
+        repository._execute(Operation(), "Could not select permanent athlete for race.")
+    except RepositoryError as exc:
+        assert str(exc) == "Could not select permanent athlete for race."
+        assert "Code: 23502" in exc.diagnostic
+        assert "Message: null value violates not-null constraint" in exc.diagnostic
+    else:
+        raise AssertionError("Expected RepositoryError")

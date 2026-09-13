@@ -22,7 +22,7 @@ def test_streamlit_pages_have_unique_url_paths_and_meet_setup_default():
     url_paths = [ast.literal_eval(_keyword_value(call, "url_path")) for call in page_calls]
     defaults = [_keyword_value(call, "default") for call in page_calls]
 
-    assert url_paths == ["meet-dashboard", "meet-setup", "live-timing", "results"]
+    assert url_paths == ["meet-dashboard", "meet-setup", "athletes", "athlete-profile", "team-progress", "coach-analytics", "configure-race", "live-timing", "results", "school-branding", "live-race", "coach-sign-in", "race-day-timer", "race-day-roster"]
     assert len(url_paths) == len(set(url_paths))
     assert isinstance(defaults[0], ast.Constant) and defaults[0].value is True
     assert all(default is None for default in defaults[1:])
@@ -45,13 +45,34 @@ def test_callable_page_switches_use_registered_page_objects_not_file_paths():
 def test_race_setup_user_facing_labels_are_consistent():
     app_source = (ROOT / "app.py").read_text(encoding="utf-8")
     setup_source = (ROOT / "pages/meet_setup.py").read_text(encoding="utf-8")
-    dashboard_source = (ROOT / "pages/meet_dashboard.py").read_text(encoding="utf-8")
+    management_source = (ROOT / "pages/meet_management.py").read_text(encoding="utf-8")
     live_source = (ROOT / "pages/live_timing.py").read_text(encoding="utf-8")
 
+    assert 'title="Race Day"' in app_source
+    assert 'title="Meets & Races"' in app_source
     assert 'title="Race Setup"' in app_source
-    assert 'st.title("Race Setup")' in setup_source
-    assert "Configure the race details, checkpoints, and roster before starting live timing." in setup_source
-    assert 'st.text_input("Meet name"' in setup_source
-    assert 'button("Open in Race Setup"' in dashboard_source
+    assert 'render_school_header(profile, "Race Setup")' in setup_source
+    assert "select its Race Roster from the permanent team" in setup_source
+    assert 'st.subheader("Race Information")' in setup_source
+    assert 'st.subheader("Select Athletes")' in setup_source
+    assert 'st.subheader("Configure Splits")' in setup_source
+    assert 'st.subheader("Review")' in setup_source
+    assert "Advanced Manual Race Roster" in setup_source
+    assert '"Save Race Roster"' in setup_source
+    assert '"Start Race"' in setup_source
+    assert 'button("Open in Race Setup"' in management_source
     assert "Complete Race Setup before starting the race." in live_source
     assert "Add athletes on the Race Setup page" in live_source
+
+
+def test_change_meet_uses_searchable_scrollable_button_list():
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    switcher = app_source.split('if st.session_state.get("show_meet_switcher") and meets:', 1)[1].split(
+        "MEET_DASHBOARD_PAGE", 1
+    )[0]
+
+    assert 'st.text_input(' in switcher and 'placeholder="Search meets..."' in switcher
+    assert "st.container(height=320, border=True)" in switcher
+    assert "for meet in visible_meets:" in switcher
+    assert 'key=f"change_meet:{meet.id}"' in switcher
+    assert "st.selectbox(" not in switcher

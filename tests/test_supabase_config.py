@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from streamlit.errors import StreamlitSecretNotFoundError
 
-from split_tracker.config import SupabaseConfig, load_supabase_config
+from split_tracker.config import DEFAULT_PUBLIC_APP_URL, SupabaseConfig, load_public_app_url, load_supabase_config
 from split_tracker.supabase_client import create_supabase_connection
 
 SECRET_URL = "https://secret-project.supabase.com"
@@ -131,3 +131,14 @@ def test_client_is_created_only_when_both_values_are_present():
     assert configured.configured
     assert configured.client == {"client": "created"}
     assert calls == [(ENV_URL, ENV_KEY)]
+
+
+def test_public_app_url_prefers_secret_normalizes_slash_and_has_local_fallback():
+    assert load_public_app_url(
+        secrets={"PUBLIC_APP_URL": "https://kmhs-race-timer.streamlit.app/"},
+        environ={"PUBLIC_APP_URL": "https://ignored.example"},
+    ) == "https://kmhs-race-timer.streamlit.app"
+    assert load_public_app_url(
+        secrets={}, environ={"PUBLIC_APP_URL": "https://environment.example///"}
+    ) == "https://environment.example"
+    assert load_public_app_url(secrets={}, environ={}) == DEFAULT_PUBLIC_APP_URL

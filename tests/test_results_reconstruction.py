@@ -87,11 +87,11 @@ def test_incomplete_dnf_dns_and_deleted_events_excluded():
     rows = reconstruct_results(meet_name=meet.name, race_name=boys.name, session=session, athletes=athletes, checkpoints=checkpoints, race_distance_meters=boys.distance_meters, events=repo.list_all_split_events(session.id))
     by_name = {row["Athlete"]: row for row in rows}
 
-    assert by_name["Alex"]["Status"] == "DNF"
+    assert by_name["Alex"]["Status"] == "Unresolved"
     assert by_name["Alex"]["Finish Time"] == "—"
     assert by_name["Blake"]["Status"] == "Finished"
-    assert by_name["Casey"]["Status"] == "DNS"
-    assert by_name["Drew"]["Status"] == "DNS"
+    assert by_name["Casey"]["Status"] == "Unresolved"
+    assert by_name["Drew"]["Status"] == "Unresolved"
 
 
 def test_in_progress_status_for_active_session_partial_splits():
@@ -114,7 +114,30 @@ def test_roster_snapshot_fallback_and_invalid_checkpoint_reference():
 
     assert rows[0]["Athlete"] == "Snapshot Runner"
     assert rows[0]["Bib"] == "99"
-    assert rows[0]["Status"] == "Finished"
+    assert rows[0]["Status"] == "Unresolved"
+    assert rows[0]["Finish Cumulative"] == "—"
+
+
+def test_missing_checkpoint_events_stay_in_their_persisted_result_columns():
+    repo, meet, boys, _, checkpoints, athletes = make_history_fixture()
+    session = repo.create_race_session(RaceSession(race_id=boys.id, status="completed"))
+    add_event(repo, session, "a1", 2, 125.0, 1)
+
+    rows = reconstruct_results(
+        meet_name=meet.name,
+        race_name=boys.name,
+        session=session,
+        athletes=athletes,
+        checkpoints=checkpoints,
+        race_distance_meters=boys.distance_meters,
+        events=repo.list_active_split_events(session.id),
+    )
+    alex = next(row for row in rows if row["Athlete"] == "Alex")
+
+    assert alex["400 m Cumulative"] == "—"
+    assert alex["Finish Cumulative"] == "2:05.00"
+    assert alex["Finish Split"] == "—"
+    assert alex["Status"] == "Finished"
 
 
 def test_csv_export_contents_and_filters():
@@ -131,6 +154,7 @@ def test_csv_export_contents_and_filters():
     assert "Creekside Invitational" in csv_text
     assert "Alex" in csv_text
     assert "Finish Time Seconds" not in csv_text
+    assert "400 m Split" in csv_text and "400 m Elapsed" in csv_text
     assert "2:05.00" in csv_text
 
 

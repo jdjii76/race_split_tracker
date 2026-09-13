@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from split_tracker.branding import branded_export_filename, render_school_header
 
 from split_tracker.calculations import generate_checkpoints
-from split_tracker.formatting import format_distance, format_duration
-from split_tracker.repository import RaceRepository, RepositoryError
-from split_tracker.results import filter_results, reconstruct_results, results_to_frame, session_label, summarize_sessions
+from split_tracker.formatting import format_distance, format_duration, parse_time_to_seconds
+from split_tracker.repository import RaceRepository, RepositoryError, ResultEvent, canonical_result_events
+from split_tracker.result_reassignment import DEFAULT_REASON, preview_reassignment, reassign_result
+from split_tracker.results import build_team_summary, filter_results, normalize_manual_checkpoint_times, printable_results_html, reconstruct_results, results_to_frame, session_label, summarize_sessions
+from split_tracker.spectator import spectator_url
 from split_tracker.session_checkpoints import get_session_checkpoints
+from split_tracker.split_invalidation import remove_split_from_results
 from split_tracker.state import cleanup_after_session_delete
+from split_tracker.race_day_resilience import finalization_risks
 
 
 def _repo() -> RaceRepository | None:
@@ -56,7 +61,8 @@ def _legacy_results() -> None:
         st.info("No saved sessions or local splits are available yet.")
         return
     st.dataframe(frame, hide_index=True, use_container_width=True)
-    st.download_button("Download CSV", data=frame.to_csv(index=False).encode("utf-8"), file_name="race_splits.csv", mime="text/csv", use_container_width=True)
+    profile = st.session_state.school_profile
+    st.download_button("Download CSV", data=frame.to_csv(index=False).encode("utf-8"), file_name=branded_export_filename(profile, ["race", "splits"], "csv"), mime="text/csv", use_container_width=True)
 
 
 def _filter_options(rows: list[dict[str, object]], key: str) -> list[str]:
@@ -64,9 +70,196 @@ def _filter_options(rows: list[dict[str, object]], key: str) -> list[str]:
     return ["All", *values]
 
 
+def _manage_results(repository, session, athletes, checkpoints, rows, result_events, split_events, all_split_events) -> None:
+    """Render the narrow post-timing result editor."""
+    st.subheader("Manage Results")
+    st.caption("Add a missed result or append a correction. Earlier values remain in Result History.")
+    current = canonical_result_events(result_events)
+    by_id = {str(row["Athlete ID"]): row for row in rows}
+    summary_rows = [{"Athlete": athlete.name, "Team/Division": athlete.team or athlete.group or "—",
+                     "Status": by_id[athlete.athlete_id]["Status"], "Finish Time": by_id[athlete.athlete_id]["Final Time"],
+                     "Source": by_id[athlete.athlete_id]["Source"]} for athlete in athletes]
+    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+    athlete = st.selectbox("Athlete", athletes, format_func=lambda item: item.name, key=f"manage_athlete_{session.id}")
+    existing = current.get(athlete.athlete_id)
+    row = by_id[athlete.athlete_id]
+    st.markdown(f"**Recorded Result:** {row['Status']} — {row['Final Time']} ({row['Source']})")
+    checkpoint_by_number = {checkpoint.number: checkpoint for checkpoint in checkpoints}
+    removable_events = [event for event in split_events
+                        if event.athlete_id == athlete.athlete_id
+                        and event.checkpoint_label.strip().casefold() != "finish"
+                        and not (checkpoint_by_number.get(event.checkpoint_number)
+                                 and checkpoint_by_number[event.checkpoint_number].is_finish)
+                        and not (existing and event.checkpoint_number in existing.splits)]
+    with st.expander("Checkpoint Results"):
+        st.caption("Remove an inaccurate checkpoint from canonical results while preserving the original capture in audit history.")
+        if not removable_events:
+            st.info("This athlete has no removable timing checkpoint splits. Finish results and official/manual checkpoint values must be corrected through Manage Results.")
+        else:
+            event = st.selectbox(
+                "Recorded checkpoint",
+                removable_events,
+                format_func=lambda item: f"{item.checkpoint_label} • Elapsed {format_duration(item.elapsed_seconds)}",
+                key=f"remove_split_event_{session.id}_{athlete.athlete_id}",
+            )
+            reason = st.text_input(
+                "Correction reason (required)",
+                placeholder="Unofficial checkpoint split",
+                key=f"remove_split_reason_{session.id}_{athlete.athlete_id}_{event.id}",
+            )
+            st.markdown(
+                f"**Preview**  \nAthlete: {athlete.name}  \nCheckpoint: {event.checkpoint_label}  "
+                f"\nCurrent elapsed: {format_duration(event.elapsed_seconds)}  \nAction: Remove Split from Results  "
+                f"\nReason: {reason.strip() or '—'}"
+            )
+            st.caption(f"After removal, {event.checkpoint_label} will show — and downstream segment analytics may become unavailable.")
+            if session.status == "completed":
+                st.warning("This race is finalized and published. Removing this split will immediately change published results and analytics.")
+            confirmed = st.checkbox(
+                "I confirm this checkpoint should be removed from canonical results.",
+                key=f"remove_split_confirm_{session.id}_{athlete.athlete_id}_{event.id}",
+            )
+            if st.button(
+                "Remove Split from Results", type="primary", use_container_width=True,
+                disabled=not confirmed or not reason.strip(),
+                key=f"remove_split_{session.id}_{athlete.athlete_id}_{event.id}",
+            ):
+                try:
+                    remove_split_from_results(repository, event, reason, st.session_state.get("app_identity"))
+                    st.success(f"{event.checkpoint_label} was removed from canonical results. The original capture remains in audit history.")
+                    st.rerun()
+                except RepositoryError as exc:
+                    st.error(str(exc))
+    with st.expander("Reassign Athlete"):
+        st.warning("This changes who receives this race performance. Permanent athlete records and original timing events are not edited.")
+        search = st.text_input("Search active permanent roster", key=f"reassign_search_{session.id}_{athlete.athlete_id}")
+        destinations = [item for item in repository.list_athletes(search=search or None)
+                        if item.id != athlete.athlete_id]
+        destination = st.selectbox(
+            "Athlete who actually ran", destinations,
+            format_func=lambda item: f"#{item.athlete_number} {item.display_name}" if item.athlete_number else item.display_name,
+            key=f"reassign_destination_{session.id}_{athlete.athlete_id}",
+        ) if destinations else None
+        if destination:
+            try:
+                preview = preview_reassignment(repository, session.id, athlete.athlete_id, destination.id)
+                st.markdown(f"### Confirm result reassignment\n**{preview.source_name} → {preview.destination_name}**")
+                source_events = [event for event in split_events if event.athlete_id == athlete.athlete_id]
+                for event in source_events:
+                    st.write(f"{event.checkpoint_label or f'Checkpoint {event.checkpoint_number}'} — {format_duration(event.elapsed_seconds)}")
+                st.caption(f"{preview.timing_event_count} timing events{' and a finish result' if preview.has_finish else ''} will be reassigned. Original timestamps and device provenance will be preserved.")
+                if preview.destination_will_be_added:
+                    st.info(f"{preview.destination_name} will be added to this race roster using the existing permanent athlete record.")
+                reason = st.text_input("Correction reason", value=DEFAULT_REASON,
+                                       key=f"reassign_reason_{session.id}_{athlete.athlete_id}")
+                confirmed = st.checkbox(
+                    "I confirm this athlete attribution correction.",
+                    key=f"reassign_confirm_{session.id}_{athlete.athlete_id}",
+                )
+                if st.button("Confirm Reassignment", type="primary", use_container_width=True,
+                             disabled=not confirmed or not reason.strip(),
+                             key=f"reassign_save_{session.id}_{athlete.athlete_id}"):
+                    reassign_result(repository, session.id, athlete.athlete_id, destination.id, reason,
+                                    st.session_state.get("app_identity"))
+                    st.session_state.reassignment_dns_offer = (session.id, athlete.athlete_id, athlete.name)
+                    st.success(f"Result reassigned to {destination.display_name}. Original timing history was preserved.")
+                    st.rerun()
+            except RepositoryError as exc:
+                st.error(str(exc))
+    status = st.selectbox("Result status", ["Finished", "DNF", "DNS"], key=f"manage_status_{session.id}_{athlete.athlete_id}")
+    finish_text = st.text_input("New finish time", placeholder="22:15.4", disabled=status != "Finished",
+                                key=f"manage_finish_{session.id}_{athlete.athlete_id}")
+    source = st.selectbox("Result source", ["Manual", "Official"], key=f"manage_source_{session.id}_{athlete.athlete_id}")
+    entered_splits = {}
+    with st.expander("Optional checkpoint times"):
+        entry_label = st.radio(
+            "Checkpoint time format",
+            ["Cumulative elapsed times", "Segment durations"],
+            horizontal=True,
+            key=f"manage_cp_format_{session.id}_{athlete.athlete_id}",
+        )
+        if entry_label == "Cumulative elapsed times":
+            st.caption("Enter elapsed race-clock times. Each entered checkpoint must be later than the preceding one.")
+        else:
+            st.caption("Enter each segment's duration. Faster later segments are valid; entered durations are added in race order.")
+        for checkpoint in checkpoints:
+            if not checkpoint.is_finish:
+                value = st.text_input(checkpoint.label, key=f"manage_cp_{session.id}_{athlete.athlete_id}_{checkpoint.number}")
+                if value.strip(): entered_splits[checkpoint.number] = value
+    note = st.text_area("Notes / correction reason", key=f"manage_note_{session.id}_{athlete.athlete_id}")
+    is_change = row["Status"] not in {"Unresolved", "DNS"} or existing is not None
+    confirmed = st.checkbox("I understand this becomes the active result and the recorded result remains in audit history.",
+                            disabled=not is_change, key=f"manage_confirm_{session.id}_{athlete.athlete_id}")
+    if st.button("Save Result", type="primary", use_container_width=True, disabled=is_change and not confirmed):
+        finish = parse_time_to_seconds(finish_text) if status == "Finished" else None
+        parsed_splits = {number: parse_time_to_seconds(value) for number, value in entered_splits.items()}
+        if status == "Finished" and finish is None:
+            st.error("Enter a positive finish time such as 21:34.6 or 1:02:15.4.")
+        elif any(value is None for value in parsed_splits.values()):
+            st.error("Each checkpoint time must be a positive duration such as 6:32.")
+        else:
+            try:
+                parsed_splits = normalize_manual_checkpoint_times(
+                    parsed_splits,
+                    entry_type="cumulative" if entry_label == "Cumulative elapsed times" else "segment",
+                    finish_seconds=finish,
+                )
+                repository.save_post_race_result(ResultEvent(session.id, athlete.athlete_id, status.lower(), source.lower(),
+                    finish_seconds=finish, splits=parsed_splits, note=note.strip(), supersedes_id=existing.id if existing else None,
+                    created_by=getattr(st.session_state.get("app_identity"), "user_id", "")))
+                st.success("Result saved. Final results, history, PRs, and public results now use it.")
+                st.rerun()
+            except (RepositoryError, ValueError) as exc: st.error(str(exc))
+    history = [event for event in result_events if event.athlete_id == athlete.athlete_id]
+    if history:
+        with st.expander("Result History"):
+            for event in reversed(history):
+                label = "Active" if existing and event.id == existing.id else "Superseded"
+                st.write(f"**{label} {event.source.title()}** — {format_duration(event.finish_seconds) if event.status == 'finished' else event.status.upper()} — {event.created_at:%b %d, %Y %H:%M}")
+                if event.note: st.caption(event.note)
+            live_finish = next((event for event in split_events if event.athlete_id == athlete.athlete_id and
+                                any(cp.is_finish and cp.number == event.checkpoint_number for cp in checkpoints)), None)
+            if live_finish:
+                st.write(f"**Original live timing event** — {format_duration(live_finish.elapsed_seconds)} — preserved in split-event history")
+    audit_athlete_ids = {athlete.athlete_id, *(item.original_athlete_id for item in repository.list_result_reassignments(session.id)
+                                              if item.destination_athlete_id == athlete.athlete_id)}
+    voided_events = [event for event in all_split_events if event.event_type == "split_voided"
+                     and event.correction_type == "removed_from_results"
+                     and event.athlete_id in audit_athlete_ids]
+    if voided_events:
+        with st.expander("Checkpoint Correction Audit History"):
+            originals = {event.id: event for event in all_split_events}
+            for correction in reversed(voided_events):
+                original = originals.get(correction.target_event_id)
+                st.write(f"**{correction.recorded_at:%-I:%M %p} — {correction.checkpoint_label} removed from results by {correction.corrected_by or 'Coach'}**")
+                st.caption(f"Reason: {correction.reason} • Original event: {correction.target_event_id or '—'} • Original elapsed: {format_duration(original.elapsed_seconds) if original else '—'}")
+    reassignments = repository.list_result_reassignments(session.id)
+    if reassignments:
+        names = {item.id: item.display_name for item in repository.list_athletes(include_archived=True)}
+        with st.expander("Reassignment Audit History"):
+            for correction in reversed(reassignments):
+                st.write(f"**{correction.created_at:%b %d, %Y %H:%M} — Result reassigned**")
+                st.write(f"{names.get(correction.original_athlete_id, correction.original_athlete_id)} → {names.get(correction.destination_athlete_id, correction.destination_athlete_id)}")
+                st.caption(f"Reason: {correction.reason} • By: {correction.performed_by} • Source: {correction.source}")
+    offer = st.session_state.get("reassignment_dns_offer")
+    if offer and offer[0] == session.id:
+        st.info(f"{offer[2]} no longer has timing data for this race. Mark DNS?")
+        if st.button("Mark original athlete DNS", key=f"reassign_dns_{offer[1]}", use_container_width=True):
+            source_existing = canonical_result_events(repository.list_result_events(session.id)).get(offer[1])
+            repository.save_post_race_result(ResultEvent(
+                session.id, offer[1], "dns", "manual", note="DNS confirmed after result reassignment",
+                supersedes_id=source_existing.id if source_existing else None,
+                created_by=getattr(st.session_state.get("app_identity"), "user_id", ""),
+            ))
+            st.session_state.reassignment_dns_offer = None
+            st.success("Original athlete marked DNS in append-only result history.")
+            st.rerun()
+
+
 def render() -> None:
     """Render the results page."""
-    st.title("Results")
+    profile = st.session_state.school_profile
+    render_school_header(profile, f"{profile.program_name} Results")
     repository = _repo()
     if repository is None:
         st.warning("Persistent storage is unavailable. Showing only local session-state splits.")
@@ -100,6 +293,7 @@ def render() -> None:
     if race is None:
         return
     st.session_state.selected_race_id = race.id
+    st.caption(f"**{meet.name}** • **{race.name}**")
     checkpoints = _race_checkpoints(race)
 
     try:
@@ -113,10 +307,15 @@ def render() -> None:
         st.info("No timing sessions exist for this race yet.")
         return
 
-    summary = st.selectbox("Race session", summaries, format_func=session_label)
+    selected_session_id = st.session_state.get("selected_results_session_id")
+    selected_index = next(
+        (index for index, item in enumerate(summaries) if item.session_id == selected_session_id),
+        0,
+    )
+    summary = st.selectbox("Race session", summaries, index=selected_index, format_func=session_label)
     st.session_state.selected_results_session_id = summary.session_id
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Status", summary.status)
+    c1.metric("Status", summary.status.replace("_", " ").upper())
     c2.metric("Duration", format_duration(summary.duration_seconds))
     c3.metric("Active splits", summary.active_split_count)
     c4.metric("Finishers", summary.finished_athlete_count)
@@ -145,19 +344,77 @@ def render() -> None:
             return
         checkpoint_result = get_session_checkpoints(repository, session, checkpoints)
         events = repository.list_active_split_events(session.id)
+        all_events = repository.list_all_split_events(session.id)
+        outcomes = repository.list_race_athlete_outcomes(session.id)
+        result_events = repository.list_result_events(session.id)
+        result_reassignments = repository.list_result_reassignments(session.id)
     except RepositoryError as exc:
         st.error(f"Could not load split events: {exc}")
         return
 
     if checkpoint_result.source == "legacy_fallback":
         st.warning("This legacy race session has no persisted checkpoint snapshot, so results use the current generated race checkpoints as an isolated fallback.")
+    if session.status == "completed" and result_reassignments:
+        st.warning(f"Published results changed after finalization: {len(result_reassignments)} athlete reassignment correction(s) are recorded in the audit history.")
 
-    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events)
+    rows = reconstruct_results(meet_name=meet.name, race_name=race.name, session=session, athletes=athletes, checkpoints=checkpoint_result.checkpoints, race_distance_meters=race.distance_meters, events=events, outcomes=outcomes, result_events=result_events)
     if not rows:
         st.info("This session has no roster or split events to reconstruct.")
         return
 
-    st.subheader("Reconstructed Results")
+    reviewing = summary.status == "awaiting_review"
+    if reviewing:
+        st.warning("RACE STATUS: AWAITING REVIEW — Live capture has stopped. Verify unresolved athletes and times before finalizing.")
+        try:
+            station_rows = repository.list_timer_station_health(session.id)
+        except RepositoryError:
+            station_rows = []
+        sync_risks = finalization_risks(
+            station_rows,
+            local_pending=int(st.session_state.get("race_day_local_pending", 0)),
+        )
+        if sync_risks:
+            st.error("Synchronization cannot be proven complete for every Race Day device.")
+            for risk in sync_risks:
+                st.write(f"**{risk.checkpoint_label} — {risk.state.title()}:** {risk.detail}")
+            finalize_override = st.checkbox(
+                "I reviewed these synchronization risks and still want to finalize.",
+                key=f"finalize_sync_override:{session.id}",
+            )
+        else:
+            st.info("This device has no known pending captures. Online station health is confirmed only as of each station's last report.")
+            finalize_override = True
+        manage, correct, finalize = st.columns(3)
+        if manage.button("Manage Results", use_container_width=True):
+            st.session_state.manage_results_open = True
+        if correct.button("Correct Results", use_container_width=True):
+            st.session_state.manage_results_open = True
+        if finalize.button("Finalize & Publish Results", type="primary", use_container_width=True, disabled=not finalize_override):
+            try:
+                repository.finalize_race_session(session.id)
+                st.session_state.results_review_session_id = None
+                st.success("Results finalized and published to the parent page.")
+                st.rerun()
+            except RepositoryError as exc:
+                st.error(f"Results could not be finalized: {exc}")
+        with st.expander("Manage Results", expanded=bool(st.session_state.get("manage_results_open"))):
+            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events, all_events)
+    elif summary.status == "completed":
+        st.success("FINAL RESULTS — Published to the parent page and retained in race history.")
+        if st.button("Open Coach Analytics", type="primary", use_container_width=True):
+            st.session_state.analytics_race_id = race.id
+            st.session_state.analytics_session_id = session.id
+            st.session_state.coach_analytics_meet_id = meet.id
+            st.session_state.coach_analytics_race_id = race.id
+            st.session_state.coach_analytics_session_id = session.id
+            st.switch_page(st.session_state.page_registry["coach_analytics"])
+        with st.expander("Manage Results", expanded=bool(st.session_state.get("manage_results_open"))):
+            _manage_results(repository, session, athletes, checkpoint_result.checkpoints, rows, result_events, events, all_events)
+
+    st.subheader("Final Results" if summary.status == "completed" else "Provisional Results")
+    st.caption("Split shows the time for that segment. Elapsed shows total race time at the checkpoint.")
+    final_columns = [column for column in ("Place", "Athlete", "Final Time", "Average Pace", "Segment Splits", "Status")]
+    st.dataframe(results_to_frame(rows)[final_columns], hide_index=True, use_container_width=True)
     scope = st.radio("Result scope", ["Overall", "Gender", "Team", "Group/category", "Status"], horizontal=True)
     gender = team = category = status = None
     if scope == "Gender":
@@ -170,19 +427,39 @@ def render() -> None:
         value = st.selectbox("Group/category filter", _filter_options(rows, "Category/Group"))
         category = None if value == "All" else value
     elif scope == "Status":
-        value = st.selectbox("Status filter", ["All", "Finished", "In Progress", "DNF", "DNS"])
+        value = st.selectbox("Status filter", ["All", "Finished", "DNF", "Unresolved", "In Progress", "DNS"])
         status = None if value == "All" else value
 
     filtered_rows = filter_results(rows, gender=gender, team=team, category=category, status=status)
     frame = results_to_frame(filtered_rows, formatted_for_export=True)
-    st.dataframe(frame, hide_index=True, use_container_width=True)
+    with st.expander("Detailed results and export", expanded=False):
+        st.dataframe(frame, hide_index=True, use_container_width=True)
     st.download_button(
         "Download selected session CSV",
         data=frame.to_csv(index=False).encode("utf-8"),
-        file_name=f"{meet.name}_{race.name}_{summary.session_id[:8]}_results.csv".replace(" ", "_"),
+        file_name=branded_export_filename(profile, [meet.meet_date.year if meet.meet_date else "", meet.name, race.name, summary.session_id[:8], "Results"], "csv"),
         mime="text/csv",
         use_container_width=True,
     )
+    printable = printable_results_html(meet.name, race.name, rows)
+    st.download_button(
+        "Download Printable Results",
+        data=printable.encode("utf-8"),
+        file_name=branded_export_filename(profile, [meet.name, race.name, "print-results"], "html"),
+        mime="text/html",
+        use_container_width=True,
+    )
+
+    team_summary = build_team_summary(rows)
+    if team_summary:
+        st.subheader("Team Summary")
+        st.dataframe(pd.DataFrame(team_summary), hide_index=True, use_container_width=True)
+
+    if summary.status == "completed":
+        st.subheader("Share Final Results")
+        public_url = spectator_url(race.id, session.id)
+        st.code(public_url, language=None)
+        st.link_button("Open Parent Results Page", public_url, use_container_width=True)
 
     chartable = pd.DataFrame([row for row in rows if row.get("Status") == "Finished"])
     if not chartable.empty:

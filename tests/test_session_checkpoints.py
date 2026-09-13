@@ -236,3 +236,41 @@ def test_supabase_started_session_uses_transactional_rpc_payload():
     payload = client.calls[0][1]["p_checkpoints"]
     assert [item["checkpoint_sequence"] for item in payload] == [1, 2]
     assert payload[-1]["checkpoint_type"] == "finish"
+
+
+def test_supabase_atomic_start_rpc_does_not_send_client_session_or_timestamp():
+    class Result:
+        data = [{
+            "id": "database-session",
+            "race_id": "race-1",
+            "status": "running",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "elapsed_offset_seconds": 0,
+        }]
+
+    class Operation:
+        def execute(self):
+            return Result()
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def rpc(self, name, params):
+            self.calls.append((name, params))
+            return Operation()
+
+    checkpoints = generate_checkpoints(
+        race_distance_meters=800.0, mode="Fixed interval", interval_meters=400.0
+    )
+    client = Client()
+    saved = SupabaseRaceRepository(client).get_or_create_active_race_session(
+        "race-1",
+        checkpoints,
+    )
+
+    name, params = client.calls[0]
+    assert name == "get_or_create_active_race_session"
+    assert set(params) == {"p_race_id", "p_checkpoints"}
+    assert saved.id == "database-session"
+    assert saved.started_at == datetime(2026, 1, 1, tzinfo=timezone.utc)

@@ -24,6 +24,22 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("pending_duplicate", None)
     session_state.setdefault("setup_saved", False)
     session_state.setdefault("timer_name", "")
+    session_state.setdefault("timer_station_checkpoint", None)
+    session_state.setdefault("timer_mode", False)
+    session_state.setdefault("race_day_timing_mode", False)
+    session_state.setdefault("timer_timing_mode", "pack")
+    session_state.setdefault("pack_void_ids", [])
+    session_state.setdefault("pack_ack_ids", [])
+    session_state.setdefault("pack_sync_error", "")
+    session_state.setdefault("pack_sync_failures", 0)
+    session_state.setdefault("pack_last_sync_at", None)
+    session_state.setdefault("race_day_local_pending", 0)
+    session_state.setdefault("timer_station_last_heartbeat_at", None)
+    session_state.setdefault("timer_station_sync_status", "Waiting")
+    session_state.setdefault("race_day_roster_race_id", None)
+    session_state.setdefault("race_day_roster_session_id", None)
+    session_state.setdefault("race_day_move_athlete_id", None)
+    session_state.setdefault("reassignment_dns_offer", None)
     session_state.setdefault("last_sync_at", None)
     session_state.setdefault("storage_connected", False)
     session_state.setdefault("sync_error", "")
@@ -39,6 +55,10 @@ def initialize_state(session_state) -> None:
     session_state.setdefault("last_split_action", {})
     session_state.setdefault("projected_race_state", None)
     session_state.setdefault("persisted_started_at", None)
+    session_state.setdefault("pending_split_request_ids", {})
+    session_state.setdefault("pending_manual_split_request_ids", {})
+    session_state.setdefault("persisted_split_events", ())
+    session_state.setdefault("race_athlete_outcomes", ())
 
 
 def elapsed_seconds(clock: RaceClock, now: float | None = None) -> float:
@@ -225,7 +245,7 @@ def undo_last_split(session_state) -> SplitRecord | None:
 def replace_setup(session_state, config: MeetConfig, athletes: list[Athlete]) -> None:
     """Replace saved setup while preserving existing splits when possible."""
     session_state.meet_config = config
-    session_state.athletes = _save_roster_for_selected_race(session_state, athletes)
+    session_state.athletes = _persist_roster_for_selected_race(session_state, athletes)
     session_state.setup_saved = True
     refresh_all_splits(session_state)
 
@@ -288,6 +308,8 @@ def cleanup_after_meet_delete(session_state, meet_id: str, race_ids: list[str] |
     """Clear selected meet/race state after deleting a meet cascade."""
     for race_id in race_ids or []:
         session_state.setdefault("race_rosters", {}).pop(race_id, None)
+    if session_state.get("active_meet_id") == meet_id:
+        session_state.active_meet_id = None
     if session_state.get("selected_meet_id") == meet_id:
         session_state.selected_meet_id = None
         session_state.selected_race_id = None
@@ -301,6 +323,7 @@ def cleanup_after_test_data_delete(session_state) -> None:
     """Clear all local app data that mirrors repository test data."""
     session_state.race_rosters = {}
     session_state.selected_meet_id = None
+    session_state.active_meet_id = None
     session_state.selected_race_id = None
     session_state.active_race_session_id = None
     session_state.selected_results_session_id = None
@@ -319,6 +342,7 @@ def cleanup_after_all_timing_delete(session_state) -> None:
 def initialize_persistence_state(session_state) -> None:
     """Initialize selected persisted meet/race session keys."""
     session_state.setdefault("selected_meet_id", None)
+    session_state.setdefault("active_meet_id", None)
     session_state.setdefault("selected_race_id", None)
     session_state.setdefault("repository_result", None)
     session_state.setdefault("repository", None)
@@ -334,19 +358,27 @@ def _clone_athletes(athletes: list[Athlete]) -> list[Athlete]:
     return [replace(athlete) for athlete in athletes]
 
 
-def _save_roster_for_selected_race(session_state, athletes: list[Athlete] | None = None) -> list[Athlete]:
-    """Save the selected race roster to the race-scoped cache and repository."""
+def _cache_roster_for_selected_race(session_state, athletes: list[Athlete] | None = None) -> list[Athlete]:
+    """Preserve the selected race roster in session state without writing storage."""
     race_id = session_state.get("selected_race_id")
     roster = _clone_athletes(session_state.athletes if athletes is None else athletes)
     if not race_id:
         return roster
     session_state.setdefault("race_rosters", {})
     session_state.race_rosters[race_id] = _clone_athletes(roster)
+    return roster
+
+
+def _persist_roster_for_selected_race(session_state, athletes: list[Athlete]) -> list[Athlete]:
+    """Persist an explicitly saved roster and refresh its race-scoped cache."""
+    race_id = session_state.get("selected_race_id")
+    roster = _clone_athletes(athletes)
+    if not race_id:
+        return roster
     repository = session_state.get("repository")
     if repository is not None:
         roster = repository.replace_race_athletes(race_id, roster)
-        session_state.race_rosters[race_id] = _clone_athletes(roster)
-    return roster
+    return _cache_roster_for_selected_race(session_state, roster)
 
 
 def load_selected_race_roster(session_state, race_id: str) -> list[Athlete]:
@@ -377,11 +409,14 @@ def load_race_into_setup(session_state, meet, race) -> None:
     )
     previous_race_id = session_state.get("selected_race_id")
     if previous_race_id and previous_race_id != race.id:
-        _save_roster_for_selected_race(session_state)
+        # Navigation may preserve an in-progress UI draft locally, but must never
+        # interpret that draft as an explicit request to replace persisted data.
+        _cache_roster_for_selected_race(session_state)
         reset_race(session_state)
         session_state.active_race_session_id = None
         session_state.timing_restored_for_race_id = None
     session_state.selected_meet_id = meet.id
+    session_state.active_meet_id = meet.id
     session_state.selected_race_id = race.id
     session_state.meet_config = MeetConfig(
         meet_name=meet.name,

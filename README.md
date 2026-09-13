@@ -1,24 +1,276 @@
 # Race Split Tracker
 
+## Race Day roster changes
+
+Coaches and administrators can use **Edit Roster** on any open Race Day card to
+search the permanent roster, add an athlete, remove an athlete with no recorded
+race activity, or move that same athlete record to another open race in the meet.
+Running races accept safe late additions without backfilling splits or restarting
+timing. Once an athlete has timing or result history, participation changes must be
+resolved through **Manage Results**. Timer-only and spectator accounts cannot open
+the roster editor.
+
+## Race Day Timer Mode
+
+Provision the shared volunteer account with the `timer` role after applying
+`supabase/migrations/024_race_day_timer_role.sql` and
+`supabase/migrations/025_timer_race_start.sql`, then apply
+`supabase/migrations/026_timer_pack_sync.sql` and
+`supabase/migrations/027_awaiting_review_lifecycle.sql`. On sign-in, that account is
+routed to **Race Day Timer** instead of the coach application. The volunteer
+chooses a ready/running race and checkpoint, then sees only the station name,
+authoritative race clock, athlete split buttons, connection state, and a control
+to change stations. Setup, analytics, results, athlete progression, race
+lifecycle, corrections, and administration remain outside timer navigation.
+The volunteer assigned to **Finish Line** is the race starter and receives the
+single control that starts the authoritative shared clock; split-station timers
+wait for that start and do not receive lifecycle controls.
+
+The timer role can read race-day meet, race, roster, session, checkpoint, and
+split data and can insert authoritative split events. It cannot edit meet/race
+setup or control the race lifecycle through table policies.
+
+Coach and admin accounts can choose **Time a Checkpoint** from Race Day to use
+this same station selection, Pack Mode, synchronization, heartbeat, correction,
+and Finish Line start workflow. The choice and station are browser-session state
+only; **Change Station** keeps Timing Mode active and **Exit Timing Mode** returns
+to the Coach Dashboard without changing the account's persisted role. Apply
+`supabase/migrations/033_coach_race_day_timing_mode.sql` so these identities can
+call the existing station RPCs while their canonical checkpoint and event
+validation remains in force.
+
+Timer stations open directly in **Pack Mode** once selected. The compact capture
+grid acknowledges each tap in the browser before synchronization, shows the
+three newest captures and their saved/synchronized state, and keeps **Undo Last
+Tap** within thumb reach. The durable localStorage queue, UUID event identities,
+offline retry, server validation, and append-only correction path are unchanged.
+During a connection outage or synchronization error, Pack Mode displays a red
+offline warning, the exact locally queued count, and a warning not to close or
+refresh the page. Capture remains available. Reconnection automatically retries
+the same idempotent queue; **Sync Now** can request the same flush manually, and
+the browser warns before leaving while unsynchronized captures remain.
+Retries also run when the component reconnects, becomes visible, regains focus,
+or is recreated. If a recreated Streamlit session assigns a new device ID, the
+component recovers pending events for the same race session and checkpoint by
+their original event UUIDs before retrying them.
+Timers can switch to Individual Timing when runners are separated.
+The Pack grid defaults to **All Athletes** and keeps every card in a stable
+position after capture. Captured cards remain visible with a green check,
+timestamp, and synchronization state; undo restores the uncaptured appearance
+after the existing local cancellation or append-only server correction succeeds.
+Timer cards show each athlete as **First Name Last Name**, prefixed by the real
+bib number only when one is present.
+Checkpoint timers can optionally switch from **Stable Roster** to **Expected
+Arrival Order**, which snapshots the order from the preceding checkpoint's
+cumulative times. Athletes missing that prior split remain tappable and show a
+red missing-checkpoint indicator; captures never reorder the selected view.
+
+Coaches and administrators can use **End Race Timing** to stop live capture
+without resolving every athlete. The session enters **AWAITING REVIEW**, retains
+all timing and audit events, and permits append-only result corrections before
+**Finalize & Publish Results** changes the persisted state to `completed`.
+Timer accounts cannot access result management or finalization.
+The timer assigned to the persisted **Finish Line** checkpoint is the sole timer
+exception: that station can use **End Race Timing** to enter `awaiting_review`.
+Mile/checkpoint timers receive no lifecycle action, and all result correction and
+finalization permissions remain coach/admin-only.
+
+Completed races now include a coach-only **Manage Results** panel. Coaches can add
+missed finishes, DNF/DNS outcomes, optional checkpoint times, and append official
+corrections. Corrections become the single result used by history, PR, scoring,
+public results, and exports while prior timing/result events remain auditable.
+After applying `supabase/migrations/034_result_reassignment.sql`, coaches and
+administrators can also use **Reassign Athlete** to attribute an entire session
+performance to a different active permanent athlete. The workflow previews the
+preserved timing, requires confirmation and a reason, rejects destination
+conflicts, adds the existing destination athlete to the race when necessary, and
+records an append-only audit entry. Published projections, analytics, and athlete
+history use the corrected identity without rewriting split UUIDs, timestamps,
+values, or device provenance. The original athlete may then be explicitly marked
+DNS through the existing append-only result workflow.
+Optional checkpoint times can be entered as cumulative elapsed race-clock times
+or as individual segment durations. Cumulative values must increase in race
+order, while segment durations need only be positive, so negative splits are
+accepted and converted to cumulative times without changing stored history.
+
+The app opens on **Race Day** whenever a valid active meet is available. The
+touch-friendly dashboard groups persisted races into Running Now, Up Next, and
+Completed, with direct Open Timing, Open Race, and View Results actions. It
+refreshes from Supabase every five seconds and uses batched session and roster
+count reads, so concurrent races remain isolated by race and session UUID. The
+sidebar's **Change Meet** control provides a searchable, internally
+scrollable list that preserves the established meet order, marks the current
+meet, and keeps every eligible meet available on desktop and mobile.
+Race names beginning with `TEST` receive a display-only test indicator. The
+meet selection is also stored in the page query parameters so it can be restored
+after a browser refresh. Meet, race,
+roster, and checkpoint administration remains under **Meets & Races** and
+**Race Setup**.
+
 Race Split Tracker is a Streamlit web application for coaches to record lap, mile, and checkpoint splits for multiple athletes during track and cross country races.
 
 This prototype focuses on fast race-day data entry, session-state storage, CSV export, and tested timing calculations.
 
+## School Branding Configuration
+
+The immutable default profile is `DEFAULT_SCHOOL_PROFILE` in
+`split_tracker/branding.py`. It supplies the KMHS school, program, mascot,
+location, application title, and all theme colors. The current colors
+(`#243447`, `#F5F7FA`, `#B7791F`, and `#FFFFFF`) are accessible temporary
+fallbacks—not claimed official colors—and can be replaced in one configuration
+section when approved values are available.
+
+School settings are optional. For each field, Streamlit secrets take precedence
+over `SCHOOL_*` environment variables, which take precedence over defaults. A
+partial override inherits every unspecified KMHS value. For example:
+
+```toml
+# .streamlit/secrets.toml
+[school]
+school_name = "Kennesaw Mountain High School"
+short_name = "KMHS"
+program_name = "KMHS Cross Country"
+mascot = "Mustangs"
+city = "Kennesaw"
+state = "Georgia"
+primary_color = "#243447" # replace after official approval
+secondary_color = "#F5F7FA"
+accent_color = "#B7791F"
+text_on_primary = "#FFFFFF"
+logo_path = "assets/branding/approved_logo.png"
+compact_logo_path = "assets/branding/approved_mark.png"
+```
+
+Approved PNG, JPG, JPEG, and SVG assets may be placed in `assets/branding/` and
+selected with `logo_path` or `compact_logo_path`. Missing, unreadable, or
+unsupported assets safely fall back to the KMHS text identity. See
+`assets/branding/README.md`; the included SVG is placeholder text, not an
+official logo. CSV export names are generated centrally, begin with the configured
+school abbreviation, replace unsafe filename characters with underscores, and do
+not change exported data.
+
+## In-App School Branding
+
+Apply `supabase/migrations/008_school_branding.sql`, then add an administrator
+passcode to Streamlit secrets (never commit the real value):
+
+```toml
+[admin]
+settings_passcode = "replace-this-value"
+```
+
+Open **Settings → School & Branding**, enter the passcode, and edit identity,
+colors, header layout, logo visibility, and export branding. The passcode is
+compared in memory and authorization lasts only for the current browser session;
+it is never logged or saved to Supabase. If the secret is absent, the settings
+page explains that editing is disabled while all race-day pages remain available.
+
+The page previews unsaved full and compact headers, a race card, action button,
+and uploaded images. **Save Changes** validates required text, six-digit colors,
+contrast, and images before saving. **Reset Unsaved Changes** reloads stored
+values. **Restore KMHS Defaults** requires confirmation and can retain logo
+references; it never deletes Storage objects automatically.
+
+### Supabase Storage setup
+
+Logo bytes are stored in Supabase Storage, never in `school_profiles`:
+
+1. Open the Supabase project and select **Storage**.
+2. Create a bucket named `branding`.
+3. Choose public access if public logo URLs fit the deployment security model, or
+   private access with equivalent authenticated/signed-URL policies.
+4. Add narrowly scoped read and upload/update policies for
+   `schools/default/*`. The development anon policies in the SQL migrations are
+   not suitable authorization for production.
+5. Verify the Streamlit deployment's existing publishable credentials can upload
+   and read objects; never expose or commit a service-role key.
+6. Test with a small PNG file (maximum 5 MB).
+
+Uploads accept matching PNG, JPG, or JPEG extensions and MIME types and use the
+safe object paths `schools/default/logo.*` and `schools/default/icon.*`. A profile
+row stores only those paths. Configure Storage policies before upload; a missing
+bucket, rejected upload, missing row, or branding read failure preserves the prior
+profile or activates built-in KMHS defaults without blocking timing.
+
+On Streamlit Community Cloud, configure both the `[admin]` passcode and existing
+Supabase values in the deployment's Secrets panel, apply the migration through
+Supabase, and create the bucket/policies manually. Branding is loaded once into
+session cache, refreshed after save/restore, and is never queried by the live
+timing polling loop.
+
 ## Current Prototype Features
+
+### Permanent Athlete Roster
+
+Apply `supabase/migrations/008_school_branding.sql` followed by
+`supabase/migrations/009_permanent_athletes.sql` before deploying this
+version. The migration creates the permanent `athletes` table and adds a nullable
+UUID relationship from `race_athletes`, while renaming the former text identity
+to `legacy_athlete_id`. Existing race rows are deliberately **not** matched by
+name: their snapshot name and legacy identity remain readable, and they can be
+linked later through a reviewed administrative backfill.
+
+Use **Athletes** to create, filter, edit, injure, deactivate, graduate, or
+reactivate school athletes. Status changes and name edits retain the permanent
+UUID. Race Setup's primary **Select Athletes** section uses visible, race-scoped
+checkboxes and writes permanent IDs into the race-specific roster while retaining
+race-time names and metadata as historical snapshots. The editable race-only
+roster remains available in the collapsed **Race-Specific Details / Advanced
+Manual Race Roster** section for legacy or guest athletes.
+
+The **Import Athlete Roster** expander on the Athletes page provides a permanent-
+roster CSV template, validation preview, duplicate review, and an explicit import
+confirmation. Uploading a file never writes data by itself. Required columns are
+`first_name` and `last_name`; supported optional columns are `preferred_name`,
+`graduation_year`, `gender`, `team_division`, `athlete_number`, `status`, and
+`notes`. Coaches can skip possible existing duplicates, update the matched stable
+athlete ID, or intentionally create another athlete after reviewing the preview.
+Imported athletes are saved through the repository to `public.athletes`, not to a
+specific race.
+
+An unchanged race selection updates its existing row rather than recreating it.
+Deselection is allowed before timing starts, but is blocked once a race session
+has started or split events exist. Live Timing continues to read only
+`race_athletes`; it never queries the master roster. The migration also replaces
+the authoritative split RPC so both nullable legacy identities and permanent
+UUID identities remain synchronized across timer clients.
+
+The migration enables RLS with the same development-only anon policy used by the
+prototype. Before production, replace it with authenticated coach policies that
+permit the deployed Streamlit credentials to read and write `athletes`; do not
+use the development policy as production authorization.
+
+Migration numbering was consolidated after two independently prepared changes
+both used version `008`: school branding remains the sole `008`, and the
+authoritative permanent-roster schema is `009`. The retired combined
+`008_permanent_athlete_roster.sql` must not be applied. If branding migration 008
+is already recorded in Supabase, apply only 009. If an earlier athlete draft was
+manually applied, run the current idempotent 009 SQL in the SQL Editor to add the
+school-profile relationship and authoritative constraints without matching or
+deleting legacy race athletes.
+
+After migration 009, apply
+`supabase/migrations/010_fix_race_athlete_identity_nullability.sql`. Migration
+004 originally made the text identity `NOT NULL`; renaming it in 009 preserved
+that constraint. Migration 010 makes the permanent UUID and legacy text identity
+individually nullable, requires at least one identity, retains both partial unique
+indexes, does not rewrite race or split history, and reloads the PostgREST schema
+cache. This allows permanent selections to store only `athlete_id` and legacy
+race-only athletes to store only `legacy_athlete_id`.
 
 ### Race Setup
 
-- Meet name and race name fields
-- Course type selector for Track or Cross Country
-- Track and cross country race-distance presets with custom meter distances
+- Read-only saved race information with meet, date, category, distance, course, and status
+- Primary permanent-team selection with search, filters, visible checkboxes, Select All, Clear, and Save Race Roster
+- Race-scoped selection state that reloads persistence unless the coach has explicit unsaved edits
+- Saved-athlete removal lock after timing starts, preserving historical race snapshots
+- Collapsed race-specific details/manual athlete editor with optional CSV import
+- Legacy local meet/race and manual-roster setup when no persisted race is selected
 - Internal distance storage in meters
 - Checkpoint modes for standard laps, fixed intervals, and custom checkpoints
 - Finish checkpoint inclusion even when intervals do not divide the race evenly
-- Editable athlete roster with add/delete rows and paste support through the data editor
-- CSV roster import and roster template download
 - Roster fields for athlete name, bib number, target finish time, optional target pace, and group/category
-- Setup summary before saving
-- Clear Setup confirmation and Start Timing navigation
+- Compact review followed by Save Race Setup and Start Race actions
 - Validation for required meet/race names, athlete names, duplicate bibs, target-time formats, and at least one athlete
 
 ### Live Timing
@@ -184,7 +436,11 @@ The app does **not** persist authentication data, user ownership, parent views, 
 
 ## Database Schema
 
-The initial schema is in `supabase/migrations/001_initial_schema.sql` and creates:
+The ordered files in `supabase/migrations/` are the **only authoritative
+production schema history**. Apply every file in numeric order; do not use the
+bootstrap/reference SQL files as substitutes for the migration chain.
+
+The initial migration, `supabase/migrations/001_initial_schema.sql`, creates:
 
 - `meets`
 - `races`
@@ -203,17 +459,181 @@ Apply migrations manually in the Supabase SQL Editor in this order:
 2. `supabase/migrations/003_timing_persistence.sql`
 3. `supabase/migrations/004_race_rosters.sql`
 4. `supabase/migrations/005_race_session_checkpoints.sql`
+5. `supabase/migrations/006_shared_live_timing.sql`
+6. `supabase/migrations/007_fast_validated_split_rpc.sql`
+7. `supabase/migrations/008_school_branding.sql`
+8. `supabase/migrations/009_permanent_athletes.sql`
+9. `supabase/migrations/010_fix_race_athlete_identity_nullability.sql`
+10. `supabase/migrations/011_atomic_active_race_session.sql`
+11. `supabase/migrations/012_server_authoritative_split_timing.sql`
+12. `supabase/migrations/013_server_authoritative_race_lifecycle.sql`
+13. `supabase/migrations/014_safe_athlete_archive.sql`
+14. `supabase/migrations/015_live_timing_corrections.sql`
+15. `supabase/migrations/016_race_finalization_outcomes.sql`
+16. `supabase/migrations/017_secure_coach_and_spectator_access.sql`
+17. `supabase/migrations/018_school_sponsors.sql`
 
-There is currently no `002` migration file in the repository; keep the existing numbering gap and apply only the files present above. After running them, confirm these tables exist: `meets`, `races`, `meet_templates`, `template_races`, `race_sessions`, `split_events`, `race_athletes`, and `race_session_checkpoints`. Also confirm the `create_started_race_session_with_checkpoints` RPC function exists.
+There is no `002` migration file; retain that historical numbering gap. Every
+present migration version is unique. Migration `008_school_branding.sql` must
+precede `009_permanent_athletes.sql` because permanent athletes reference
+`school_profiles`. Migration `010` then reconciles permanent UUID and preserved
+legacy text identities without matching or updating rows by athlete name.
 
-## Meet Dashboard and Templates
+An obsolete expanded file formerly named
+`008_permanent_athlete_roster.sql` duplicated both branding and permanent-roster
+work and shared version `008`. It is intentionally not part of the canonical
+chain. If that SQL was manually run in an existing development project, do not
+drop or recreate its objects and do not remove version `008` from Supabase's
+migration history. Continue with the canonical `009` and `010` migrations as
+needed: their guarded DDL preserves existing rows and identity values. If the
+Supabase migration-history table already records `008`, treat it as the branding
+step and verify the branding table before continuing rather than rerunning a
+destructive rollback.
 
-The Meet Dashboard is the primary landing page. Coaches can create, list, open, edit, archive, and safely delete draft meets. Opening a meet shows its race list, where coaches can add, edit, duplicate, archive, delete draft races, reorder races by display order, and open a saved race in the Race Setup workflow.
+After running the chain, confirm these tables exist: `meets`, `races`,
+`meet_templates`, `template_races`, `race_sessions`, `split_events`,
+`race_athletes`, `race_session_checkpoints`, `school_profiles`, and `athletes`.
+Also confirm the `create_started_race_session_with_checkpoints`,
+`get_or_create_active_race_session`, `record_shared_split`, and
+`transition_race_session` RPC functions exist. Migration `011` preserves terminal history while enforcing at most one
+`ready`, `running`, or `paused` session per race. Apply that complete file to an
+existing development project after migration `010`; do not edit the migration
+history table manually.
+
+Migration `012` replaces `record_shared_split(jsonb)` so PostgreSQL assigns the
+official split timestamp, elapsed time, and event order. Apply it after `011`
+and before deploying Python code that calls the reduced authoritative RPC
+payload.
+
+Migration `013` adds `transition_race_session(uuid, text)`. Apply it after `012`
+and before deploying Python code that performs persisted Pause, Resume, End, or
+Cancel actions. The RPC locks the session row, validates the state transition,
+and derives lifecycle timestamps and elapsed offsets from PostgreSQL time.
+
+Migration `014` adds the `archived` permanent-athlete status and the atomic
+`delete_unused_athlete(uuid)` RPC. Apply the complete file after `013` in the
+Supabase SQL Editor before deploying the athlete-removal UI. The RPC refuses to
+delete a UUID referenced by `race_athletes`; the existing restrictive foreign
+key remains a database-level backstop against concurrent history creation.
+
+Migration `015` keeps corrected split rows for audit, adds correction metadata,
+and provides atomic `invalidate_split_event` and `record_manual_split` RPCs.
+Apply it after `014` before deploying the Live Timing mistake-recovery UI.
+
+Migration `016` adds race-session athlete outcomes and locked DNF, finalization,
+and reopen operations. Apply it after `015` before deploying the Finish Race
+workflow. It preserves existing sessions and split/correction history.
+
+Migration `017` replaces prototype anonymous-write policies with explicit
+`coach`/`admin` roles in `app_users`, protects mutation RPCs with both grants and
+`auth.uid()` role checks, and exposes privacy-limited spectator views. Apply it
+after `016` before sharing spectator links publicly. It changes authorization
+only and does not rewrite race history.
+
+Migration `018` adds the school-scoped sponsor table, the active-only public
+spectator sponsor view, and policies for the existing public `branding` Storage
+bucket. Apply it after `017`. Sponsor metadata writes and logo uploads require
+the `admin` role; anonymous clients can read only active public sponsor metadata
+and public branding objects.
+
+## Read-only Spectator Live View
+
+Race Day cards now expose a **Share Live View** link using stable race and, when
+available, race-session UUID query parameters. A fresh browser opens the
+dedicated `/live-race` route with hidden coach navigation. That route uses a
+capability-limited read adapter and the same persisted checkpoint/event
+projection and final-results ranking as coach pages. It displays only race and
+meet names, race distance/status, athlete display names/team, public split
+times, progress, finish status, and final place; internal IDs, correction
+metadata, athlete notes, and contact or administrative data are not rendered.
+
+Active and paused spectator views refresh every five seconds and query only the
+target race, resolved session, roster, checkpoint snapshot, active events, and
+session outcomes. A prominent spectator race clock uses the session's persisted
+start timestamp, lifecycle status, and elapsed offset. While running, it advances
+locally in each browser between those existing five-second reads; paused,
+awaiting-review, and completed clocks remain frozen, with no per-second database
+writes or reads. Migration `017` limits anonymous access to privacy-safe public
+views and public school branding. Anonymous users receive no protected-table
+writes and no mutation RPC execution.
+
+For a directly shareable parent link, configure the deployed Streamlit origin in
+Streamlit Cloud Secrets (no trailing slash is required):
+
+```toml
+PUBLIC_APP_URL = "https://kmhs-race-timer.streamlit.app"
+```
+
+`PUBLIC_APP_URL` may also be supplied as an environment variable. The URL
+builder removes trailing slashes and URL-encodes race identifiers. When it is
+not configured, local development falls back to `http://localhost:8501`; that
+fallback is for local testing and must not be sent to parents. Race Day shares
+a race-only URL so one link works before the session exists and continues to
+resolve the active/latest session through start, timing, finish, and reopen.
+
+### Provision the first administrator
+
+1. Apply migrations through `017_secure_coach_and_spectator_access.sql`.
+2. In **Supabase Dashboard → Authentication → Users**, create the administrator
+   with email/password and copy the generated user UUID.
+3. In Supabase SQL Editor (which uses the trusted administrative context), run:
+   `insert into public.app_users (user_id, role) values ('<USER_UUID>', 'admin');`
+4. Sign in through the app's **Coach Sign In** page. Create subsequent users in
+   Supabase Auth and assign `coach` or `admin` in `app_users`.
+
+Coaches can configure and time races but permanent-athlete creation/editing,
+archive/restore/delete, and branding remain admin-only. The former local
+branding settings passcode is no longer used as an authorization gate;
+Supabase Auth plus the persisted `admin` role is authoritative.
+
+### Adding Sponsors
+
+1. Apply `supabase/migrations/018_school_sponsors.sql` after migration `017`.
+2. Sign in as an administrator and open **School & Branding**.
+3. Expand **Add Sponsor**, enter the sponsor name, optionally enter an `http://`
+   or `https://` website, set its display order and active state, and upload a
+   PNG, JPEG, or WebP logo.
+4. Save the sponsor. Use its edit panel to replace the logo, change details,
+   activate/deactivate, reorder, or permanently delete it.
+
+Logos reuse the public `branding` bucket at
+`sponsors/{school_profile_id}/{sponsor_id}/logo.{extension}`; image bytes are
+never stored in PostgreSQL. Active sponsors automatically appear below the
+Parent Live Race content. With multiple sponsors, a self-contained browser
+component rotates them every six seconds; it performs no Streamlit rerun, sleep,
+poll, Supabase query, or race-state write for each transition.
+
+`supabase/sql/development_schema.sql` is a convenience snapshot for bootstrapping
+an empty, isolated development project. `database/migrations/001_initial_schema.sql`
+is a retained legacy copy of the initial schema. Neither is an independently
+maintained migration history; production and upgrades must use
+`supabase/migrations/`.
+
+## Race Day Dashboard, Meet Management, and Templates
+
+Race Day is the primary landing page. It reads persisted race sessions and race
+roster counts in batches, highlights every simultaneously running race, and
+routes directly to existing Live Timing, Race Setup, or Results pages using the
+selected race/session UUIDs. Meets & Races lets coaches create, list, open, edit,
+archive, and safely delete draft meets. Opening a meet there shows its race list,
+where coaches can add, edit, duplicate, archive, delete draft races, reorder races
+by display order, and open a saved race in the Race Setup workflow.
 
 The Templates section includes an idempotently seeded default XC meet template containing Boys JV, Girls JV, Boys Varsity, and Girls Varsity races. Each default XC race is 5000 meters. Coaches can create and edit custom templates, archive templates, and create a new meet from a template without generating timing data or results.
 
 When Supabase configuration is missing, the dashboard still works with temporary in-memory storage and displays a warning that meet data resets when the session ends.
 
+
+## Safe Permanent Athlete Removal
+
+The Athletes page shows active athletes by default and provides explicit Edit
+and removal actions. Athletes without a `race_athletes` UUID reference may be
+permanently deleted after confirmation. Athletes with any race history can only
+be archived, which retains the permanent UUID and every race snapshot and split
+while excluding the athlete from normal future-race selection. The Archived
+status filter exposes archived records and Restore returns the same row and UUID
+to active status. An archived athlete already saved on an existing race remains
+visible there and is never removed automatically.
 
 ## Race-Scoped Rosters
 
@@ -235,6 +655,35 @@ The `supabase/migrations/004_race_rosters.sql` migration adds `race_athletes`, w
 When switching saved races, the app saves the prior race roster to the race-scoped cache/repository, loads the new race's roster by `race_id`, and clears transient timing state for the previous race. Live Timing uses only the roster loaded for the selected race.
 
 ## Persistent Live Timing
+
+### Mistake Recovery
+
+Live Timing keeps normal athlete buttons unchanged and places recovery tools in
+a separate Timing Controls section. Undo Last Split and Correct Split atomically
+invalidate an exact split-event UUID scoped to the active race-session UUID;
+the original row remains stored. Add Missed Split accepts an explicit elapsed
+race-clock time only for the athlete's next missing checkpoint and records it as
+a manual correction. Every correction reloads persisted events and rebuilds the
+same authoritative race projection used by normal timing. Recent Activity is
+derived from persisted split and correction rows for the current session.
+
+Rapid retries of the same rendered athlete/checkpoint action reuse a request
+UUID, while the database's active athlete/checkpoint uniqueness rule rejects a
+competing duplicate. There is no broad debounce delay, so different athletes
+finishing close together remain unaffected.
+
+### Finish Race and Final Results
+
+Finish Race summarizes finishers, explicit DNF outcomes, and unresolved
+athletes. Every active roster athlete must either have an authoritative finish
+event or a session-scoped DNF outcome before the guarded finalization RPC can
+complete the session. Completed sessions lock ordinary timing and corrections.
+Reopen Race reuses the same session in a paused state, retaining splits,
+corrections, and DNF records; coaches may then reverse a DNF, correct history,
+resume timing, and finish again. Results rank only valid finishers by finish
+elapsed time and deterministic event order, then show DNF and unresolved rows
+without numerical places. The CSV retains session and athlete UUIDs, elapsed
+seconds, statuses, and per-checkpoint values.
 
 The `supabase/migrations/003_timing_persistence.sql` migration adds persistent live timing state for selected saved races. It creates:
 
@@ -431,6 +880,14 @@ python -m compileall .
 
 ## Live timing responsiveness
 
+Live Timing uses a race-day focus layout: the authoritative race clock and a
+compact synchronization indicator stay above a searchable, touch-friendly
+athlete grid. **Stable** button order preserves race-roster positions by
+default; optional Expected Arrival and Race Order views consume the same
+projected race state. Finished athletes move to a collapsed summary while
+remaining visible on the progress-ranked Live Race Board. End, undo, reset, and
+development diagnostics are secondary so they do not compete with split taps.
+
 Successful athlete taps use one concurrency-safe Supabase RPC and immediately
 replay its returned event into the browser's persisted-state projection. The
 two-second fragment poll remains the authoritative cross-browser reconciliation
@@ -442,3 +899,192 @@ fragment and avoid a full application rerun, but taps that arrive while the
 browser is submitting the previous widget event cannot be guaranteed at
 sub-second spacing. The isolated button surface is the intended seam for a
 small queued custom component if field measurements require simultaneous input.
+
+### Live timing mistake recovery
+
+Live Timing includes append-only Undo, wrong-athlete reassignment, missed-split entry,
+and correction history. Corrections are persisted in the shared race event stream; the
+original tap remains in the audit trail while coach, live-board, and spectator projections
+ignore events superseded by a void action. Completed races must be reopened before timing
+history can be corrected.
+
+### Finish, review, finalize, and share
+
+When all rostered runners have either finished or been marked DNF, **Finish Race** pauses
+the authoritative clock and opens a provisional results review. Coaches can inspect place,
+finish time, average pace, and checkpoint splits, return to Live Timing for append-only
+corrections, and then choose **Finalize & Publish Results**. Finalization locks the session,
+retains it in race history, changes the public parent page from **LIVE** to **FINAL**, and
+enables CSV, printable HTML, team-summary, and share-link output from Results.
+# Race-day timing modes
+
+## Normal Timing
+
+Use the standard athlete buttons when runners are separated. Each tap is validated by the shared race session and immediately becomes an authoritative split.
+
+## Pack Mode
+
+Use **Pack Mode** when several runners approach the same checkpoint together:
+
+1. Choose the checkpoint and enter Pack Mode.
+2. Rapidly tap athletes in crossing order; buttons acknowledge taps entirely in the browser, without waiting for a Streamlit rerun.
+3. Watch the captured/queued/synchronized counters and the chronological capture strip.
+4. Use **Undo Last Pack Tap** immediately after a mistake. Pending taps are cancelled locally; synchronized taps use the normal append-only void workflow.
+5. Exit when the pack clears. If synchronization is outstanding, remain and retry or exit knowing the browser queue is preserved.
+6. Use **Recent Activity** for later corrections exactly as with normal timing.
+
+"Captured locally" means the tap and its UTC/monotonic timing metadata are durable in browser `localStorage`; it is not yet visible to other devices. "Synchronized" means the idempotent batch RPC accepted it into canonical `split_events`. Only canonical active events projected by `project_race_state()` are authoritative race results and visible to coaches and spectators.
+
+At entry the component estimates device-clock offset from a reference UTC value supplied by the app. Offsets up to ten seconds are applied to capture UTC while preserving `performance.now()` and capture sequence for ordering; a warning is shown above two seconds, and larger corrections are not silently applied. Network failure never blocks taps: queued events remain namespaced by race session, checkpoint, and device, survive refresh, and retry automatically when connectivity returns.
+
+The capture grid uses direct browser event handlers and a 500 ms batch debounce. It therefore accepts a five- or twenty-runner sequence without a Python round trip between taps; database synchronization occurs after capture and preserves capture timestamp/sequence ordering.
+
+Pack Mode opens in **Expected Arrival Order** by default. For checkpoints after the first,
+athletes with a previous split are ordered by that cumulative time, ties retain roster order,
+and athletes missing the previous split remain selectable at the end with a visible warning.
+The order is snapshotted when the component loads and remains fixed through captures,
+synchronization, and rerenders. Timers can switch to **Stable Roster** at any time; both modes
+use the same name, optional bib, captured timestamp, and synchronization card treatment.
+Missing intermediate checkpoints do not discard later captures: each split remains attached
+to its persisted checkpoint, and Expected Arrival cards identify both the missing previous
+checkpoint and the athlete's latest available checkpoint. Coaches can fill the missing split
+later through the existing append-only correction workflow.
+
+Races may optionally have a scheduled UTC start, entered to any minute, in **Meets & Races**. Scheduled races display
+as **Upcoming** until five minutes before that time and **Ready** inside the five-minute window;
+this is computed display state and never starts the race clock. Finish Line can open while
+the race is Upcoming. Inside the Ready window, every station can load its roster and prepare
+Pack Mode, but capture remains locked until Finish Line uses the existing manual **Start Race**
+control. Unscheduled races continue to use
+their existing persisted readiness and manual-start workflow.
+Apply `supabase/migrations/029_prepare_race_session.sql` so timer accounts can create the
+shared Ready session and checkpoint snapshot without starting the clock or receiving direct
+race-session write permission.
+Apply `supabase/migrations/030_timer_pack_undo.sql` to bind each timer device to its selected
+session checkpoint. This enables synchronized **Undo Last Tap** only for that device's own
+Pack Mode event and appends a `split_voided` audit event; it grants no direct split updates,
+manual result editing, or access to the coach/admin correction RPC.
+Apply `supabase/migrations/031_append_only_checkpoint_index.sql` to replace the legacy
+one-row-per-checkpoint unique index with a non-unique lookup index. RPC validation continues
+to enforce logical split rules while allowing the original, its `split_voided` audit row, and
+an optional replacement to coexist in append-only history.
+
+Apply `supabase/migrations/032_timer_station_health.sql` for the race-day station monitor.
+The migration stores only a throttled station heartbeat; capture totals, latest athlete, and
+last successful synchronization remain derived from existing append-only Pack events. Timer
+devices may heartbeat only an exact station assignment, have no direct table access, and
+cannot read the coach/admin monitor RPC. The Timer landing card summarizes the assigned race,
+station, roster, clock, and local synchronization state, while the Race Day coach dashboard
+classifies checked-in stations as Active, Waiting, or Offline.
+
+## Athlete Progression
+
+Administrators can choose **Athletes → View Profile** to open the protected athlete profile, or use **Team Progress** for season-wide comparison. Profiles include archived athletes when opened from the archived roster filter and are not added to spectator routes.
+
+Only completed race sessions count as history. DNF entries remain visible but are not timed performances; provisional or unfinished sessions do not affect metrics. History is rebuilt from canonical split events, so an append-only void/replacement correction immediately changes the profile while the original remains in the audit history.
+
+Metrics are derived, not stored. A season PR is the fastest finish within one race-date year and distance. Best pace is the lowest final-time-per-mile value. Improvement is the first chronological finish minus the fastest finish for the same season and distance. Course bests group only by permanent course UUID and distance. For segment consistency, at most 3% spread is **Even**; otherwise a 3% later-half slowdown is **Positive Split**, a 3% speed-up is **Negative Split**, and other patterns are **Variable**. Two segments are required.
+
+Team Progress uses existing gender and Varsity/JV/Swing team-division values. Apply `supabase/migrations/021_athlete_progression_courses.sql`, then restart Streamlit. The additive migration creates protected courses, adds nullable `races.course_id`, and adds history indexes. Existing races remain functional. Courses are created and linked in **Meets & Races**.
+
+## Coach Post-Race Analytics
+
+**Coach Analytics** is a protected, read-only view available from a completed race card and from Final Results. It is authoritative only after **Finalize & Publish Results**. The dashboard derives finishers, distance-specific PRs, Top 7, 1–5 and 1–7 spreads, Top-5 compression, early/late pace, negative splits, late fades, and previous-race comparisons from finalized canonical results; it stores no analytics rows.
+
+The **Coach Analytics page** has independent **Meet** and **Race** selectors at the top for historical review; the shared sidebar retains only its normal Coach Analytics navigation link and Current Meet controls. The page includes non-archived meets with completed or awaiting-review sessions, scopes races to the selected meet, and retains the selection with dedicated analytics session-state IDs. Context links from Race Day and Results preselect their race; changing the analytics selection never changes Current Meet, the active timing session, station, checkpoint, or Pack Mode state. Awaiting-review races can be selected but continue to show the existing finalize-before-authoritative-analytics message.
+
+Coach-facing Final Results and Athlete Analysis show true segment **Split** values derived from canonical cumulative elapsed times. Athlete split detail also shows **Elapsed** beside each split, and CSV exports retain the existing cumulative columns while adding explicit elapsed columns. A missing checkpoint makes that checkpoint and the immediately following segment unavailable rather than combining multiple segments; no derived values are persisted.
+
+Coach Analytics additionally labels distance-proportional **Estimated Split** values when a missing checkpoint is bounded by two authoritative cumulative elapsed values. It displays the mathematically known **Combined Interval** separately. Estimates use configured checkpoint distances, remain separate from recorded split data, and are never used for ranks, Team Position Change, finish order, PR/course/season records, or recorded pace analytics. Estimates are UI-only and are not added to CSV or printable results.
+
+In **Results → Manage Results → Checkpoint Results**, a coach or admin can select an active non-finish timing checkpoint, enter a required reason, review the change, confirm **Remove Split from Results**, and leave the checkpoint unavailable in canonical results. The action appends a reasoned `split_voided` event: the original timestamp, elapsed time, UUID, and device provenance remain unchanged in checkpoint audit history. Finish results continue through the existing managed-result correction path. Completed races display a warning because this correction immediately updates published projections. Apply `supabase/migrations/035_remove_split_from_results.sql` to install the role-guarded, concurrency-safe post-race correction RPC.
+
+**Team Position Change** ranks only KMHS athletes with a valid cumulative split at each configured checkpoint, then ranks only valid finishers at Finish. Missing splits, DNS, and DNF are shown without a rank and are never estimated. Net change compares the earliest available checkpoint KMHS rank with the finish KMHS rank; positive values mean movement up within KMHS. Display filters use existing gender and classification metadata without recalculating the full-roster KMHS ranks. These ranks do not represent placement in the overall race.
+
+A PR requires a faster prior finalized, non-test result for the same athlete and distance; a first result is labeled **First recorded**, DNF cannot PR, and the current session is excluded. Early pace is the first valid positive-distance segment and late pace is the final valid positive-distance segment, each normalized to seconds per mile. Pace change is late minus early: negative is a negative split and positive is a fade. These are descriptive measurements and do not infer strategy or cause.
+
+Top 7 eligibility follows the actual selected race roster. BV and GV races therefore remain separate, while a Swing athlete can rank in the varsity or JV race they actually ran without changing their permanent classification. Spreads use team-ranked finishers. Missing or invalid checkpoints are never treated as zero: athletes remain in finish analytics but are excluded from pace metrics unless at least two measurable segments exist.
+
+The prior comparison is the most recent earlier finalized, non-test session with the same distance and normalized race category (falling back to race name). Different distances and categories are not compared. If none exists, the page reports that explicitly. Append-only corrections are resolved by the existing active-event projection, so only replacements affect analytics while the audit trail stays intact. No database migration is required for Coach Analytics.
+
+### Manual Coach Analytics test
+
+1. Create and finalize Race A at 5K with realistic checkpoint splits.
+2. Create Race B with the same category, distance, and at least seven finishers.
+3. Include a PR, a negative split, a late fade, and an athlete missing an intermediate checkpoint; finalize Race B.
+4. Open **Coach Analytics** from Race B and verify PR amount, highlights, Top 7, both spreads, Top-5 gaps, pace profile, Race A comparison, and athlete table.
+5. Confirm the missing-split athlete remains in finish metrics but not pace metrics.
+6. In a third race, correct a result during provisional review, finalize, and verify analytics use the replacement while Recent Actions/audit history retains the original and void.
+
+## Manual post-race result check
+
+1. Create or locate a completed test race, then open **Results** and select its completed session.
+2. Expand **Manage Results**, choose an athlete with no result, select **Finished**, enter `22:15.4`, and save.
+3. Confirm final results and the athlete profile/history each show the race once and the race remains completed with its finalized timestamp.
+4. Reopen **Manage Results**, select the athlete, change the time to `22:13.92`, choose **Official**, and enter `Official meet results`.
+5. Check the confirmation statement, save, and verify final results and athlete history show only `22:13.92`.
+6. Expand **Result History** and verify `22:15.4` is superseded; for a live-timed original, verify the original timing event is also identified as preserved.
+7. Open the parent results link and verify only `22:13.92` is public.
+8. Repeat with an athlete who has no timing events and a **DNF** result; verify no finish time or place is assigned.
+9. Correct an athlete whose original result came from live timing and verify the live clock/session is not reopened.
+
+## Race Day resilience
+
+Race Day rapid capture uses one versioned browser queue (`kmhs:race-day:queue`)
+for Pack, checkpoint, Finish Line, dedicated-timer, and coach timing contexts. Each
+tap is assigned a UUID and stable application-generated browser UUID, then saved
+to `localStorage` before the component asks Streamlit to synchronize. Queue rows
+retain their original UTC capture time, `performance.now()` sample, device
+sequence, capture type, retry history, acknowledgement state, and server-safe
+context. Existing `kmhs:pack:*` queues are deterministically imported on first
+use, so deploying this upgrade does not strand prior offline captures.
+
+The browser retains acknowledged events as a durable safety history (the
+server remains authoritative), retries pending events in deterministic sequence
+about every three seconds, and also reloads/retries on online, focus, pageshow,
+and visibility lifecycle events. A compact status distinguishes browser-offline,
+server-degraded, syncing, and fully synchronized states and includes **Sync Now**.
+Unsynchronized captures trigger the browser's supported leave-page warning; a
+browser may suppress custom warning text. Never clear site data during a race.
+
+The component also stores a non-secret Race Day context containing the active
+session/race, checkpoint, operator type, durable device UUID, and last-active
+time. It never stores a password, access token, or refresh token. Streamlit reruns
+and component remounts recover automatically. Supabase's normal client session
+refresh remains the authentication authority. If a mobile browser destroys the
+server-side Streamlit session and the Supabase login can no longer be restored,
+the queue and context remain in browser storage: sign in normally, return to the
+same race/station, and synchronization resumes with the original UUIDs. Browser
+security rules prevent a server-rendered Streamlit app from guaranteeing silent
+reauthentication after a completely destroyed session without adding a separate
+browser authentication implementation.
+
+Before publishing, Results now reports known local pending captures and stale or
+no-longer-reporting station risk. Because a disconnected device cannot report its
+current queue, an offline station is explicitly labelled **pending count
+unknown** rather than falsely claiming zero. Coaches may finalize only after an
+explicit acknowledgement when a known risk exists.
+
+### Manual Race Day resilience checklist
+
+1. Start a race online and capture runners normally.
+2. Disable cellular/Wi-Fi, capture at least ten runners, and verify each says
+   **Saved on device** and the pending count increases.
+3. Restore connectivity; verify automatic synchronization, original timestamps,
+   and exactly one server event per UUID. Repeat with **Sync Now** several times.
+4. Disable connectivity during a flush and verify partial acknowledgements remain
+   acknowledged while failures remain queued.
+5. With pending events, refresh, lock/unlock the phone for several minutes, kill
+   and reopen the browser where supported, and force a Streamlit reconnect. Return
+   to the same race/station if authentication must be renewed; verify the durable
+   device UUID, context, queue, and automatic retry recover.
+6. Exercise dedicated timer, coach Race Day Timing, Pack, Individual, and Finish
+   Line workflows; verify the local race clock remains useful while disconnected.
+7. Undo an unsynchronized tap and verify it never reaches the server. Undo an
+   acknowledged tap and verify the existing append-only correction audit path.
+8. Attempt navigation/logout with pending work and confirm the browser warning;
+   choose both stay and continue (events must remain stored).
+9. End timing with one station offline. Verify Results identifies stale/offline
+   health and unknown pending state and requires explicit finalization override.
+10. Confirm Manage Results, reassignment, spectator/parent results, and Coach
+    Analytics still project canonical server history.

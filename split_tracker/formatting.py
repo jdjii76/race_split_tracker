@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 METERS_PER_MILE = 1609.344
 
 
@@ -38,22 +40,25 @@ def parse_time_to_seconds(value: str | float | int | None) -> float | None:
     text = str(value).strip()
     if not text:
         return None
-    try:
-        if ":" not in text:
-            numeric = float(text)
-            return numeric if numeric > 0 else None
-        parts = [float(part) for part in text.split(":")]
-    except ValueError:
+    if not re.fullmatch(r"(?:\d+:){0,2}\d+(?:\.\d{1,2})?", text):
         return None
+    if ":" not in text:
+        numeric = float(text)
+        return round(numeric, 2) if numeric > 0 else None
+    parts = [float(part) for part in text.split(":")]
     if len(parts) == 2:
         minutes, seconds = parts
+        if seconds >= 60:
+            return None
         total = minutes * 60 + seconds
     elif len(parts) == 3:
         hours, minutes, seconds = parts
+        if minutes >= 60 or seconds >= 60:
+            return None
         total = hours * 3600 + minutes * 60 + seconds
     else:
         return None
-    return total if total > 0 else None
+    return round(total, 2) if total > 0 else None
 
 
 def parse_pace_to_seconds(value: str | float | int | None) -> float | None:
