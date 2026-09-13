@@ -1029,3 +1029,64 @@ The prior comparison is the most recent earlier finalized, non-test session with
 7. Open the parent results link and verify only `22:13.92` is public.
 8. Repeat with an athlete who has no timing events and a **DNF** result; verify no finish time or place is assigned.
 9. Correct an athlete whose original result came from live timing and verify the live clock/session is not reopened.
+
+## Race Day resilience
+
+Race Day rapid capture uses one versioned browser queue (`kmhs:race-day:queue`)
+for Pack, checkpoint, Finish Line, dedicated-timer, and coach timing contexts. Each
+tap is assigned a UUID and stable application-generated browser UUID, then saved
+to `localStorage` before the component asks Streamlit to synchronize. Queue rows
+retain their original UTC capture time, `performance.now()` sample, device
+sequence, capture type, retry history, acknowledgement state, and server-safe
+context. Existing `kmhs:pack:*` queues are deterministically imported on first
+use, so deploying this upgrade does not strand prior offline captures.
+
+The browser retains acknowledged events as a durable safety history (the
+server remains authoritative), retries pending events in deterministic sequence
+about every three seconds, and also reloads/retries on online, focus, pageshow,
+and visibility lifecycle events. A compact status distinguishes browser-offline,
+server-degraded, syncing, and fully synchronized states and includes **Sync Now**.
+Unsynchronized captures trigger the browser's supported leave-page warning; a
+browser may suppress custom warning text. Never clear site data during a race.
+
+The component also stores a non-secret Race Day context containing the active
+session/race, checkpoint, operator type, durable device UUID, and last-active
+time. It never stores a password, access token, or refresh token. Streamlit reruns
+and component remounts recover automatically. Supabase's normal client session
+refresh remains the authentication authority. If a mobile browser destroys the
+server-side Streamlit session and the Supabase login can no longer be restored,
+the queue and context remain in browser storage: sign in normally, return to the
+same race/station, and synchronization resumes with the original UUIDs. Browser
+security rules prevent a server-rendered Streamlit app from guaranteeing silent
+reauthentication after a completely destroyed session without adding a separate
+browser authentication implementation.
+
+Before publishing, Results now reports known local pending captures and stale or
+no-longer-reporting station risk. Because a disconnected device cannot report its
+current queue, an offline station is explicitly labelled **pending count
+unknown** rather than falsely claiming zero. Coaches may finalize only after an
+explicit acknowledgement when a known risk exists.
+
+### Manual Race Day resilience checklist
+
+1. Start a race online and capture runners normally.
+2. Disable cellular/Wi-Fi, capture at least ten runners, and verify each says
+   **Saved on device** and the pending count increases.
+3. Restore connectivity; verify automatic synchronization, original timestamps,
+   and exactly one server event per UUID. Repeat with **Sync Now** several times.
+4. Disable connectivity during a flush and verify partial acknowledgements remain
+   acknowledged while failures remain queued.
+5. With pending events, refresh, lock/unlock the phone for several minutes, kill
+   and reopen the browser where supported, and force a Streamlit reconnect. Return
+   to the same race/station if authentication must be renewed; verify the durable
+   device UUID, context, queue, and automatic retry recover.
+6. Exercise dedicated timer, coach Race Day Timing, Pack, Individual, and Finish
+   Line workflows; verify the local race clock remains useful while disconnected.
+7. Undo an unsynchronized tap and verify it never reaches the server. Undo an
+   acknowledged tap and verify the existing append-only correction audit path.
+8. Attempt navigation/logout with pending work and confirm the browser warning;
+   choose both stay and continue (events must remain stored).
+9. End timing with one station offline. Verify Results identifies stale/offline
+   health and unknown pending state and requires explicit finalization override.
+10. Confirm Manage Results, reassignment, spectator/parent results, and Coach
+    Analytics still project canonical server history.

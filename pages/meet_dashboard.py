@@ -163,6 +163,10 @@ def _station_monitor(repository, summaries: list[RaceDashboardSummary]) -> None:
                 st.caption(
                     f"{station.capture_count} captures • Sync {activity_age_label(station.last_capture_at, now=now)}"
                 )
+                if state == "Offline":
+                    st.warning("Pending count unknown while disconnected; this device may hold unsynchronized captures.")
+                else:
+                    st.caption("Pending queue: not reported by this schema • Server capture count is canonical")
 
 
 def render() -> None:
