@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from html import escape
 from uuid import uuid4
 
 import pandas as pd
@@ -35,7 +36,7 @@ from split_tracker.timing_persistence import (
 from split_tracker.timing_recovery import active_events_for_athlete, latest_active_event, recent_timing_activity
 from split_tracker.timer_mode import (
     change_timing_station, exit_race_day_timing_mode, is_race_day_timing_mode,
-    is_timing_operator, station_label,
+    is_timing_operator, station_label, timing_sync_label,
 )
 from split_tracker.pack_component import pack_capture
 from split_tracker.pack_timing import expected_arrival_metadata, normalize_pack_batch, ordered_expected_arrival_states, pack_capture_allowed
@@ -65,6 +66,13 @@ div[data-testid="stButton"] > button[kind="primary"] { min-height: 5rem; }
 .sync-ok { color: #16803a; font-weight: 700; }
 .sync-warn { color: #b26a00; font-weight: 700; }
 .sync-error { color: #b42318; font-weight: 700; }
+.race-day-strip {
+    position: sticky; top: 0.4rem; z-index: 999;
+    background: #10251b; color: white; border-left: 0.45rem solid #f5b700;
+    border-radius: 0.75rem; padding: 0.65rem 0.8rem; margin-bottom: 0.6rem;
+    box-shadow: 0 3px 10px rgba(0,0,0,.22); line-height: 1.35;
+}
+.race-day-strip strong { font-size: 1.08rem; }
 </style>
 """
 
@@ -156,6 +164,16 @@ def _sync_status() -> tuple[str, str]:
     ):
         return "● Synced", "sync-ok"
     return "● Updating", "sync-warn"
+
+
+def _timing_header(race_name: str, station_name: str, status: str, clock) -> None:
+    """Render a compact persistent header from existing timing/sync state."""
+    st.markdown(
+        f'<div class="race-day-strip"><strong>{escape(race_name)} • {escape(station_name)} • LOCKED</strong><br>'
+        f'{status.upper()} • {format_duration(elapsed_seconds(clock))}<br>'
+        f'{timing_sync_label(st.session_state)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _has_persisted_race() -> bool:
@@ -381,6 +399,10 @@ def _render_pack_mode(
         last_successful_sync_at=(st.session_state.get("pack_last_sync_at").isoformat() if st.session_state.get("pack_last_sync_at") else None),
         key=f"pack:{session_id}:{checkpoint_number}")
     events = value.get("events", []) if isinstance(value, dict) else []
+    if isinstance(value, dict):
+        st.session_state.pack_browser_online = value.get("online")
+        st.session_state.pack_synced_count = int(value.get("synced_count", 0) or 0)
+        st.session_state.pack_unsynced_count = int(value.get("queued_count", len(events)) or 0)
     action = value.get("action", "") if isinstance(value, dict) else ""
     st.session_state.race_day_local_pending = int(value.get("pending_count", len(events))) if isinstance(value, dict) else len(events)
     durable_device_id = value.get("device_id") if isinstance(value, dict) else None
@@ -402,6 +424,7 @@ def _render_pack_mode(
         try:
             saved=normalize_pack_batch(st.session_state.repository,st.session_state.selected_race_id,session_id,checkpoint_number,events,st.session_state.timer_name)
             st.session_state.pack_ack_ids=list({*ack_ids,*(e.client_event_id or e.id for e in saved)})
+            st.session_state.pack_unsynced_count = 0
             st.session_state.pack_last_sync_at=datetime.now(timezone.utc); st.session_state.pack_sync_error=""
             st.session_state.pack_sync_failures=0
             logger.info("Race Day queue synchronization succeeded", extra={"race_session_id": session_id, "event_count": len(saved)})
@@ -728,14 +751,28 @@ def render() -> None:
             (item for item in config.checkpoints if item.number == station_number), None
         )
         station_name = station_label(checkpoint) if checkpoint else "Unknown checkpoint"
-        st.success(f"**TIMING STATION: {station_name}**")
+        _timing_header(config.race_name or "Live Timing", station_name, status, clock)
+        st.caption(f"{station_name} • Locked to this device")
         control_columns = st.columns(2) if coach_timing_mode else [st]
-        if control_columns[0].button("Change Station", use_container_width=True):
-            change_timing_station(st.session_state)
-            st.switch_page(st.session_state.page_registry["race_day_timer"])
+        if control_columns[0].button("Change Locked Station", use_container_width=True):
+            st.session_state.timer_station_change_requested = True
+        if st.session_state.get("timer_station_change_requested"):
+            st.warning("Changing station can send captures to a different checkpoint. Confirm before unlocking this device.")
+            confirm_change, cancel_change = st.columns(2)
+            if confirm_change.button("Unlock & Change", type="primary", use_container_width=True):
+                st.session_state.timer_station_change_requested = False
+                change_timing_station(st.session_state)
+                st.switch_page(st.session_state.page_registry["race_day_timer"])
+            if cancel_change.button("Keep Station Locked", use_container_width=True):
+                st.session_state.timer_station_change_requested = False
+                st.rerun()
         if coach_timing_mode and control_columns[1].button("Exit Timing Mode", use_container_width=True):
             exit_race_day_timing_mode(st.session_state)
             st.switch_page(st.session_state.page_registry["meet_dashboard"])
+        if st.button("Recover Timing Data", use_container_width=True):
+            st.session_state.timer_timing_mode = "pack"
+            st.session_state.pack_mode_active = True
+            st.rerun()
     repository_result = st.session_state.get("repository_result")
     if repository_result is not None and repository_result.is_temporary:
         st.error(

@@ -12,6 +12,8 @@ the roster editor.
 
 ## Race Day Timer Mode
 
+The coach/admin **Race Day Mode** landing area presents large **Time a Checkpoint**, **Finish Line**, **Coach Dashboard**, and **Spectator View** actions beneath the current meet. Station selection includes a readiness summary for lifecycle, network/server state, durable browser queue, device identity, and known unsynced count before the operator explicitly locks the station. During timing, a sticky compact strip keeps the race, locked station, lifecycle/clock, and queue status visible. Changing a locked station requires confirmation, and **Recover Timing Data** reopens the existing Pack Mode/localStorage recovery path rather than creating another queue.
+
 Provision the shared volunteer account with the `timer` role after applying
 `supabase/migrations/024_race_day_timer_role.sql` and
 `supabase/migrations/025_timer_race_start.sql`, then apply

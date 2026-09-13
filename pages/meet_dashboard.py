@@ -14,6 +14,41 @@ from split_tracker.station_health import activity_age_label, station_connection_
 from split_tracker.timer_mode import enter_race_day_timing_mode
 
 
+def _enter_timer_workspace(intent: str) -> None:
+    st.session_state.race_day_station_intent = intent
+    st.session_state.timer_station_role = "Finish Line" if intent == "finish" else "Checkpoint"
+    if enter_race_day_timing_mode(st.session_state, st.session_state.app_identity):
+        st.switch_page(st.session_state.page_registry["race_day_timer"])
+
+
+def _race_day_actions(meet, summaries: list[RaceDashboardSummary]) -> None:
+    """Render the high-priority mobile Race Day actions."""
+    st.subheader("Race Day Mode")
+    st.caption(f"Current Meet • {meet.name}")
+    first_row = st.columns(2)
+    if first_row[0].button("⏱️ Time a Checkpoint", type="primary", use_container_width=True):
+        _enter_timer_workspace("checkpoint")
+    if first_row[1].button("🏁 Finish Line", type="primary", use_container_width=True):
+        _enter_timer_workspace("finish")
+    second_row = st.columns(2)
+    second_row[0].button("📋 Coach Dashboard", use_container_width=True, disabled=True,
+                         help="You are viewing the Coach Dashboard.")
+    public = next((item for category in ("running", "ready", "completed", "awaiting_review", "upcoming")
+                   for item in summaries if item.category == category), None)
+    if second_row[1].button("👀 Spectator View", use_container_width=True, disabled=public is None):
+        st.query_params["spectator_race"] = public.race.id
+        if public.session:
+            st.query_params["spectator_session"] = public.session.id
+        st.switch_page(st.session_state.page_registry["spectator"])
+    if st.button("Recover Timing Data", use_container_width=True,
+                 disabled=st.session_state.get("timer_station_checkpoint") is None):
+        st.session_state.race_day_timing_mode = True
+        st.session_state.timer_mode = True
+        st.session_state.timer_timing_mode = "pack"
+        st.session_state.pack_mode_active = True
+        st.switch_page(st.session_state.page_registry["live_timing"])
+
+
 def _open_race(meet, summary: RaceDashboardSummary) -> None:
     race_id, session_id = dashboard_navigation_ids(summary)
     if summary.session is not None and summary.session.race_id != race_id:
@@ -167,28 +202,19 @@ def render() -> None:
             st.switch_page(st.session_state.page_registry["race_setup"])
         return
 
-    render_school_header(profile, "Race Day", subtitle=meet.name)
-    st.subheader("Choose your Race Day workspace")
-    dashboard_choice, timing_choice = st.columns(2)
-    with dashboard_choice.container(border=True):
-        st.markdown("### Coach Dashboard")
-        st.caption("Manage races, monitor stations, recover mistakes, and review results.")
-    with timing_choice.container(border=True):
-        st.markdown("### Time a Checkpoint")
-        st.caption("Use the streamlined race-day station workflow on this device.")
-        if st.button("Time a Checkpoint", type="primary", use_container_width=True):
-            if enter_race_day_timing_mode(st.session_state, st.session_state.app_identity):
-                st.switch_page(st.session_state.page_registry["race_day_timer"])
-    heading, refresh = st.columns([4, 1], vertical_alignment="center")
-    heading.header(f"{profile.short_name or 'KMHS'} Race Day")
-    if refresh.button("Refresh", use_container_width=True):
-        st.rerun()
-    st.caption("Live persisted race and session status • refreshes every 5 seconds")
     try:
         summaries, errors = get_meet_race_summaries(repository, meet.id)
     except Exception as exc:
         st.error(f"Could not load races for this meet: {exc}")
         return
+
+    render_school_header(profile, "Race Day", subtitle=meet.name)
+    _race_day_actions(meet, summaries)
+    heading, refresh = st.columns([4, 1], vertical_alignment="center")
+    heading.header(f"{profile.short_name or 'KMHS'} Race Day")
+    if refresh.button("Refresh", use_container_width=True):
+        st.rerun()
+    st.caption("Live persisted race and session status • refreshes every 5 seconds")
 
     running = [summary for summary in summaries if summary.category == "running"]
     upcoming = [summary for summary in summaries if summary.category == "upcoming"]
