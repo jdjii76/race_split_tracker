@@ -92,6 +92,17 @@ def test_page_uses_dedicated_state_without_mutating_live_timing_context():
     assert "No completed or review-ready races are available for Coach Analytics." in source
     assert 'st.session_state.pop("team_position_filter"' in source
     assert 'st.session_state.pop("coach_analytics_athlete_id"' in source
+    assert 'st.header("Coach Analytics")' in source
+    assert 'st.selectbox("Meet"' in source and 'st.selectbox(\n        "Race"' in source
+    assert "with st.sidebar" not in source
+    assert "No races in this meet are currently available for Coach Analytics." in source
+
+
+def test_coach_analytics_remains_one_normal_sidebar_navigation_page():
+    source = Path("app.py").read_text()
+    assert source.count("COACH_ANALYTICS_PAGE = st.Page(") == 1
+    assert 'title="Coach Analytics"' in source
+    assert source.count("race_day_pages.insert(4, COACH_ANALYTICS_PAGE)") == 1
 
 
 def test_race_day_and_results_context_links_preselect_dedicated_analytics_ids():

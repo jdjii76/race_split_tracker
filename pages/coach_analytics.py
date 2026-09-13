@@ -27,6 +27,7 @@ def _open_results():
 
 
 def render():
+    st.header("Coach Analytics")
     repo=st.session_state.repository
     if repo is None:
         st.warning("Persistent race history is unavailable."); return
@@ -49,23 +50,24 @@ def render():
     meet_by_id = {item.meet.id: item.meet for item in options}
     if st.session_state.get("coach_analytics_meet_id") not in meet_options:
         st.session_state.coach_analytics_meet_id = resolved.meet.id
-    with st.sidebar:
-        st.subheader("Coach Analytics")
-        meet_id = st.selectbox("Meet", meet_options, format_func=lambda value: meet_label(meet_by_id[value]),
-                               key="coach_analytics_meet_id")
-        race_options = [item for item in options if item.meet.id == meet_id]
-        valid_race_ids = [item.race.id for item in race_options]
-        if st.session_state.get("coach_analytics_race_id") not in valid_race_ids:
-            fallback = resolved if resolved.meet.id == meet_id else next(
-                (item for item in race_options if item.session.status == "completed"), race_options[0])
-            st.session_state.coach_analytics_race_id = fallback.race.id
-        race_id = st.selectbox(
-            "Race", valid_race_ids,
-            format_func=lambda value: next(
-                f"{item.race.name} • {format_distance(item.race.distance_meters)} • {item.session.status.replace('_', ' ').title()}"
-                for item in race_options if item.race.id == value),
-            key="coach_analytics_race_id",
-        )
+    meet_id = st.selectbox("Meet", meet_options, format_func=lambda value: meet_label(meet_by_id[value]),
+                           key="coach_analytics_meet_id")
+    race_options = [item for item in options if item.meet.id == meet_id]
+    if not race_options:
+        st.info("No races in this meet are currently available for Coach Analytics.")
+        return
+    valid_race_ids = [item.race.id for item in race_options]
+    if st.session_state.get("coach_analytics_race_id") not in valid_race_ids:
+        fallback = resolved if resolved.meet.id == meet_id else next(
+            (item for item in race_options if item.session.status == "completed"), race_options[0])
+        st.session_state.coach_analytics_race_id = fallback.race.id
+    race_id = st.selectbox(
+        "Race", valid_race_ids,
+        format_func=lambda value: next(
+            f"{item.race.name} • {format_distance(item.race.distance_meters)} • {item.session.status.replace('_', ' ').title()}"
+            for item in race_options if item.race.id == value),
+        key="coach_analytics_race_id",
+    )
     selected = next(item for item in race_options if item.race.id == race_id)
     st.session_state.coach_analytics_session_id = selected.session.id
     session, race, meet = selected.session, selected.race, selected.meet
