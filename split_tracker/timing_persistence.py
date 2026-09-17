@@ -410,6 +410,20 @@ def persist_resume(session_state, *, now_perf: float | None = None, now_utc: dat
     return _persist_lifecycle_transition(session_state, "resume", now_perf=now_perf, now_utc=now_utc)
 
 
+def persist_reset_start(session_state, *, reason: str = "Accidental early start", finish_checkpoint_number: int | None = None, device_id: str | None = None, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession:
+    """Reset the canonical clock without replacing the session or its events."""
+    repository: RaceRepository | None = session_state.repository
+    race_session_id = session_state.get("active_race_session_id")
+    if repository is None or not race_session_id:
+        raise RepositoryError("No shared race session is connected.")
+    saved = repository.reset_race_start(
+        race_session_id, reason,
+        finish_checkpoint_number=finish_checkpoint_number,
+        device_id=device_id,
+    )
+    return _apply_lifecycle_session(session_state, saved, now_perf=now_perf, now_utc=now_utc)
+
+
 def persist_completion(session_state, *, now_perf: float | None = None, now_utc: datetime | None = None) -> RaceSession | None:
     return _persist_lifecycle_transition(session_state, "complete", now_perf=now_perf, now_utc=now_utc)
 

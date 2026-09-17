@@ -327,6 +327,7 @@ class RaceRepository(Protocol):
     def start_race_session(self, race_session_id: str, started_at: datetime) -> RaceSession: ...
     def get_active_or_latest_race_session_for_race(self, race_id: str) -> RaceSession | None: ...
     def transition_race_session(self, race_session_id: str, action: str) -> RaceSession: ...
+    def reset_race_start(self, race_session_id: str, reason: str = "Accidental early start", *, finish_checkpoint_number: int | None = None, device_id: str | None = None) -> RaceSession: ...
     def complete_race_timing(self, race_session_id: str, finish_checkpoint_number: int | None = None) -> RaceSession: ...
     def finalize_race_session(self, race_session_id: str) -> RaceSession: ...
     def reopen_race_session(self, race_session_id: str) -> RaceSession: ...
@@ -854,6 +855,23 @@ class InMemoryRaceRepository:
             else:
                 saved = replace(session, status="cancelled", ended_at=server_now if session.started_at is not None else None, paused_at=None, elapsed_offset_seconds=elapsed)
             saved = replace(saved, updated_at=server_now)
+            self.race_sessions[saved.id] = saved
+            return saved
+
+    def reset_race_start(self, race_session_id: str, reason: str = "Accidental early start", *, finish_checkpoint_number: int | None = None, device_id: str | None = None) -> RaceSession:
+        """Reset only lifecycle fields, preserving the session and append-only data."""
+        with self._race_session_lock:
+            session = self.race_sessions.get(race_session_id)
+            if session is None:
+                raise RepositoryError("Race session not found.")
+            if finish_checkpoint_number is not None:
+                is_finish = any(c.checkpoint_sequence == finish_checkpoint_number and c.is_finish for c in self.list_race_session_checkpoints(race_session_id))
+                assigned = bool(device_id) and self.timer_station_assignments.get((race_session_id, device_id)) == finish_checkpoint_number
+                if not is_finish or not assigned:
+                    raise RepositoryError("Only the assigned Finish Line timer can reset the race clock.")
+            if session.status not in {"running", "paused"}:
+                raise RepositoryError("Race start can only be reset while running or paused.")
+            saved = replace(session, status="ready", started_at=None, paused_at=None, ended_at=None, elapsed_offset_seconds=0.0, updated_at=utc_now())
             self.race_sessions[saved.id] = saved
             return saved
 
@@ -2513,6 +2531,21 @@ class SupabaseRaceRepository:
         row = rows[0] if isinstance(rows, list) and rows else rows
         if not row:
             raise RepositoryError("Could not transition race session.")
+        return _race_session_from_row(row)
+
+    def reset_race_start(self, race_session_id: str, reason: str = "Accidental early start", *, finish_checkpoint_number: int | None = None, device_id: str | None = None) -> RaceSession:
+        parameters = {"p_session_id": race_session_id, "p_reason": reason}
+        if finish_checkpoint_number is not None:
+            parameters.update({"p_checkpoint_number": finish_checkpoint_number, "p_device_id": device_id})
+        try:
+            result = self.client.rpc("reset_race_start", parameters).execute()
+        except Exception as exc:
+            _raise_authorization_error(exc)
+            raise RepositoryError(str(exc)) from exc
+        rows = getattr(result, "data", []) or []
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if not row:
+            raise RepositoryError("Could not reset race start.")
         return _race_session_from_row(row)
 
     def complete_race_timing(self, race_session_id: str, finish_checkpoint_number: int | None = None) -> RaceSession:

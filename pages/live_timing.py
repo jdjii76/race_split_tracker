@@ -24,6 +24,7 @@ from split_tracker.timing_persistence import (
     persist_timing_complete,
     persist_pause,
     persist_resume,
+    persist_reset_start,
     persist_event_correction,
     persist_athlete_reassignment,
     persist_manual_correction,
@@ -289,13 +290,17 @@ def _end_timing() -> bool:
         return False
 
 
-def _reset_timing() -> bool:
+def _reset_timing(*, finish_checkpoint_number: int | None = None) -> bool:
     try:
         if _has_persisted_race() and st.session_state.get("active_race_session_id"):
-            persist_cancel(st.session_state)
-            st.session_state.active_race_session_id = None
-            st.session_state.timing_restored_for_race_id = None
-        reset_race(st.session_state)
+            persist_reset_start(
+                st.session_state,
+                finish_checkpoint_number=finish_checkpoint_number,
+                device_id=st.session_state.get("pack_device_id") if finish_checkpoint_number is not None else None,
+            )
+            st.session_state.message = "Race clock reset to 0:00.0. Timing data and the browser queue were preserved."
+        else:
+            reset_race(st.session_state)
         return True
     except Exception as exc:
         _show_persistence_error("Reset race", exc)
@@ -681,11 +686,54 @@ def _render_finish_controls(projection, clock) -> None:
                 _show_persistence_error("End race timing", exc); st.error(str(exc))
 
 
+def _has_meaningful_timing_data() -> bool:
+    session_id = st.session_state.get("active_race_session_id")
+    repository = st.session_state.get("repository")
+    if not session_id or repository is None:
+        return bool(st.session_state.get("splits"))
+    return bool(
+        repository.list_all_split_events(session_id)
+        or repository.list_result_events(session_id)
+        or repository.list_race_athlete_outcomes(session_id)
+    )
+
+
+def _render_reset_confirmation(checkpoint_number: int | None) -> None:
+    if not st.session_state.get("reset_start_confirmation"):
+        return
+    existing = _has_meaningful_timing_data()
+    pending = int(st.session_state.get("race_day_local_pending", 0) or st.session_state.get("pack_unsynced_count", 0) or 0)
+    with st.container(border=True):
+        st.markdown("### Timing data already exists for this race." if existing else "### Reset race clock to 0:00?")
+        if existing:
+            st.warning("Resetting the race clock may make existing split or finish times invalid. Existing events will not be deleted.")
+        else:
+            st.write("Use this if the clock was started before the actual gun.")
+        if pending:
+            st.warning(f"{pending} capture(s) remain in this browser's durable queue. They will not be deleted; verify them before synchronizing after reset.")
+        cancel, confirm = st.columns(2)
+        if cancel.button("Cancel", key=f"cancel_reset_start_{checkpoint_number}", use_container_width=True):
+            st.session_state.reset_start_confirmation = False
+            st.rerun()
+        if confirm.button("Reset to 0:00", key=f"confirm_reset_start_{checkpoint_number}", use_container_width=True):
+            if _reset_timing(finish_checkpoint_number=checkpoint_number):
+                st.session_state.reset_start_confirmation = False
+                st.rerun()
+
+
 def _render_finish_timer_end_control(clock, checkpoint) -> None:
     """Render the timer lifecycle action only for an assigned finish snapshot."""
     if checkpoint is None or not checkpoint.is_finish or clock.status not in {"running", "paused"}:
         return
     st.markdown("### Finish Line Controls")
+    primary, secondary = st.columns(2)
+    lifecycle_label = "PAUSE" if clock.status == "running" else "RESUME"
+    if primary.button(lifecycle_label, key="finish_timer_pause_resume", type="primary", use_container_width=True):
+        if (_pause_timing() if clock.status == "running" else _resume_timing()):
+            st.rerun()
+    if secondary.button("RESET START", key="finish_timer_reset_start", use_container_width=True):
+        st.session_state.reset_start_confirmation = True
+    _render_reset_confirmation(checkpoint.number)
     if st.button("End Race Timing", key="finish_timer_end_timing", type="primary", use_container_width=True):
         st.session_state.finish_timer_end_confirmation = True
     if not st.session_state.get("finish_timer_end_confirmation"):
@@ -925,11 +973,9 @@ def render() -> None:
             st.session_state.timer_name = timer_name.strip()
             st.caption(f"Session: {connected_id} • Storage: {storage}")
             c3 = st.container()
-            confirm_reset = c3.checkbox("Confirm reset")
-            if c3.button(
-                "Reset Race", use_container_width=True, disabled=not confirm_reset
-            ):
-                _reset_timing()
+            if c3.button("Reset Start", use_container_width=True):
+                st.session_state.reset_start_confirmation = True
+            _render_reset_confirmation(None)
 
     if st.session_state.message:
         st.info(st.session_state.message)
