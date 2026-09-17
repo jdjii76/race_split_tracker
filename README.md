@@ -1090,3 +1090,14 @@ explicit acknowledgement when a known risk exists.
    health and unknown pending state and requires explicit finalization override.
 10. Confirm Manage Results, reassignment, spectator/parent results, and Coach
     Analytics still project canonical server history.
+
+### Accidental start recovery
+
+The timer assigned to the Finish Line can pause/resume the official clock and
+use **Reset Start** to return the same race session to Ready. Reset always asks
+for confirmation, warns when synchronized or locally queued captures exist,
+and preserves the roster, checkpoints, station assignments, event history,
+durable device identity, and browser queue. Coaches/admins retain the same
+recovery capability. Apply `supabase/migrations/036_reset_race_start.sql` before
+deploying this UI so reset authorization is enforced by the protected
+`reset_race_start` RPC.
